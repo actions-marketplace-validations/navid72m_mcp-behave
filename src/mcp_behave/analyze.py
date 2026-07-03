@@ -6,8 +6,9 @@ import re, sys, json, os
 # `openat(0xff..., "path"`. The fd/dirfd arg before the path is optional.
 OPENAT = re.compile(r'\bopen(?:at)?\((?:[^,)]+,\s*)?"([^"]+)"')
 # matches both: sin_addr=inet_addr("1.2.3.4")  and  sin6_addr=inet_pton(AF_INET6, "::1", ...)
-# Linux/strace only -- dtruss does NOT dereference sockaddr, so connect() targets
-# are not observable on Darwin.
+# This regex is for strace (Linux) output. macOS now uses the native dylib
+# format (see _analyze_native), which DOES carry connect() destinations --
+# the dtruss-era "no network on Darwin" limitation is gone.
 CONNECT = re.compile(r'connect\(\d+,\s*\{sa_family=AF_INET6?,\s*'
                      r'sin6?_port=htons\((\d+)\),\s*sin6?_addr=inet_'
                      r'(?:addr|pton)\((?:[^,]+,\s*)?"([^"]+)"')
@@ -54,7 +55,55 @@ def real_port(entry: str) -> bool:
     # noise. Keep only entries with a real (non-zero) port.
     return not entry.endswith(":0")
 
+# The macOS dylib tracer (macos_tracer.c) emits a deliberately trivial format,
+# one record per line: "F <path>" / "N <ip> <port>" / "X <path>". We parse it
+# natively rather than mimicking strace syntax -- a regex over strace's connect()
+# rendering is fragile, and here we own the format end to end. Crucially, unlike
+# dtruss, this DOES carry network destinations.
+def _is_native(sample: list[str]) -> bool:
+    """Heuristic: native lines start with 'F ', 'N ', or 'X '. strace lines
+    look like 'openat(AT_FDCWD, ...'. Decide from the first few real lines."""
+    for line in sample:
+        s = line.rstrip("\n")
+        if not s:
+            continue
+        return len(s) >= 2 and s[0] in "FNX" and s[1] == " "
+    return False
+
+
+def _analyze_native(lines) -> dict:
+    files, nets, execs = set(), set(), set()
+    filtered_files = 0
+    for line in lines:
+        s = line.rstrip("\n")
+        if len(s) < 2 or s[1] != " ":
+            continue
+        tag, val = s[0], s[2:]
+        if tag == "F":
+            if interesting_file(val):
+                files.add(val)
+            else:
+                filtered_files += 1
+        elif tag == "N":
+            ip, _, port = val.rpartition(" ")
+            if ip and interesting_net(ip):
+                nets.add(f"{ip}:{port}")
+        elif tag == "X":
+            execs.add(val)
+    return {"files_opened": sorted(files),
+            "network_connects": sorted(n for n in nets if real_port(n)),
+            "subprocesses": sorted(execs),
+            "_meta": {"files_filtered_as_noise": filtered_files}}
+
+
 def analyze(path: str) -> dict:
+    with open(path, errors="replace") as f:
+        head = [f.readline() for _ in range(8)]
+        if _is_native(head):
+            # Re-read from the top: consume the peeked head, then the rest.
+            f.seek(0)
+            return _analyze_native(f)
+
     files, nets, execs = set(), set(), set()
     filtered_files = 0  # how many openat hits the noise filter removed
     with open(path, errors="replace") as f:

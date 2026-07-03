@@ -3,7 +3,7 @@ prompts) with synthesized inputs, and record both the server's self-declared
 manifest and the raw syscall trace of what it actually did.
 
 No judgements here -- that's report.py."""
-import asyncio, hashlib, json, os, platform, shlex, shutil, sys
+import asyncio, hashlib, json, os, platform, shutil, sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -17,30 +17,114 @@ SYSCALLS   = "openat,connect,execve"
 DEFAULT_CALL_TIMEOUT = float(os.environ.get("MCP_BEHAVE_CALL_TIMEOUT", "15"))
 
 
-def _trace_command(server_cmd: list[str], trace_file: str
-                   ) -> tuple[list[str] | None, str]:
-    """Pick the platform's syscall tracer and build the argv to spawn.
+def _macos_tracer_dylib() -> str | None:
+    """Compile (once, cached) the DYLD interposition dylib and return its path.
 
-    Returns (argv, tracer_name). argv is None if no tracer is available;
-    callers should fall back to running the server untraced.
+    We ship the .c source in the package and build it locally so the dylib
+    always matches the host arch. Returns None if we can't build it (no cc),
+    letting the caller fall back to untraced manifest-only mode with a hint.
+    """
+    src = os.path.join(os.path.dirname(__file__), "macos_tracer.c")
+    if not os.path.exists(src):
+        return None
+    cache = os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+        "mcp-behave")
+    os.makedirs(cache, exist_ok=True)
+    dylib = os.path.join(cache, "libmcpbehave_trace.dylib")
+    # Rebuild if missing or older than the source (e.g. after a package update).
+    if os.path.exists(dylib) and os.path.getmtime(dylib) >= os.path.getmtime(src):
+        return dylib
+    cc = shutil.which("cc") or shutil.which("clang")
+    if not cc:
+        return None
+    import subprocess
+    # Build UNIVERSAL2 (arm64 + x86_64). The target interpreter's arch may
+    # differ from ours -- e.g. an x86_64 conda python (under Rosetta) on an
+    # Apple Silicon host. A single-arch dylib whose slice doesn't match the
+    # target makes dyld ABORT the injected process (surfaces as "connection
+    # closed"). A fat dylib loads into either. Fall back to native-only if the
+    # universal build fails (e.g. a missing SDK slice).
+    last = ""
+    for arch_flags in (["-arch", "arm64", "-arch", "x86_64"],
+                       ["-arch", platform.machine()]):
+        try:
+            subprocess.run([cc, *arch_flags, "-dynamiclib", "-O2",
+                            "-o", dylib, src],
+                           check=True, capture_output=True, text=True, timeout=90)
+            return dylib
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            last = getattr(exc, "stderr", str(exc))
+    print(f"[probe] failed to build macOS tracer: {last}", file=sys.stderr)
+    return None
+
+
+def _target_is_hardened(exe: str) -> bool | None:
+    """Does `exe` carry the hardened-runtime flag? A hardened process refuses
+    DYLD_INSERT_LIBRARIES for ad-hoc-signed dylibs (like ours) and dyld ABORTS
+    it on load -- which surfaces to us as "connection closed", not a clean skip.
+
+    Returns True/False, or None if we can't tell (no codesign, unsigned, etc.).
+    The hardened flag lives in the CodeDirectory flags, NOT in entitlements --
+    so we read `codesign -d --verbose` and look for the 'runtime' flag.
+    """
+    cs = shutil.which("codesign")
+    if not cs:
+        return None
+    path = shutil.which(exe) or exe
+    import subprocess
+    try:
+        # codesign writes its report to stderr.
+        out = subprocess.run([cs, "-d", "--verbose=4", path],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    import re
+    for line in (out.stdout + out.stderr).splitlines():
+        # codesign prints e.g. "CodeDirectory v=... flags=0x10000(runtime) ..."
+        # -- the flags token is mid-line, not at the start.
+        m = re.search(r"flags=(\S+)", line)
+        if m:
+            return "runtime" in m.group(1)
+    return None
+
+
+def _tracer_setup(server_cmd: list[str], trace_file: str
+                  ) -> tuple[list[str], str, dict]:
+    """Pick the platform's tracer.
+
+    Returns (argv, tracer_name, env_overlay). tracer_name is "" if no tracer
+    is available (caller falls back to untraced). On macOS the server argv is
+    UNCHANGED -- tracing is done by injecting a dylib via env, so the server
+    runs as the normal user (no root, unlike the old dtruss path).
     """
     if platform.system() == "Darwin":
-        # macOS: dtruss is a DTrace wrapper. It needs root (sudo) and writes
-        # its trace lines to stderr (no -o flag), so wrap in sh to redirect.
-        # Limitation: dtruss does NOT dereference connect()'s sockaddr, so
-        # network destinations are not captured on Darwin -- file and exec
-        # tracing still work.
-        if not shutil.which("dtruss"):
-            return None, ""
-        quoted = " ".join(shlex.quote(a) for a in server_cmd)
-        wrapper = (f"exec dtruss -f {quoted} "
-                   f"2> {shlex.quote(trace_file)}")
-        return ["sh", "-c", wrapper], "dtruss"
+        dylib = _macos_tracer_dylib()
+        if not dylib:
+            return server_cmd, "", {}
+        # Warn BEFORE launch: if the target interpreter is hardened, dyld will
+        # abort it on inject and the failure looks like "connection closed".
+        # Catching it here turns a cryptic abort into an actionable message.
+        if server_cmd and _target_is_hardened(server_cmd[0]):
+            resolved = shutil.which(server_cmd[0]) or server_cmd[0]
+            print(f"[probe] WARNING: '{resolved}' has the hardened runtime; it "
+                  "will reject the injected tracer and likely abort on launch.\n"
+                  "[probe] Run the target under a NON-hardened interpreter "
+                  "(Homebrew/uv/pyenv), e.g.:\n"
+                  f"[probe]     mcp-behave \"$(brew --prefix)/bin/python3\" "
+                  "<your-server-args>", file=sys.stderr)
+        # DYLD_INSERT_LIBRARIES injects our interposers; the tracer writes
+        # records to MCP_BEHAVE_TRACE_FILE (never to stdout -- that carries
+        # the JSON-RPC protocol). Env propagates to posix_spawn children too.
+        return server_cmd, "dylib", {
+            "DYLD_INSERT_LIBRARIES": dylib,
+            "MCP_BEHAVE_TRACE_FILE": trace_file,
+        }
 
     if shutil.which("strace"):
         return (["strace", "-f", "-qq", "-e", f"trace={SYSCALLS}",
-                 "-o", trace_file, *server_cmd], "strace")
-    return None, ""
+                 "-o", trace_file, *server_cmd], "strace", {})
+    return server_cmd, "", {}
 
 
 def synth_args(schema: dict) -> dict:
@@ -206,18 +290,18 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
 
 async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT):
     """Stdio transport: wrap the server in the platform's syscall tracer
-    (strace on Linux, dtruss on macOS) and connect via stdio."""
+    (strace on Linux, an injected dylib on macOS) and connect via stdio."""
     os.makedirs(OUT_DIR, exist_ok=True)
-    trace_cmd, tracer = _trace_command(server_cmd, TRACE_FILE)
+    trace_cmd, tracer, env_overlay = _tracer_setup(server_cmd, TRACE_FILE)
     syscalls_available = bool(tracer)
-    # Pre-touch the trace file: dtruss writes lazily via stderr redirect, and
-    # analyze() needs a readable file even if the server exits before any
-    # interesting syscall fires.
+    # Truncate/create the trace file up front: the macOS tracer opens it
+    # O_APPEND, and analyze() needs a readable file even if the server exits
+    # before any interesting syscall fires.
     open(TRACE_FILE, "w").close()
 
     if syscalls_available:
         params = StdioServerParameters(command=trace_cmd[0], args=trace_cmd[1:],
-                                       env={**os.environ})
+                                       env={**os.environ, **env_overlay})
     else:
         print(f"[probe] no syscall tracer available on {platform.system()}; "
               "running server untraced (manifest analysis only)",

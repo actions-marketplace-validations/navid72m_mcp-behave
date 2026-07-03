@@ -20,14 +20,22 @@ ptrace (check /proc/sys/kernel/yama/ptrace_scope, or run under sudo).
 """
 
 DTRACE_HINT = """
-mcp-behave couldn't trace the target server with dtruss on macOS.
+mcp-behave ran the target on macOS but captured no syscalls.
 
-dtruss is a DTrace wrapper and requires root. Try:
-    sudo mcp-behave <server-command>
+macOS tracing works by injecting a small library (DYLD_INSERT_LIBRARIES) into
+the server. This runs as YOU -- no sudo needed. Two things can prevent it:
 
-If you're already running with sudo and still see this, System Integrity
-Protection may be blocking the target -- Apple-signed binaries (and anything
-launched through them) cannot be traced by DTrace even as root.
+1. Hardened-runtime interpreters reject injection (dyld ABORTS the process,
+   which looks like "connection closed"). Anaconda/conda python, python.org's
+   signed builds, and /usr/bin/python3 are hardened; Homebrew, uv, and pyenv
+   Python are not. Check yours (look for 'runtime' in the flags):
+       codesign -d --verbose=4 "$(which python3)" 2>&1 | grep -o 'flags=[^ ]*'
+   If it shows 'runtime', run your server under a non-hardened interpreter:
+       mcp-behave "$(brew --prefix)/bin/python3" <your-server-args>
+       mcp-behave uv run <your-server-args>
+
+2. No C compiler. The tracer is built on first use with `cc`. If missing:
+       xcode-select --install
 """
 
 # Severity ranking for --fail-on comparisons.
@@ -146,12 +154,27 @@ def main(argv=None):
     except SystemExit:
         raise
     except BaseException as exc:
-        if args.transport == "stdio" and _looks_like_ptrace_failure(exc):
-            hint = DTRACE_HINT if platform.system() == "Darwin" else PTRACE_HINT
-            print(hint, file=sys.stderr)
+        import traceback
+        # ALWAYS surface the real error. The macOS hint is only a *possible*
+        # cause, appended below -- it must never replace the actual exception
+        # (a benign stdio-shutdown error must not masquerade as "no syscalls").
+        print(f"\nmcp-behave: probe failed: {exc!r}", file=sys.stderr)
+        if os.environ.get("MCP_BEHAVE_DEBUG"):
+            traceback.print_exc()
+        # If a manifest was still written, the probe likely succeeded and this
+        # was a teardown race -- report from what we have instead of bailing.
+        manifest = os.path.join(args.out_dir, "manifest.json")
+        if args.transport == "stdio" and os.path.exists(manifest):
+            print("[note] a manifest was written; the error above is likely a "
+                  "post-probe teardown race. Reporting anyway.\n", file=sys.stderr)
+        elif args.transport == "stdio" and _looks_like_ptrace_failure(exc):
+            print("\nIf this looks trace/injection-related, this may help:",
+                  file=sys.stderr)
+            print(DTRACE_HINT if platform.system() == "Darwin" else PTRACE_HINT,
+                  file=sys.stderr)
             return 2
-        print(f"\nmcp-behave: probe failed: {exc}", file=sys.stderr)
-        return 1
+        else:
+            return 1
 
     if args.json:
         result = report_mod.report_json(args.out_dir, resolve_dns=not args.no_dns)
