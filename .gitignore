@@ -7,3 +7,4 @@ build/
 *.egg
 /tmp/
 .pytest_cache/
+.DS_Store

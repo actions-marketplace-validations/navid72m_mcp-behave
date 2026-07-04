@@ -1,0 +1,41 @@
+// mcp-behave architecture (Graphviz source).
+// Render with: dot -Tsvg architecture.dot -o architecture.svg
+digraph mcp_behave {
+    rankdir=LR;
+    node [shape=box, style="rounded,filled", fillcolor="#f8f8ff", fontname="Helvetica"];
+    edge [fontname="Helvetica", fontsize=10];
+
+    // Modules
+    cli      [label="cli.py\n(argparse, orchestrator)"];
+    init     [label="__init__.py\n(__version__)"];
+    probe    [label="probe.py\n(observe)", fillcolor="#e8f4ff"];
+    report   [label="report.py\n(declared-vs-observed)", fillcolor="#e8f4ff"];
+    analyze  [label="analyze.py\n(trace parser)", fillcolor="#eefe"];
+    push     [label="push.py\n(dashboard upload)"];
+    tracer   [label="macos_tracer.c\n(DYLD interposer)", shape=note, fillcolor="#fff5e6"];
+    mcp      [label="mcp SDK\n(external)", shape=cylinder, fillcolor="#eeeeee"];
+
+    // Hard imports
+    cli  -> init;
+    cli  -> probe;
+    cli  -> report;
+    probe -> mcp;
+    probe -> init;
+    report -> analyze;
+    push -> init;
+
+    // Lazy / data edges
+    cli -> push [style=dashed, label="lazy import"];
+    probe -> tracer [style=dashed, label="compiles & injects"];
+    tracer -> analyze [style=dashed, label="emits trace.log\n(parsed as data)"];
+
+    // Legend
+    subgraph cluster_legend {
+        label="Legend";
+        fontname="Helvetica";
+        style=dashed;
+        legend_hard [label="hard Python import", shape=plaintext];
+        legend_lazy [label="lazy / data edge", shape=plaintext];
+        legend_hard -> legend_lazy [style=invis];
+    }
+}

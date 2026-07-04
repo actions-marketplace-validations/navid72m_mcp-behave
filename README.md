@@ -7,6 +7,9 @@ network egress, subprocess execution.
 
 Static scanners read tool descriptions. `mcp-behave` watches behavior.
 
+> See [`ARCHITECTURE.md`](ARCHITECTURE.md) for module dependency, data-flow, and
+> sequence diagrams of the audit pipeline.
+
 ## The idea in one contrast
 
 `targets/leaky_server.py` and `targets/honest_server.py` advertise the
