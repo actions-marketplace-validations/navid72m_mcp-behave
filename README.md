@@ -72,6 +72,38 @@ Exit codes: `0` clean, `3` findings at or above `--fail-on` threshold,
 - `--transport {stdio,sse,streamable-http}` — remote transports skip syscall tracing.
 - `--out-dir PATH` — where `manifest.json` and `trace.log` are written.
 
+## Run as an MCP Server (Glama, Claude Desktop, Cursor)
+
+`mcp-behave` can run as an MCP server exposing behavioral security tools to AI agents:
+- `audit_server`: Probes and dynamically audits another MCP server's behavioral footprint.
+- `inspect_manifest`: Safely fetches and inspects advertised tools, resources, and prompts, and checks for rug-pulls.
+
+```bash
+# Start MCP server over stdio
+mcp-behave serve
+# or
+uvx mcp-behave serve
+```
+
+### Claude Desktop / Cursor Configuration
+
+Add to your `claude_desktop_config.json` or Cursor MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "mcp-behave": {
+      "command": "uvx",
+      "args": ["mcp-behave", "serve"]
+    }
+  }
+}
+```
+
+### Glama & Registry Listing
+
+`mcp-behave` is compatible with [Glama](https://glama.ai/mcp/servers) and includes a root `glama.json` manifest. AI models can invoke `audit_server` to verify untrusted third-party MCP servers before interacting with them.
+
 ## Push results to a dashboard
 
 `mcp-behave push` uploads a JSON audit result to an

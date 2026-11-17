@@ -10,6 +10,15 @@ from mcp.client.stdio import stdio_client
 OUT_DIR    = os.environ.get("OUT_DIR", "/tmp/mcp_behave_out")
 TRACE_FILE = os.path.join(OUT_DIR, "trace.log")
 MANIFEST   = os.path.join(OUT_DIR, "manifest.json")
+
+
+def set_out_dir(path: str):
+    global OUT_DIR, TRACE_FILE, MANIFEST
+    OUT_DIR = path
+    TRACE_FILE = os.path.join(OUT_DIR, "trace.log")
+    MANIFEST = os.path.join(OUT_DIR, "manifest.json")
+
+
 # openat: file reads. connect: outbound network. execve: subprocesses.
 # (sendto was traced before but never parsed -- removed to keep the log lean.)
 SYSCALLS   = "openat,connect,execve"
@@ -271,39 +280,20 @@ async def _call_with_timeout(coro, label: str, timeout: float):
         return False
 
 
-async def _exercise(session: ClientSession, call_timeout: float):
-    """Shared logic: discover + exercise tools, resources, prompts on a live session."""
-    tools_meta, resources_meta, prompts_meta = [], [], []
-    stats = {"tools": {"called": 0, "ok": 0}, "resources": {"called": 0, "ok": 0},
-             "prompts": {"called": 0, "ok": 0}}
-
+async def _discover_manifest(session: ClientSession):
+    """Discover tools, resources, and prompts declared by the server."""
     await session.initialize()
 
     tools_result = await _list_safely(session.list_tools(), "tools/list")
     tools = getattr(tools_result, "tools", []) if tools_result else []
     tools_meta = [{"name": t.name, "description": t.description,
                    "inputSchema": t.inputSchema} for t in tools]
-    print(f"[probe] discovered {len(tools)} tool(s)")
-    for t in tools:
-        args = synth_args(t.inputSchema)
-        print(f"[probe] calling tool {t.name}({json.dumps(args)})")
-        stats["tools"]["called"] += 1
-        if await _call_with_timeout(
-            session.call_tool(t.name, args), f"tool {t.name}", call_timeout):
-            stats["tools"]["ok"] += 1
 
     res_result = await _list_safely(session.list_resources(), "resources/list")
     resources = getattr(res_result, "resources", []) if res_result else []
     resources_meta = [{"uri": str(r.uri), "name": r.name,
                        "description": r.description,
                        "mimeType": r.mimeType} for r in resources]
-    print(f"[probe] discovered {len(resources)} resource(s)")
-    for r in resources:
-        print(f"[probe] reading resource {r.uri}")
-        stats["resources"]["called"] += 1
-        if await _call_with_timeout(
-            session.read_resource(r.uri), f"resource {r.uri}", call_timeout):
-            stats["resources"]["ok"] += 1
 
     pr_result = await _list_safely(session.list_prompts(), "prompts/list")
     prompts = getattr(pr_result, "prompts", []) if pr_result else []
@@ -311,21 +301,52 @@ async def _exercise(session: ClientSession, call_timeout: float):
                      "arguments": [{"name": a.name, "required": a.required}
                                    for a in (p.arguments or [])]}
                     for p in prompts]
-    print(f"[probe] discovered {len(prompts)} prompt(s)")
-    for p in prompts:
-        args = {a.name: "canary-input" for a in (p.arguments or [])
-                if a.required}
-        print(f"[probe] getting prompt {p.name}({json.dumps(args)})")
+
+    return tools_meta, resources_meta, prompts_meta
+
+
+async def _exercise(session: ClientSession, call_timeout: float):
+    """Shared logic: discover + exercise tools, resources, prompts on a live session."""
+    stats = {"tools": {"called": 0, "ok": 0}, "resources": {"called": 0, "ok": 0},
+             "prompts": {"called": 0, "ok": 0}}
+
+    tools_meta, resources_meta, prompts_meta = await _discover_manifest(session)
+
+    print(f"[probe] discovered {len(tools_meta)} tool(s)")
+    for t in tools_meta:
+        args = synth_args(t.get("inputSchema"))
+        print(f"[probe] calling tool {t['name']}({json.dumps(args)})")
+        stats["tools"]["called"] += 1
+        if await _call_with_timeout(
+            session.call_tool(t["name"], args), f"tool {t['name']}", call_timeout):
+            stats["tools"]["ok"] += 1
+
+    print(f"[probe] discovered {len(resources_meta)} resource(s)")
+    for r in resources_meta:
+        print(f"[probe] reading resource {r['uri']}")
+        stats["resources"]["called"] += 1
+        if await _call_with_timeout(
+            session.read_resource(r["uri"]), f"resource {r['uri']}", call_timeout):
+            stats["resources"]["ok"] += 1
+
+    print(f"[probe] discovered {len(prompts_meta)} prompt(s)")
+    for p in prompts_meta:
+        args = {a["name"]: "canary-input" for a in (p.get("arguments") or [])
+                if a.get("required")}
+        print(f"[probe] getting prompt {p['name']}({json.dumps(args)})")
         stats["prompts"]["called"] += 1
         if await _call_with_timeout(
-            session.get_prompt(p.name, args), f"prompt {p.name}", call_timeout):
+            session.get_prompt(p["name"], args), f"prompt {p['name']}", call_timeout):
             stats["prompts"]["ok"] += 1
 
     return tools_meta, resources_meta, prompts_meta, stats
 
 
 def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
-                    *, transport: str, syscalls_available: bool):
+                    *, transport: str, syscalls_available: bool,
+                    manifest_file: str | None = None, trace_file: str | None = None):
+    m_file = manifest_file or MANIFEST
+    t_file = trace_file or TRACE_FILE
     manifest = {
         "server_cmd": list(server_cmd) if server_cmd else None,
         "transport": transport,
@@ -339,24 +360,33 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
         ).hexdigest(),
         "_stats": stats,
     }
-    with open(MANIFEST, "w") as f:
+    with open(m_file, "w") as f:
         json.dump(manifest, f, indent=2)
-    print(f"[probe] manifest -> {MANIFEST}")
+    print(f"[probe] manifest -> {m_file}")
     if syscalls_available:
-        print(f"[probe] trace    -> {TRACE_FILE}")
+        print(f"[probe] trace    -> {t_file}")
 
 
 async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
-              tracer: str | None = None):
+              tracer: str | None = None, out_dir: str | None = None):
     """Stdio transport: wrap the server in the platform's syscall tracer
     (an injected dylib on macOS, LD_PRELOAD or strace on Linux) and connect via stdio."""
-    os.makedirs(OUT_DIR, exist_ok=True)
-    trace_cmd, tracer_name, env_overlay = _tracer_setup(server_cmd, TRACE_FILE, tracer)
+    target_out_dir = out_dir or OUT_DIR
+    target_trace_file = os.path.join(target_out_dir, "trace.log")
+    target_manifest_file = os.path.join(target_out_dir, "manifest.json")
+    os.makedirs(target_out_dir, exist_ok=True)
+    if os.path.exists(target_manifest_file):
+        try:
+            os.remove(target_manifest_file)
+        except OSError:
+            pass
+
+    trace_cmd, tracer_name, env_overlay = _tracer_setup(server_cmd, target_trace_file, tracer)
     syscalls_available = bool(tracer_name)
     # Truncate/create the trace file up front: native tracers open it
     # O_APPEND, and analyze() needs a readable file even if the server exits
     # before any interesting syscall fires.
-    open(TRACE_FILE, "w").close()
+    open(target_trace_file, "w").close()
 
     if syscalls_available:
         params = StdioServerParameters(command=trace_cmd[0], args=trace_cmd[1:],
@@ -373,17 +403,27 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
             tools_meta, resources_meta, prompts_meta, stats = await _exercise(
                 session, call_timeout)
     _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
-                    transport="stdio", syscalls_available=syscalls_available)
+                    transport="stdio", syscalls_available=syscalls_available,
+                    manifest_file=target_manifest_file, trace_file=target_trace_file)
 
 
 async def run_remote(url: str, *, transport: str,
-                     call_timeout: float = DEFAULT_CALL_TIMEOUT):
+                     call_timeout: float = DEFAULT_CALL_TIMEOUT,
+                     out_dir: str | None = None):
     """Remote transport (sse/streamable-http): connect to an already-running
     server. Syscall ground-truth is NOT available -- we can only verify the
     declared surface and detect rug-pulls. analyze.py is a no-op in this mode."""
-    os.makedirs(OUT_DIR, exist_ok=True)
+    target_out_dir = out_dir or OUT_DIR
+    target_trace_file = os.path.join(target_out_dir, "trace.log")
+    target_manifest_file = os.path.join(target_out_dir, "manifest.json")
+    os.makedirs(target_out_dir, exist_ok=True)
+    if os.path.exists(target_manifest_file):
+        try:
+            os.remove(target_manifest_file)
+        except OSError:
+            pass
     # Write an empty trace so analyze() doesn't crash.
-    open(TRACE_FILE, "w").close()
+    open(target_trace_file, "w").close()
 
     if transport == "sse":
         from mcp.client.sse import sse_client
@@ -401,7 +441,49 @@ async def run_remote(url: str, *, transport: str,
             tools_meta, resources_meta, prompts_meta, stats = await _exercise(
                 session, call_timeout)
     _write_manifest([url], tools_meta, resources_meta, prompts_meta, stats,
-                    transport=transport, syscalls_available=False)
+                    transport=transport, syscalls_available=False,
+                    manifest_file=target_manifest_file, trace_file=target_trace_file)
+
+
+async def fetch_manifest(server_cmd: list[str], *, transport: str = "stdio",
+                         call_timeout: float = DEFAULT_CALL_TIMEOUT) -> dict:
+    """Connect to a server and fetch declared tools, resources, and prompts
+    without exercising tools or tracing syscalls."""
+    if transport == "stdio":
+        params = StdioServerParameters(command=server_cmd[0], args=server_cmd[1:],
+                                       env={**os.environ})
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                tools_meta, resources_meta, prompts_meta = await _discover_manifest(session)
+    elif transport in ("sse", "streamable-http"):
+        if transport == "sse":
+            from mcp.client.sse import sse_client
+            ctx = sse_client(server_cmd[0])
+        else:
+            from mcp.client.streamable_http import streamablehttp_client
+            ctx = streamablehttp_client(server_cmd[0])
+        async with ctx as conn:
+            read, write = conn[0], conn[1]
+            async with ClientSession(read, write) as session:
+                tools_meta, resources_meta, prompts_meta = await _discover_manifest(session)
+    else:
+        raise ValueError(f"unknown remote transport: {transport}")
+
+    return {
+        "server_cmd": list(server_cmd) if server_cmd else None,
+        "transport": transport,
+        "syscalls_available": False,
+        "tools": tools_meta,
+        "resources": resources_meta,
+        "prompts": prompts_meta,
+        "manifest_sha256": hashlib.sha256(
+            json.dumps({"tools": tools_meta, "resources": resources_meta,
+                        "prompts": prompts_meta}, sort_keys=True).encode()
+        ).hexdigest(),
+        "_stats": {"tools": {"called": 0, "ok": 0},
+                   "resources": {"called": 0, "ok": 0},
+                   "prompts": {"called": 0, "ok": 0}},
+    }
 
 
 if __name__ == "__main__":
