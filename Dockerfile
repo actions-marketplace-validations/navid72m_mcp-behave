@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    strace curl ca-certificates gnupg \
+    gcc libc6-dev strace curl ca-certificates gnupg \
     && rm -rf /var/lib/apt/lists/*
 # Node.js 22 LTS — for npx-based MCP servers
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \

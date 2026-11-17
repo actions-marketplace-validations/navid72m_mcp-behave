@@ -81,8 +81,12 @@ def _rugpull_check(manifest: dict) -> tuple[str, str] | None:
                        f"declared surface changed since last run "
                        f"(was {prev[:12]}, now {current[:12]}) -- "
                        f"possible rug-pull")
-    record.write_text(json.dumps({"server_cmd": cmd,
-                                   "manifest_sha256": current}, indent=2))
+    try:
+        record.write_text(json.dumps({"server_cmd": cmd,
+                                       "manifest_sha256": current}, indent=2))
+    except OSError as exc:
+        print(f"[report] warning: could not persist manifest state for rug-pull detection: {exc}",
+              file=sys.stderr)
     return finding
 
 
@@ -121,14 +125,20 @@ def report(out_dir, *, resolve_dns: bool = True) -> list:
     findings = build_findings(manifest, profile, resolve_dns=resolve_dns)
     descs = _all_descriptions(manifest)
     claims_local = any(w in descs for w in ("local", "offline", "no network"))
+    syscalls_available = manifest.get("syscalls_available", True)
 
     print(f"\n  target tools: {_tool_names(manifest)}")
     print(f"  resources:    {len(manifest.get('resources', []))}, "
           f"prompts: {len(manifest.get('prompts', []))}")
     print(f"  declared scope hints: {'mentions local/offline' if claims_local else 'none'}")
+    if not syscalls_available:
+        print("  syscall tracing: disabled/unavailable (manifest analysis only)")
     print("  " + "-" * 56)
     if not findings:
-        print("  no declared-vs-observed deviations detected")
+        if syscalls_available:
+            print("  no declared-vs-observed deviations detected")
+        else:
+            print("  no manifest deviations detected (runtime behavior was not traced)")
     for sev, msg in sorted(findings, key=lambda x: x[0]):
         icon = "[!]" if sev == "HIGH" else "[i]"
         print(f"  {icon} {sev:4} {msg}")
@@ -143,6 +153,7 @@ def report_json(out_dir, *, resolve_dns: bool = True) -> dict:
     return {
         "server_cmd": manifest.get("server_cmd"),
         "manifest_sha256": manifest.get("manifest_sha256"),
+        "syscalls_available": manifest.get("syscalls_available", True),
         "declared": {
             "tools": [t["name"] for t in manifest.get("tools", [])],
             "resources": [r["uri"] for r in manifest.get("resources", [])],

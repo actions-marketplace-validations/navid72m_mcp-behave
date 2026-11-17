@@ -9,14 +9,16 @@ from . import probe as probe_mod
 from . import report as report_mod
 
 PTRACE_HINT = """
-mcp-behave couldn't trace the target server.
+mcp-behave couldn't trace the target server on Linux.
 
-If you're running in Docker, strace needs the ptrace capability. Add:
-    --cap-add=SYS_PTRACE
-e.g.  docker run --rm --cap-add=SYS_PTRACE mcp-behave <server-command>
-
-If you're on Linux directly and still see this, your environment may restrict
-ptrace (check /proc/sys/kernel/yama/ptrace_scope, or run under sudo).
+Options:
+1. Native LD_PRELOAD tracer (default, no ptrace/root needed): ensure a C compiler
+   (gcc or clang) is installed so mcp-behave can build the interposer:
+       apt-get install -y gcc
+2. strace tracer: if using --tracer strace in Docker, add the ptrace capability:
+       --cap-add=SYS_PTRACE
+3. Untraced mode: if your environment prohibits tracing, run manifest analysis only:
+       mcp-behave --no-trace <server-command>
 """
 
 DTRACE_HINT = """
@@ -53,8 +55,8 @@ def _build_parser():
     p = argparse.ArgumentParser(
         prog="mcp-behave",
         description="Runtime behavioral auditor for MCP servers. "
-                    "Runs a server under strace, then compares what it "
-                    "DECLARED against what it actually DID.\n\n"
+                    "Observes server runtime behavior (files, network, subprocesses) "
+                    "and compares what it DECLARED against what it actually DID.\n\n"
                     "Subcommands: `mcp-behave push` uploads a JSON audit "
                     "result to an mcp-behave dashboard.",
     )
@@ -78,6 +80,15 @@ def _build_parser():
         help="Skip reverse-DNS lookups for IPs in findings (faster, offline-safe).",
     )
     p.add_argument(
+        "--no-trace", action="store_true",
+        help="Skip syscall tracing and perform manifest analysis only (no tracer/root needed).",
+    )
+    p.add_argument(
+        "--tracer", choices=("auto", "preload", "dylib", "strace", "none"), default="auto",
+        help="Syscall tracer backend (default: auto). 'preload' uses Linux LD_PRELOAD, "
+             "'dylib' uses macOS DYLD interposition, 'strace' uses strace, 'none' runs untraced.",
+    )
+    p.add_argument(
         "--timeout", type=float, default=probe_mod.DEFAULT_CALL_TIMEOUT,
         help="Seconds to wait per tool/resource/prompt call "
              "(default: %(default)s).",
@@ -85,7 +96,8 @@ def _build_parser():
     p.add_argument(
         "--transport", choices=("stdio", "sse", "streamable-http"), default="stdio",
         help="Transport used to reach the MCP server. 'stdio' spawns the "
-             "server under strace and provides full behavioral ground-truth. "
+             "server under a behavioral tracer (dylib on macOS, LD_PRELOAD or strace "
+             "on Linux) and provides full behavioral ground-truth. "
              "'sse' and 'streamable-http' connect to an already-running remote "
              "server -- syscall tracing is NOT available in those modes, so "
              "only manifest analysis and rug-pull detection run.",
@@ -134,10 +146,18 @@ def main(argv=None):
 
     os.environ["OUT_DIR"] = args.out_dir  # probe/report read this
 
+    tracer_choice = "none" if args.no_trace else args.tracer
     if args.transport == "stdio":
+        active_tracer = probe_mod.detect_tracer(tracer_choice)
+        tracer_label = {
+            "dylib": "macos-dylib",
+            "preload": "linux-preload",
+            "strace": "strace",
+        }.get(active_tracer, "untraced")
         if not quiet:
-            print("=== STEP 1: observe (strace) ===")
-        coro = probe_mod.run(args.server_command, call_timeout=args.timeout)
+            print(f"=== STEP 1: observe ({tracer_label}) ===")
+        coro = probe_mod.run(args.server_command, call_timeout=args.timeout,
+                             tracer=tracer_choice)
     else:
         if len(args.server_command) != 1:
             parser.error(f"--transport {args.transport} expects exactly one URL argument")

@@ -1,9 +1,10 @@
 # mcp-behave
 
 **Runtime behavioral auditor for MCP servers.** Runs an MCP server under
-`strace`, exercises every tool / resource / prompt it advertises, and then
-compares what it *declared* against what it actually *did* — file reads,
-network egress, subprocess execution.
+a runtime tracer (macOS dylib, Linux `LD_PRELOAD`, or `strace`), exercises
+every tool / resource / prompt it advertises, and then compares what it
+*declared* against what it actually *did* — file reads, network egress, subprocess
+execution.
 
 Static scanners read tool descriptions. `mcp-behave` watches behavior.
 
@@ -33,8 +34,10 @@ tripping two — false positives would kill credibility.
 pip install mcp-behave
 ```
 
-Requires Linux + `strace` for the syscall-trace backend. On macOS/Windows, use
-the bundled `Dockerfile` (see below).
+### Tracer Requirements
+- **macOS**: Works natively without `strace` or root using an injected dylib (`DYLD_INSERT_LIBRARIES`). Built automatically on first use with `cc` (Xcode Command Line Tools).
+- **Linux**: Works natively without `strace` or `SYS_PTRACE` using an `LD_PRELOAD` shared library. Built automatically on first use with `cc` (e.g. `gcc`). If no compiler is available, `strace` is used as a fallback if installed on `PATH`.
+- **Untraced mode**: Run on any platform with `--no-trace` for manifest inspection and rug-pull checks without any runtime tracer.
 
 ## Use
 
@@ -43,6 +46,9 @@ the bundled `Dockerfile` (see below).
 mcp-behave python -m mcp_server_fetch
 mcp-behave npx -y @modelcontextprotocol/server-filesystem /tmp
 mcp-behave uvx mcp-server-git
+
+# Run untraced (manifest & rug-pull analysis only, no tracer needed):
+mcp-behave --no-trace python -m mcp_server_fetch
 
 # Machine-readable output for CI:
 mcp-behave --json --fail-on high python -m mcp_server_fetch
@@ -53,10 +59,12 @@ mcp-behave --transport sse http://localhost:8000/sse
 ```
 
 Exit codes: `0` clean, `3` findings at or above `--fail-on` threshold,
-`2` strace/ptrace setup failed, `1` other error.
+`2` tracer setup failed, `1` other error.
 
 ### Useful flags
 
+- `--no-trace` — skip syscall tracing and run manifest analysis only.
+- `--tracer {auto,preload,dylib,strace,none}` — choose tracer backend explicitly (default `auto`).
 - `--json` — emit findings as JSON on stdout.
 - `--fail-on {never,info,high}` — severity that triggers exit code 3 (default `high`).
 - `--no-dns` — skip reverse-DNS lookups (faster, offline-safe).
@@ -111,12 +119,14 @@ Findings are framed as observations ("does X, undeclared"), never accusations.
 ```bash
 docker build -t mcp-behave .
 # default: runs the bundled leaky target so you can see findings immediately
-docker run --rm --cap-add=SYS_PTRACE mcp-behave
+docker run --rm mcp-behave
 # point at a real server
-docker run --rm --cap-add=SYS_PTRACE mcp-behave python -m mcp_server_fetch
+docker run --rm mcp-behave python -m mcp_server_fetch
 ```
 
-`--cap-add=SYS_PTRACE` is required for `strace` to attach inside the container.
+The container automatically compiles and runs the native `LD_PRELOAD` tracer
+without needing `--cap-add=SYS_PTRACE`. If you explicitly use `--tracer strace`,
+`--cap-add=SYS_PTRACE` is required.
 
 The image bundles Node.js (for `npx` servers), `uv` (for `uvx` servers), and
 sandbox canary files (`sandbox_home/`) mounted as `$HOME` so credential reads
@@ -129,12 +139,13 @@ pip install -e ".[test]"
 pytest -v
 ```
 
-CI runs on Ubuntu (strace is Linux-only); see `.github/workflows/ci.yml`.
+CI tests across Ubuntu and macOS; see `.github/workflows/ci.yml`.
 
 ## Known limits
 
-- **Linux-only ground truth** via `strace`. eBPF/seccomp backend is on the
-  roadmap — see [ROADMAP.md](ROADMAP.md).
+- **Runtime tracing requires macOS (DYLD interposition) or Linux (LD_PRELOAD / strace).**
+  Windows and other platforms can run with `--no-trace` for manifest and rug-pull checks.
+  An eBPF backend for system-wide capture is on the roadmap — see [ROADMAP.md](ROADMAP.md).
 - **stdio is the only transport with syscall tracing.** `sse` and
   `streamable-http` connect to a remote server we cannot trace; only manifest
   analysis and rug-pull detection apply there.

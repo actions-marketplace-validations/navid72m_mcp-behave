@@ -1,7 +1,8 @@
 # Roadmap
 
-Current state (v0.1.x): strace-based stdio probing, manifest hashing for
-rug-pull detection, basic remote transports (manifest-only).
+Current state (v0.1.x): native runtime tracing (macOS DYLD + Linux LD_PRELOAD,
+with strace fallback) for stdio probing, manifest hashing for rug-pull detection,
+basic remote transports (manifest-only).
 
 ## Near-term (next minor)
 
@@ -16,10 +17,10 @@ rug-pull detection, basic remote transports (manifest-only).
 
 ## Mid-term (the moat)
 
-- **eBPF/seccomp backend** — the strace dependency is the project's biggest
-  limitation: Linux-only, requires `SYS_PTRACE`, single-host. An eBPF-based
+- **eBPF/seccomp backend** — while native LD_PRELOAD and DYLD tracers remove the
+  strace and SYS_PTRACE dependencies for standard environments, an eBPF-based
   syscall capture (e.g. via `bcc`, `bpftrace`, or a Rust agent using `aya`)
-  would: (a) run on macOS via Lima/Colima or a kernel-mode equivalent,
+  would: (a) capture statically linked binaries with no libc interposition,
   (b) capture more accurately at higher concurrency, (c) eventually let us
   attach to *already-running* MCP servers rather than spawning them. This is
   weeks of work and a separate binary, not a flag — but it's what turns this

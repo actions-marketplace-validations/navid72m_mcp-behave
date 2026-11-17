@@ -1,19 +1,18 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling<1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "mcp-behave"
-version = "0.1.3"
-description = "Runtime behavioral auditor for MCP servers — strace-based scope-violation detection"
+version = "0.1.4"
+description = "Runtime behavioral auditor for MCP servers — scope-violation detection via native interposition & syscall tracing"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
-license-files = ["LICENSE"]
+license = { text = "MIT" }
 authors = [
     { name = "Navid Mirnoori Langeroudi", email = "navid72m@gmail.com" },
 ]
-keywords = ["mcp", "security", "agents", "auditing", "strace"]
+keywords = ["mcp", "security", "agents", "auditing", "tracer", "sandbox"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

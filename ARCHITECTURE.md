@@ -51,8 +51,9 @@ graph TB
     end
     subgraph Observe["Observation layer"]
         PROBE["probe.py"]
-        STRACE["strace<br/><i>(Linux)</i>"]
+        PRELOAD["libmcpbehave_trace.so<br/><i>built from linux_tracer.c</i>"]
         DYLIB["libmcpbehave_trace.dylib<br/><i>built from macos_tracer.c</i>"]
+        STRACE["strace<br/><i>(Linux fallback)</i>"]
     end
     subgraph Understand["Analysis & reporting layer"]
         ANALYZE["analyze.py"]
@@ -69,11 +70,13 @@ graph TB
     CLI --> PROBE
     CLI --> REPORT
     CLI --> PUSH
-    PROBE --> STRACE
+    PROBE --> PRELOAD
     PROBE --> DYLIB
+    PROBE --> STRACE
     PROBE --> SERVER
-    STRACE -.trace.log.-> ANALYZE
+    PRELOAD -.trace.log.-> ANALYZE
     DYLIB -.trace.log.-> ANALYZE
+    STRACE -.trace.log.-> ANALYZE
     SERVER -.manifest.json.-> REPORT
     ANALYZE --> REPORT
     PUSH --> DASH
@@ -83,7 +86,7 @@ graph TB
 
 ```mermaid
 flowchart LR
-    CMD["server command<br/>(argv)"] --> TRACER_SETUP["_tracer_setup<br/>strace | dylib | none"]
+    CMD["server command<br/>(argv)"] --> TRACER_SETUP["_tracer_setup<br/>dylib | preload | strace | none"]
     TRACER_SETUP --> SPAWN["spawn server<br/>under tracer"]
     SPAWN --> SESSION["MCP ClientSession<br/>initialize()"]
     SESSION --> LIST["list tools /<br/>resources / prompts"]
@@ -166,33 +169,43 @@ configured threshold is produced; `2` is reserved for tracer setup failures.
 
 ```mermaid
 flowchart TD
-    START(["_tracer_setup(server_cmd, trace_file)"])
+    START(["_tracer_setup(server_cmd, trace_file, tracer_override)"])
+    OVERRIDE{"--no-trace or<br/>tracer == 'none'?"}
     DARWIN{"platform == Darwin?"}
-    BUILD["build dylib from<br/>macos_tracer.c (cached)"]
+    BUILD_MAC["build dylib from<br/>macos_tracer.c (cached)"]
     HARD{"target interpreter<br/>hardened?"}
-    INJ["inject via DYLD_INSERT_LIBRARIES<br/>MCP_BEHAVE_TRACE_FILE=trace.log"]
+    INJ_MAC["inject via DYLD_INSERT_LIBRARIES<br/>MCP_BEHAVE_TRACE_FILE=trace.log"]
+    LINUX{"platform == Linux?"}
+    BUILD_LINUX["build .so from<br/>linux_tracer.c (cached)"]
+    INJ_LINUX["inject via LD_PRELOAD<br/>MCP_BEHAVE_TRACE_FILE=trace.log"]
     STRACE_AVAIL{"strace on PATH?"}
     STRACE_RUN["strace -f -e trace=openat,connect,execve"]
     UNTRACED["run untraced<br/>(manifest analysis only)"]
     WARN["warn: hardened runtime<br/>will reject injection"]
 
-    START --> DARWIN
-    DARWIN -- yes --> BUILD
-    BUILD --> HARD
+    START --> OVERRIDE
+    OVERRIDE -- yes --> UNTRACED
+    OVERRIDE -- no --> DARWIN
+    DARWIN -- yes --> BUILD_MAC
+    BUILD_MAC --> HARD
     HARD -- yes --> WARN
-    WARN --> INJ
-    HARD -- no --> INJ
-    DARWIN -- no --> STRACE_AVAIL
+    WARN --> INJ_MAC
+    HARD -- no --> INJ_MAC
+    DARWIN -- no --> LINUX
+    LINUX -- yes --> BUILD_LINUX
+    BUILD_LINUX -- success --> INJ_LINUX
+    BUILD_LINUX -- unavailable --> STRACE_AVAIL
+    LINUX -- no --> UNTRACED
     STRACE_AVAIL -- yes --> STRACE_RUN
     STRACE_AVAIL -- no --> UNTRACED
 ```
 
-Two important properties of the macOS path:
+Two important properties of the native macOS and Linux injection paths:
 - The server argv is **unchanged** — injection happens via environment, so the
-  server runs as the normal user (no `sudo`, unlike the retired `dtruss` path).
-- The dylib writes to a file descriptor opened in its constructor via the **real**
-  `open()` (interpose does not redirect the tracer's own calls), and a `__thread`
-  reentrancy guard (`g_busy`) prevents the logging path from logging itself.
+  server runs as the normal user without `sudo` and without `SYS_PTRACE`.
+- The interposers write to a file descriptor opened in their constructor directly
+  (bypassing libc wrappers), and a `__thread` reentrancy guard (`g_busy`) prevents
+  the logging path from logging itself.
 
 ## 7. Remote transports (sse / streamable-http)
 
@@ -220,18 +233,19 @@ transports. Only `analyze.py` produces nothing useful from an empty trace.
 | Module | Role | Public surface used by the rest |
 |---|---|---|
 | `cli.py` | Argument parsing, orchestration, exit codes | `main(argv)` |
-| `probe.py` | Spawn + exercise the server under a tracer | `run`, `run_remote`, `synth_args`, `DEFAULT_CALL_TIMEOUT` |
+| `probe.py` | Spawn + exercise the server under a tracer | `run`, `run_remote`, `detect_tracer`, `synth_args`, `DEFAULT_CALL_TIMEOUT` |
 | `analyze.py` | Parse `trace.log` into a behavioral profile | `analyze(path)` → dict |
 | `report.py` | Compare manifest vs profile, rug-pull state | `report`, `report_json`, `build_findings`, `load` |
 | `push.py` | Submit a JSON audit to the dashboard | `main(argv)`, `build_payload` |
-| `macos_tracer.c` | DYLD interposer emitting `F`/`N`/`X` records | compiled → `libmcpbehave_trace.dylib` |
+| `macos_tracer.c` | macOS DYLD interposer emitting `F`/`N`/`X` records | compiled → `libmcpbehave_trace.dylib` |
+| `linux_tracer.c` | Linux LD_PRELOAD interposer emitting `F`/`N`/`X` records | compiled → `libmcpbehave_trace.so` |
 | `__init__.py` | Version constant | `__version__` |
 
 ### Tests & fixtures
 
 ```mermaid
 graph LR
-    CONF["tests/conftest.py<br/><i>requires_strace marker</i>"]
+    CONF["tests/conftest.py<br/><i>requires_tracer marker</i>"]
     T1["tests/test_fixture_servers.py"]
     T2["tests/test_push.py"]
     HON["targets/honest_server.py<br/><i>control: 0 findings expected</i>"]

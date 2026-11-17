@@ -1,4 +1,4 @@
-"""Run an MCP server under strace, exercise every capability (tools, resources,
+"""Run an MCP server under a runtime syscall tracer (or untraced), exercise every capability (tools, resources,
 prompts) with synthesized inputs, and record both the server's self-declared
 manifest and the raw syscall trace of what it actually did.
 
@@ -89,16 +89,60 @@ def _target_is_hardened(exe: str) -> bool | None:
     return None
 
 
-def _tracer_setup(server_cmd: list[str], trace_file: str
+def _linux_tracer_so() -> str | None:
+    """Compile (once, cached) the LD_PRELOAD shared library and return its path.
+
+    We ship the .c source in the package and build it locally so the shared object
+    always matches the host architecture and libc. Returns None if we can't build
+    it (no cc), letting the caller fall back to strace or untraced mode.
+    """
+    src = os.path.join(os.path.dirname(__file__), "linux_tracer.c")
+    if not os.path.exists(src):
+        return None
+    cache = os.path.join(
+        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+        "mcp-behave")
+    os.makedirs(cache, exist_ok=True)
+    so = os.path.join(cache, "libmcpbehave_trace.so")
+    if os.path.exists(so) and os.path.getmtime(so) >= os.path.getmtime(src):
+        return so
+    cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    if not cc:
+        return None
+    import subprocess
+    try:
+        subprocess.run([cc, "-shared", "-fPIC", "-O2", "-o", so, src, "-ldl"],
+                       check=True, capture_output=True, text=True, timeout=90)
+        return so
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        err = getattr(exc, "stderr", str(exc))
+        print(f"[probe] failed to build Linux preload tracer: {err}", file=sys.stderr)
+        return None
+
+
+def detect_tracer(tracer_override: str | None = None) -> str:
+    """Detect which tracer backend would be selected ('dylib', 'preload', 'strace', or '')."""
+    _, tracer_name, _ = _tracer_setup([], "", tracer_override)
+    return tracer_name
+
+
+def _tracer_setup(server_cmd: list[str], trace_file: str,
+                  tracer_override: str | None = None
                   ) -> tuple[list[str], str, dict]:
     """Pick the platform's tracer.
 
     Returns (argv, tracer_name, env_overlay). tracer_name is "" if no tracer
-    is available (caller falls back to untraced). On macOS the server argv is
-    UNCHANGED -- tracing is done by injecting a dylib via env, so the server
-    runs as the normal user (no root, unlike the old dtruss path).
+    is available or tracing is disabled (caller falls back to untraced).
+    On macOS/Linux native tracers the server argv is UNCHANGED -- tracing is done
+    by injecting a library via env, so the server runs as the normal user
+    without root or SYS_PTRACE.
     """
+    if tracer_override in ("none", "untraced", "off"):
+        return server_cmd, "", {}
+
     if platform.system() == "Darwin":
+        if tracer_override and tracer_override not in ("dylib", "native", "auto"):
+            return server_cmd, "", {}
         dylib = _macos_tracer_dylib()
         if not dylib:
             return server_cmd, "", {}
@@ -121,9 +165,23 @@ def _tracer_setup(server_cmd: list[str], trace_file: str
             "MCP_BEHAVE_TRACE_FILE": trace_file,
         }
 
-    if shutil.which("strace"):
-        return (["strace", "-f", "-qq", "-e", f"trace={SYSCALLS}",
-                 "-o", trace_file, *server_cmd], "strace", {})
+    if platform.system() == "Linux":
+        # 1. Try LD_PRELOAD native tracer first (no root / SYS_PTRACE / strace needed)
+        if tracer_override in (None, "auto", "preload", "native"):
+            so = _linux_tracer_so()
+            if so:
+                return server_cmd, "preload", {
+                    "LD_PRELOAD": so,
+                    "MCP_BEHAVE_TRACE_FILE": trace_file,
+                }
+            if tracer_override in ("preload", "native"):
+                return server_cmd, "", {}
+
+        # 2. Fall back to strace if available or requested
+        if (tracer_override in (None, "auto", "strace")) and shutil.which("strace"):
+            return (["strace", "-f", "-qq", "-e", f"trace={SYSCALLS}",
+                     "-o", trace_file, *server_cmd], "strace", {})
+
     return server_cmd, "", {}
 
 
@@ -288,13 +346,14 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
         print(f"[probe] trace    -> {TRACE_FILE}")
 
 
-async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT):
+async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
+              tracer: str | None = None):
     """Stdio transport: wrap the server in the platform's syscall tracer
-    (strace on Linux, an injected dylib on macOS) and connect via stdio."""
+    (an injected dylib on macOS, LD_PRELOAD or strace on Linux) and connect via stdio."""
     os.makedirs(OUT_DIR, exist_ok=True)
-    trace_cmd, tracer, env_overlay = _tracer_setup(server_cmd, TRACE_FILE)
-    syscalls_available = bool(tracer)
-    # Truncate/create the trace file up front: the macOS tracer opens it
+    trace_cmd, tracer_name, env_overlay = _tracer_setup(server_cmd, TRACE_FILE, tracer)
+    syscalls_available = bool(tracer_name)
+    # Truncate/create the trace file up front: native tracers open it
     # O_APPEND, and analyze() needs a readable file even if the server exits
     # before any interesting syscall fires.
     open(TRACE_FILE, "w").close()
@@ -303,8 +362,8 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT)
         params = StdioServerParameters(command=trace_cmd[0], args=trace_cmd[1:],
                                        env={**os.environ, **env_overlay})
     else:
-        print(f"[probe] no syscall tracer available on {platform.system()}; "
-              "running server untraced (manifest analysis only)",
+        print(f"[probe] running server untraced on {platform.system()} "
+              "(manifest analysis only)",
               file=sys.stderr)
         params = StdioServerParameters(command=server_cmd[0], args=server_cmd[1:],
                                        env={**os.environ})

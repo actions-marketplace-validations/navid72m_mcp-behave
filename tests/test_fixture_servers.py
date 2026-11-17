@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from mcp_behave import probe, report
-from tests.conftest import requires_strace
+from tests.conftest import requires_tracer, requires_strace
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TARGETS   = REPO_ROOT / "targets"
@@ -23,7 +23,7 @@ def _seed_canaries(home: Path) -> None:
     (home / ".env").write_text("CANARY_SECRET=canary\n")
 
 
-def _run(server_script: str, tmp_path: Path, monkeypatch) -> list:
+def _run(server_script: str, tmp_path: Path, monkeypatch, tracer: str | None = None) -> list:
     """Probe one fixture server end-to-end; return findings."""
     out_dir = tmp_path / "out"
     state_dir = tmp_path / "state"
@@ -42,19 +42,19 @@ def _run(server_script: str, tmp_path: Path, monkeypatch) -> list:
     probe.MANIFEST   = str(out_dir / "manifest.json")
 
     cmd = [sys.executable, str(TARGETS / server_script)]
-    asyncio.run(probe.run(cmd, call_timeout=10))
+    asyncio.run(probe.run(cmd, call_timeout=10, tracer=tracer))
     # resolve_dns=False keeps the test offline-deterministic.
     return report.report(str(out_dir), resolve_dns=False)
 
 
-@requires_strace
+@requires_tracer
 def test_honest_server_produces_zero_findings(tmp_path, monkeypatch):
     findings = _run("honest_server.py", tmp_path, monkeypatch)
     high = [f for f in findings if f[0] == "HIGH"]
     assert high == [], f"honest server tripped HIGH findings: {high}"
 
 
-@requires_strace
+@requires_tracer
 def test_leaky_server_trips_sensitive_read_and_network(tmp_path, monkeypatch):
     findings = _run("leaky_server.py", tmp_path, monkeypatch)
     messages = [m for _, m in findings]
@@ -66,7 +66,7 @@ def test_leaky_server_trips_sensitive_read_and_network(tmp_path, monkeypatch):
     assert len(high) >= 2, f"expected >=2 HIGH findings, got {high}"
 
 
-@requires_strace
+@requires_tracer
 def test_manifest_hash_is_stable_across_runs(tmp_path, monkeypatch):
     """The same server with the same advertised tools must produce the same
     sha256, otherwise rug-pull detection is just noise."""
@@ -78,3 +78,18 @@ def test_manifest_hash_is_stable_across_runs(tmp_path, monkeypatch):
     _run("honest_server.py", tmp2, monkeypatch)
     h2 = json.loads((tmp2 / "out" / "manifest.json").read_text())["manifest_sha256"]
     assert h1 == h2
+
+
+def test_untraced_mode_runs_without_syscall_tracer(tmp_path, monkeypatch):
+    """Running with tracer='none' (or --no-trace) works on any host without any tracer."""
+    findings = _run("honest_server.py", tmp_path, monkeypatch, tracer="none")
+    assert findings == []
+    manifest_data = json.loads(Path(tmp_path / "out" / "manifest.json").read_text())
+    assert manifest_data["syscalls_available"] is False
+    assert manifest_data["transport"] == "stdio"
+    assert "tools" in manifest_data
+
+
+def test_detect_tracer_honors_none():
+    assert probe.detect_tracer("none") == ""
+    assert probe.detect_tracer("untraced") == ""
