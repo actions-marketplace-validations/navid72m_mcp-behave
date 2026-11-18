@@ -115,6 +115,7 @@ Exit codes: `0` clean, `3` findings at or above `--fail-on` threshold,
 `mcp-behave` can run as an MCP server exposing behavioral security tools to AI agents:
 - `audit_server`: Probes and dynamically audits another MCP server's behavioral footprint.
 - `inspect_manifest`: Safely fetches and inspects advertised tools, resources, and prompts, and checks for rug-pulls.
+- `scan_client_configs`: Scans local AI client configurations (Claude Desktop, Cursor, etc.) to discover installed MCP servers and audit their security posture.
 
 ```bash
 # Start MCP server over stdio
@@ -154,6 +155,32 @@ Add to your `claude_desktop_config.json` or Cursor MCP settings:
 ### Glama & Registry Listing
 
 `mcp-behave` is compatible with [Glama](https://glama.ai/mcp/servers) and includes a root `glama.json` manifest. AI models can invoke `audit_server` to verify untrusted third-party MCP servers before interacting with them.
+
+## Scan Local Client Configurations (`scan-configs` & `audit-configs`)
+
+`mcp-behave` can automatically discover and audit MCP servers configured in local AI clients (Claude Desktop, Cursor, VS Code / Cline / Roo Code, Windsurf, Zed):
+
+```bash
+# Discover configured servers & check for hardcoded secrets / over-privileged mounts:
+mcp-behave scan-configs
+
+# Scan a specific configuration file:
+mcp-behave scan-configs --config path/to/claude_desktop_config.json
+
+# Batch audit: discover all configured servers AND run live behavioral audits on each:
+mcp-behave audit-configs
+# (or: mcp-behave scan-configs --audit)
+
+# Output findings in JSON for CI/automation:
+mcp-behave scan-configs --json
+```
+
+### What `scan-configs` Checks:
+1. **Plaintext Secrets & API Keys**: Scans environment variables and command arguments for OpenAI, Anthropic, GitHub, AWS, Slack, and generic high-entropy API tokens (with safe masking in reports).
+2. **Over-Privileged Mounts**: Flags servers granted unrestricted access to the root filesystem (`/`) or home directory (`~`), or sensitive credential directories (`~/.ssh`, `~/.aws`).
+3. **Shell Command Wrappers**: Detects servers executed via raw shell interpreters (`bash -c`, `sh -c`, `powershell -c`).
+4. **Unpinned Packages**: Identifies `npx` / `uvx` servers without version pins that pull untracked latest updates.
+5. **Live Behavioral Verification**: When `--audit` is passed (or via `audit-configs`), boots each server in isolation to verify actual system call behaviors (network egress, sensitive file reads, covert prompt injection).
 
 ## Push results to a dashboard
 

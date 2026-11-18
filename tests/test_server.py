@@ -4,7 +4,7 @@ import sys
 import pytest
 from pathlib import Path
 
-from mcp_behave.server import mcp, inspect_manifest, audit_server
+from mcp_behave.server import mcp, inspect_manifest, audit_server, scan_client_configs
 from mcp_behave.cli import main as cli_main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -22,6 +22,19 @@ def test_server_tools_registered():
         names = {t.name for t in tools}
         assert "audit_server" in names
         assert "inspect_manifest" in names
+        assert "scan_client_configs" in names
+
+    asyncio.run(run())
+
+
+def test_scan_client_configs_tool(tmp_path):
+    async def run():
+        cfg = tmp_path / "mock.json"
+        cfg.write_text('{"mcpServers": {"demo": {"command": "node", "args": ["s.js"], "env": {"SECRET": "secret_pass_12345"}}}}')
+        res = await scan_client_configs(custom_config_path=str(cfg))
+        assert "servers" in res
+        assert any(s["name"] == "demo" for s in res["servers"])
+        assert "config_findings" in res
 
     asyncio.run(run())
 

@@ -8,7 +8,7 @@ import os
 import shlex
 import sys
 import tempfile
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -144,6 +144,36 @@ async def inspect_manifest(
             "error": str(exc),
             "server_cmd": cmd,
         }
+
+
+@mcp.tool(
+    name="scan_client_configs",
+    description=(
+        "Scan local AI client configurations (Claude Desktop, Cursor, VS Code, Windsurf, Zed) "
+        "to discover all configured MCP servers and detect security risks (hardcoded API keys/tokens, "
+        "over-privileged root/home directory mounts, shell command wrappers)."
+    ),
+)
+async def scan_client_configs(
+    custom_config_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Scan local MCP client configurations for servers and security risks.
+
+    Args:
+        custom_config_path: Optional path to a specific client config file to inspect.
+    """
+    from . import config_scanner
+    custom_paths = [custom_config_path] if custom_config_path else None
+    scan_data = config_scanner.scan_all_configs(custom_paths=custom_paths)
+    return {
+        "configs_found": scan_data.get("configs_found", []),
+        "servers": scan_data.get("servers", []),
+        "config_findings": {
+            k: [{"severity": sev, "message": msg} for sev, msg in v]
+            for k, v in scan_data.get("config_findings", {}).items()
+        },
+        "errors": scan_data.get("errors", []),
+    }
 
 
 def main(argv=None):

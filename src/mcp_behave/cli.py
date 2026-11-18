@@ -57,9 +57,11 @@ def _build_parser():
         description="Runtime behavioral auditor for MCP servers. "
                     "Observes server runtime behavior (files, network, subprocesses) "
                     "and compares what it DECLARED against what it actually DID.\n\n"
-                    "Subcommands: `mcp-behave serve` runs mcp-behave as an MCP "
-                    "server; `mcp-behave push` uploads a JSON audit "
-                    "result to an mcp-behave dashboard.",
+                    "Subcommands:\n"
+                    "  `mcp-behave scan-configs` scans local AI client configs (Claude Desktop, Cursor, etc.)\n"
+                    "  `mcp-behave audit-configs` scans and runs behavioral audits on all configured servers\n"
+                    "  `mcp-behave serve` runs mcp-behave as an MCP server\n"
+                    "  `mcp-behave push` uploads an audit result to an mcp-behave dashboard",
     )
     p.add_argument("--version", action="version", version=f"mcp-behave {__version__}")
     p.add_argument(
@@ -119,7 +121,7 @@ def _exit_code(findings: list, fail_on: str) -> int:
     return 3 if any(SEV_RANK.get(s, 0) >= threshold for s, _ in findings) else 0
 
 
-SUBCOMMANDS = {"push", "serve"}
+SUBCOMMANDS = {"push", "serve", "scan-configs", "audit-configs"}
 
 
 def main(argv=None):
@@ -142,6 +144,9 @@ def main(argv=None):
         elif sub == "serve":
             from . import server as server_mod
             return server_mod.main(rest)
+        elif sub in ("scan-configs", "audit-configs"):
+            from . import config_scanner
+            return config_scanner.main(rest, default_audit=(sub == "audit-configs"))
 
     parser = _build_parser()
     args = parser.parse_args(raw_argv)
