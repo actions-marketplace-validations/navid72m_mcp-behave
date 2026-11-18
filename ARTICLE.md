@@ -11,7 +11,7 @@
 
 The **Model Context Protocol (MCP)** has rapidly emerged as the universal standard connecting Large Language Models (LLMs)—from Claude Desktop and Cursor to custom enterprise agentic loops—with local databases, external APIs, and operating system tooling.
 
-As thousands of open-source MCP servers flood registries like PyPI, npm, Glama, Smithery, and the official MCP Registry, a dangerous security assumption has become standard practice: **if a tool's JSON schema and description look benign, the tool is safe to install.**
+As thousands of open-source MCP servers flood registries like PyPI, npm, Glama, and the official MCP Registry, a dangerous security assumption has become standard practice: **if a tool's JSON schema and description look benign, the tool is safe to install.**
 
 Today, MCP server verification relies overwhelmingly on **static schema analysis**. Registries evaluate description clarity, parameter type hints, JSON-schema constraints, and metadata completeness. But static scanners suffer from a critical visibility gap: **they only read what the server *declares*, never what it *actually does* at runtime.**
 
@@ -342,7 +342,7 @@ This significantly improves subprocess-event reliability when child processes cl
 | **Integrity** | Computes SHA-256 manifest hashes to catch rug-pulls across runs | Continuous registry verification and automated regression diffs |
 
 ### Actionable Guidance
-1. **For MCP Registry Operators (Glama, Smithery, Official Registry)**: Mandate dynamic behavioral audits in ingestion pipelines. Ground badges in empirical facts: *0 network sockets observed*, *0 subprocesses spawned*, *strict path isolation verified*.
+1. **For MCP Registry Operators (Glama, Official Registry)**: Mandate dynamic behavioral audits in ingestion pipelines. Ground badges in empirical facts: *0 network sockets observed*, *0 subprocesses spawned*, *strict path isolation verified*.
 2. **For Developers & Enterprises Using MCP**: Never run unaudited third-party MCP servers on bare metal with access to unconstrained shell execution without sandbox boundaries. Integrate `mcp-behave` in CI/CD using the `--json` flag.
 3. **For MCP Authors**: Implement explicit sandboxes, avoid raw shell expansion, and declare network requirements transparently in server metadata.
 

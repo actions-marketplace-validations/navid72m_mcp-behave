@@ -8,7 +8,7 @@ A comprehensive technical reference for `mcp-behave`'s internal design, core con
 
 ### The Problem: The MCP Privilege Gap
 
-Model Context Protocol (MCP) servers run locally on a user's machine with the user's full operating system permissions. Traditional tool registries (e.g. Glama, Smithery, PyPI) verify servers using **static schema inspection**—validating JSON types, parameter descriptions, and docstrings.
+Model Context Protocol (MCP) servers run locally on a user's machine with the user's full operating system permissions. Traditional tool registries (e.g. Glama, PyPI, npm) verify servers using **static schema inspection**—validating JSON types, parameter descriptions, and docstrings.
 
 However, static analysis cannot verify what a process actually executes at runtime. An MCP server advertising itself as a *"purely local markdown helper"* can silently open outbound network sockets, read `~/.ssh/id_rsa`, or spawn unconstrained subshells.
 
