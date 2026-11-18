@@ -1,14 +1,25 @@
-# mcp-behave
+<p align="center">
+  <a href="https://navid72m.github.io/mcp-behave/">
+    <img src="assets/logo.png" alt="mcp-behave logo" width="130" style="border-radius: 24px;" />
+  </a>
+</p>
+
+<h1 align="center">mcp-behave</h1>
+<p align="center"><strong>Runtime behavioral auditor for Model Context Protocol (MCP) servers</strong></p>
 <!-- mcp-name: io.github.navid72m/mcp-behave -->
 
-[![CI](https://github.com/navid72m/mcp-behave/actions/workflows/ci.yml/badge.svg)](https://github.com/navid72m/mcp-behave/actions/workflows/ci.yml)
-[![Website](https://img.shields.io/badge/Website-mcp--behave-cyan)](https://navid72m.github.io/mcp-behave/)
-[![PyPI version](https://img.shields.io/pypi/v/mcp-behave.svg)](https://pypi.org/project/mcp-behave/)
-[![PyPI Downloads](https://static.pepy.tech/personalized-badge/mcp-behave?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/mcp-behave)
-[![npm version](https://img.shields.io/npm/v/mcp-behave.svg)](https://www.npmjs.com/package/mcp-behave)
-[![Official MCP Registry](https://img.shields.io/badge/MCP%20Registry-io.github.navid72m%2Fmcp--behave-blue)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.navid72m/mcp-behave)
-[![mcp-behave MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/navid72m/mcp-behave/badges/score.svg)](https://glama.ai/mcp/servers/navid72m/mcp-behave)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/navid72m/mcp-behave/actions/workflows/ci.yml"><img src="https://github.com/navid72m/mcp-behave/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://navid72m.github.io/mcp-behave/"><img src="https://img.shields.io/badge/Website-mcp--behave-cyan" alt="Website" /></a>
+  <a href="https://pypi.org/project/mcp-behave/"><img src="https://img.shields.io/pypi/v/mcp-behave.svg" alt="PyPI version" /></a>
+  <a href="https://pepy.tech/projects/mcp-behave"><img src="https://static.pepy.tech/personalized-badge/mcp-behave?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads" alt="PyPI Downloads" /></a>
+  <a href="https://www.npmjs.com/package/mcp-behave"><img src="https://img.shields.io/npm/v/mcp-behave.svg" alt="npm version" /></a>
+  <a href="https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.navid72m/mcp-behave"><img src="https://img.shields.io/badge/MCP%20Registry-io.github.navid72m%2Fmcp--behave-blue" alt="Official MCP Registry" /></a>
+  <a href="https://glama.ai/mcp/servers/navid72m/mcp-behave"><img src="https://glama.ai/mcp/servers/navid72m/mcp-behave/badges/score.svg" alt="Glama Score" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+</p>
+
+---
 
 **Runtime behavioral auditor for MCP servers.** Runs an MCP server under
 a runtime tracer (macOS dylib, Linux `LD_PRELOAD`, or `strace`), exercises

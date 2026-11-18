@@ -7,6 +7,7 @@
   "bin": "./bin/mcp-behave.js",
   "files": [
     "bin/",
+    "assets/",
     "README.md",
     "LICENSE"
   ],
