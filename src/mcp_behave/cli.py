@@ -88,6 +88,10 @@ def _build_parser():
         help="Run adversarial input fuzzing against tool schemas (path traversal, command injection, buffer stress).",
     )
     p.add_argument(
+        "--probe-rounds", type=int, default=1,
+        help="Number of probing rounds to execute with varied realistic inputs (default: 1).",
+    )
+    p.add_argument(
         "--scorecard", action="store_true",
         help="Print an objective 0-100 CSA Security Selection Scorecard and letter grade (A+ to F).",
     )
@@ -201,8 +205,10 @@ def main(argv=None):
         }.get(active_tracer, "untraced")
         if not quiet:
             print(f"=== STEP 1: observe ({tracer_label}) ===")
-        coro = probe_mod.run(args.server_command, call_timeout=args.timeout,
-                             tracer=tracer_choice, fuzz=args.fuzz)
+        coro = probe_mod.run(args.server_command, out_dir=args.out_dir,
+                             call_timeout=args.timeout,
+                             tracer=tracer_choice, fuzz=args.fuzz,
+                             rounds=args.probe_rounds)
     else:
         if len(args.server_command) != 1:
             parser.error(f"--transport {args.transport} expects exactly one URL argument")
@@ -211,9 +217,11 @@ def main(argv=None):
             print("  note: remote transports cannot trace syscalls; "
                   "only manifest analysis runs.", file=sys.stderr)
         coro = probe_mod.run_remote(args.server_command[0],
+                                    out_dir=args.out_dir,
                                     transport=args.transport,
                                     call_timeout=args.timeout,
-                                    fuzz=args.fuzz)
+                                    fuzz=args.fuzz,
+                                    rounds=args.probe_rounds)
 
     try:
         asyncio.run(coro)

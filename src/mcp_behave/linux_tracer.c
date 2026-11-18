@@ -26,6 +26,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <spawn.h>
 #include <dlfcn.h>
 #include <sys/syscall.h>
@@ -44,6 +45,7 @@ extern char **environ;
 typedef int (*fn_open_t)(const char *, int, ...);
 typedef int (*fn_openat_t)(int, const char *, int, ...);
 typedef int (*fn_connect_t)(int, const struct sockaddr *, socklen_t);
+typedef ssize_t (*fn_sendto_t)(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
 typedef int (*fn_execve_t)(const char *, char *const [], char *const []);
 typedef int (*fn_execv_t)(const char *, char *const []);
 typedef int (*fn_execvp_t)(const char *, char *const []);
@@ -55,6 +57,7 @@ static fn_open_t real_open64 = NULL;
 static fn_openat_t real_openat = NULL;
 static fn_openat_t real_openat64 = NULL;
 static fn_connect_t real_connect = NULL;
+static fn_sendto_t real_sendto = NULL;
 static fn_execve_t real_execve = NULL;
 static fn_execv_t real_execv = NULL;
 static fn_execvp_t real_execvp = NULL;
@@ -128,6 +131,7 @@ static void mcpbehave_init(void) {
     real_openat = (fn_openat_t)dlsym(RTLD_NEXT, "openat");
     real_openat64 = (fn_openat_t)dlsym(RTLD_NEXT, "openat64");
     real_connect = (fn_connect_t)dlsym(RTLD_NEXT, "connect");
+    real_sendto = (fn_sendto_t)dlsym(RTLD_NEXT, "sendto");
     real_execve = (fn_execve_t)dlsym(RTLD_NEXT, "execve");
     real_execv = (fn_execv_t)dlsym(RTLD_NEXT, "execv");
     real_execvp = (fn_execvp_t)dlsym(RTLD_NEXT, "execvp");
@@ -143,6 +147,13 @@ static mode_t extract_mode(int flags, va_list ap) {
     return 0;
 }
 
+static inline int is_write_flags(int flags) {
+    return ((flags & O_ACCMODE) == O_WRONLY) ||
+           ((flags & O_ACCMODE) == O_RDWR) ||
+           (flags & O_CREAT) ||
+           ((flags & O_TMPFILE) == O_TMPFILE);
+}
+
 /* ---- open / open64 / openat / openat64 ---------------------------------- */
 int open(const char *path, int flags, ...) {
     mode_t mode = 0;
@@ -152,6 +163,9 @@ int open(const char *path, int flags, ...) {
     va_end(ap);
 
     log_tag('F', path);
+    if (is_write_flags(flags)) {
+        log_tag('W', path);
+    }
     if (!real_open) {
         real_open = (fn_open_t)dlsym(RTLD_NEXT, "open");
         if (!real_open) {
@@ -177,6 +191,9 @@ int open64(const char *path, int flags, ...) {
     va_end(ap);
 
     log_tag('F', path);
+    if (is_write_flags(flags)) {
+        log_tag('W', path);
+    }
     if (!real_open64) {
         real_open64 = (fn_open_t)dlsym(RTLD_NEXT, "open64");
         if (!real_open64) {
@@ -194,6 +211,9 @@ int openat(int dirfd, const char *path, int flags, ...) {
     va_end(ap);
 
     log_tag('F', path);
+    if (is_write_flags(flags)) {
+        log_tag('W', path);
+    }
     if (!real_openat) {
         real_openat = (fn_openat_t)dlsym(RTLD_NEXT, "openat");
         if (!real_openat) {
@@ -217,6 +237,9 @@ int openat64(int dirfd, const char *path, int flags, ...) {
     va_end(ap);
 
     log_tag('F', path);
+    if (is_write_flags(flags)) {
+        log_tag('W', path);
+    }
     if (!real_openat64) {
         real_openat64 = (fn_openat_t)dlsym(RTLD_NEXT, "openat64");
         if (!real_openat64) {
@@ -226,7 +249,7 @@ int openat64(int dirfd, const char *path, int flags, ...) {
     return real_openat64(dirfd, path, flags, mode);
 }
 
-/* ---- connect ----------------------------------------------------------- */
+/* ---- connect & sendto -------------------------------------------------- */
 int connect(int fd, const struct sockaddr *addr, socklen_t len) {
     if (!g_busy && addr && g_trace_fd >= 0) {
         g_busy = 1;
@@ -240,6 +263,13 @@ int connect(int fd, const struct sockaddr *addr, socklen_t len) {
             const struct sockaddr_in6 *s = (const struct sockaddr_in6 *)addr;
             inet_ntop(AF_INET6, &s->sin6_addr, ip, sizeof ip);
             port = ntohs(s->sin6_port);
+        } else if (addr->sa_family == AF_UNIX) {
+            const struct sockaddr_un *u = (const struct sockaddr_un *)addr;
+            if (u->sun_path[0]) {
+                char b[1040];
+                int n = snprintf(b, sizeof b, "U %s\n", u->sun_path);
+                if (n > 0) emit(b, (size_t)n);
+            }
         }
         if (port >= 0) {
             char b[128];
@@ -259,6 +289,53 @@ int connect(int fd, const struct sockaddr *addr, socklen_t len) {
         }
     }
     return real_connect(fd, addr, len);
+}
+
+ssize_t sendto(int fd, const void *buf, size_t len, int flags,
+               const struct sockaddr *dest_addr, socklen_t addrlen) {
+    if (!g_busy && dest_addr && g_trace_fd >= 0) {
+        g_busy = 1;
+        if (dest_addr->sa_family == AF_INET && addrlen >= (socklen_t)sizeof(struct sockaddr_in)) {
+            char ip[INET6_ADDRSTRLEN] = {0};
+            const struct sockaddr_in *s = (const struct sockaddr_in *)dest_addr;
+            inet_ntop(AF_INET, &s->sin_addr, ip, sizeof ip);
+            int port = ntohs(s->sin_port);
+            if (port >= 0) {
+                char b[128];
+                int n = snprintf(b, sizeof b, "N %s %d\n", ip, port);
+                if (n > 0) emit(b, (size_t)n);
+            }
+        } else if (dest_addr->sa_family == AF_INET6 && addrlen >= (socklen_t)sizeof(struct sockaddr_in6)) {
+            char ip[INET6_ADDRSTRLEN] = {0};
+            const struct sockaddr_in6 *s = (const struct sockaddr_in6 *)dest_addr;
+            inet_ntop(AF_INET6, &s->sin6_addr, ip, sizeof ip);
+            int port = ntohs(s->sin6_port);
+            if (port >= 0) {
+                char b[128];
+                int n = snprintf(b, sizeof b, "N %s %d\n", ip, port);
+                if (n > 0) emit(b, (size_t)n);
+            }
+        } else if (dest_addr->sa_family == AF_UNIX) {
+            const struct sockaddr_un *u = (const struct sockaddr_un *)dest_addr;
+            if (u->sun_path[0]) {
+                char b[1040];
+                int n = snprintf(b, sizeof b, "U %s\n", u->sun_path);
+                if (n > 0) emit(b, (size_t)n);
+            }
+        }
+        g_busy = 0;
+    }
+    if (!real_sendto) {
+        real_sendto = (fn_sendto_t)dlsym(RTLD_NEXT, "sendto");
+        if (!real_sendto) {
+#ifdef SYS_sendto
+            return (ssize_t)syscall(SYS_sendto, fd, buf, len, flags, dest_addr, addrlen);
+#else
+            return -1;
+#endif
+        }
+    }
+    return real_sendto(fd, buf, len, flags, dest_addr, addrlen);
 }
 
 /* ---- subprocess launch ------------------------------------------------- */

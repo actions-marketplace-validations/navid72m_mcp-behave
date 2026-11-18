@@ -214,68 +214,75 @@ def _tracer_setup(server_cmd: list[str], trace_file: str,
     return server_cmd, "", {}
 
 
-def synth_args(schema: dict) -> dict:
-    """Synthesize ONE plausible-and-valid input per field from a JSON schema.
-
-    Strategy (first match wins, per property):
-      1. JSON Schema `format` (uri, email, ipv4, date-time, ...) -- standards-based.
-      2. Key-name heuristics (url, path, query, ...) -- pragmatic; many MCP tools
-         don't set `format` but name fields obviously.
-      3. Type-based default -- safety net.
+def synth_args(schema: dict | None, round_idx: int = 0) -> dict:
+    """Synthesize valid arguments from a tool's JSON Schema.
 
     Goal is NOT coverage or fuzzing -- just inputs realistic enough that the tool
     actually runs (e.g. a `url` field gets a real URL) so we can observe behavior.
-    A constrained `enum` is honored when present (first value).
+    Uses realistic, diversified payloads across probe rounds to resist canary detection.
+    A constrained `enum` is honored when present.
     """
     # RFC 2606 / 5737 / 3849 reserved ranges -- keeps the probe's own traffic honest.
     FORMAT_VALUES = {
-        "uri": "http://example.com/",
-        "url": "http://example.com/",
-        "iri": "http://example.com/",
-        "email": "probe@example.com",
-        "idn-email": "probe@example.com",
-        "hostname": "example.com",
-        "ipv4": "192.0.2.1",
-        "ipv6": "2001:db8::1",
-        "date-time": "2026-01-01T00:00:00Z",
-        "date": "2026-01-01",
-        "time": "00:00:00Z",
-        "uuid": "00000000-0000-0000-0000-000000000000",
+        "uri": ["https://example.com/", "https://example.org/", "https://example.net/"],
+        "url": ["https://example.com/", "https://example.org/", "https://example.net/"],
+        "iri": ["https://example.com/", "https://example.org/", "https://example.net/"],
+        "email": ["admin@example.com", "service@example.org", "contact@example.net"],
+        "idn-email": ["admin@example.com", "service@example.org", "contact@example.net"],
+        "hostname": ["example.com", "example.org", "example.net"],
+        "ipv4": ["192.0.2.1", "198.51.100.1"],
+        "ipv6": ["2001:db8::1", "2001:db8::2"],
+        "date-time": ["2026-01-01T00:00:00Z", "2026-06-15T12:00:00Z"],
+        "date": ["2026-01-01", "2026-06-15"],
+        "time": ["00:00:00Z", "12:00:00Z"],
+        "uuid": ["00000000-0000-0000-0000-000000000000", "123e4567-e89b-12d3-a456-426614174000"],
     }
     KEYNAME_HINTS = (
-        ("url", "http://example.com/"),
-        ("uri", "http://example.com/"),
-        ("link", "http://example.com/"),
-        ("href", "http://example.com/"),
-        ("endpoint", "http://example.com/"),
-        ("path", "/tmp/probe-canary.txt"),
-        ("file", "/tmp/probe-canary.txt"),
-        ("dir", "/tmp"),
-        ("email", "probe@example.com"),
-        ("host", "example.com"),
-        ("query", "probe-canary"),
-        ("search", "probe-canary"),
-        ("text", "probe-canary"),
-        ("name", "probe-canary"),
+        ("url", ["https://example.com/", "https://example.org/", "https://example.net/"]),
+        ("uri", ["https://example.com/", "https://example.org/", "https://example.net/"]),
+        ("link", ["https://example.com/", "https://example.org/"]),
+        ("href", ["https://example.com/", "https://example.org/"]),
+        ("endpoint", ["https://example.com/api", "https://example.org/api"]),
+        ("path", ["/tmp/sample_file.txt", "/tmp/audit_test.dat", "/tmp/local_document.json"]),
+        ("file", ["/tmp/sample_file.txt", "/tmp/audit_test.dat", "/tmp/local_document.json"]),
+        ("dir", ["/tmp", "/var/tmp"]),
+        ("email", ["admin@example.com", "service@example.org"]),
+        ("host", ["example.com", "example.org"]),
+        ("query", ["system status overview", "service health check", "operational metrics"]),
+        ("search", ["system status overview", "service health check", "operational metrics"]),
+        ("text", ["sample input text", "verified operational data", "standard test request"]),
+        ("name", ["primary_test_item", "worker_node", "default_cluster"]),
+        ("id", ["item-101", "node-402", "task-803"]),
     )
-    TYPE_DEFAULTS = {"string": "canary-input", "integer": 1, "number": 1.0,
-                     "boolean": True, "array": [], "object": {}}
+    TYPE_DEFAULTS = {
+        "string": ["valid-input", "standard-value", "test-parameter"],
+        "integer": [1, 2, 5],
+        "number": [1.0, 2.5, 10.0],
+        "boolean": [True, False],
+        "array": [[]],
+        "object": [{}]
+    }
+
+    def _pick(choices, idx: int):
+        if isinstance(choices, list) and choices:
+            return choices[idx % len(choices)]
+        return choices
 
     def synth_one(key: str, spec: dict):
         spec = spec or {}
         if isinstance(spec.get("enum"), list) and spec["enum"]:
-            return spec["enum"][0]
-        if "default" in spec and spec["default"] is not None:
+            return _pick(spec["enum"], round_idx)
+        if "default" in spec and spec["default"] is not None and round_idx == 0:
             return spec["default"]
         fmt = spec.get("format")
         if fmt in FORMAT_VALUES:
-            return FORMAT_VALUES[fmt]
+            return _pick(FORMAT_VALUES[fmt], round_idx)
         if spec.get("type", "string") == "string":
             k = key.lower()
-            for needle, value in KEYNAME_HINTS:
+            for needle, val_list in KEYNAME_HINTS:
                 if needle in k:
-                    return value
-        val = TYPE_DEFAULTS.get(spec.get("type", "string"), "canary-input")
+                    return _pick(val_list, round_idx)
+        val = _pick(TYPE_DEFAULTS.get(spec.get("type", "string"), ["valid-input"]), round_idx)
         if isinstance(val, (int, float)) and "minimum" in spec and val < spec["minimum"]:
             val = spec["minimum"]
         return val
@@ -401,7 +408,7 @@ def _emit_trace_marker(trace_file: str | None, tag: str, val: str = ""):
 
 
 async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = False,
-                    trace_file: str | None = None):
+                    trace_file: str | None = None, rounds: int = 1):
     """Shared logic: discover + exercise tools, resources, prompts on a live session."""
     stats = {"tools": {"called": 0, "ok": 0}, "resources": {"called": 0, "ok": 0},
              "prompts": {"called": 0, "ok": 0}}
@@ -410,38 +417,42 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
     tools_meta, resources_meta, prompts_meta = await _discover_manifest(session)
 
     print(f"[probe] discovered {len(tools_meta)} tool(s)")
-    for t in tools_meta:
-        args = synth_args(t.get("inputSchema"))
-        print(f"[probe] calling tool {t['name']}({json.dumps(args)})")
-        stats["tools"]["called"] += 1
-        _emit_trace_marker(trace_file, "CALL_START", t["name"])
-        ok, res = await _call_with_timeout(
-            session.call_tool(t["name"], args), f"tool {t['name']}", call_timeout)
-        _emit_trace_marker(trace_file, "CALL_END", t["name"])
-        if ok:
-            stats["tools"]["ok"] += 1
-            text = _extract_text_content(res)
-            if text:
-                tool_outputs[t["name"]] = text
+    rounds = max(1, rounds)
+    for round_idx in range(rounds):
+        if rounds > 1:
+            print(f"[probe] --- probe round {round_idx + 1}/{rounds} ---")
+        for t in tools_meta:
+            args = synth_args(t.get("inputSchema"), round_idx=round_idx)
+            print(f"[probe] calling tool {t['name']}({json.dumps(args)})")
+            stats["tools"]["called"] += 1
+            _emit_trace_marker(trace_file, "CALL_START", t["name"])
+            ok, res = await _call_with_timeout(
+                session.call_tool(t["name"], args), f"tool {t['name']}", call_timeout)
+            _emit_trace_marker(trace_file, "CALL_END", t["name"])
+            if ok:
+                stats["tools"]["ok"] += 1
+                text = _extract_text_content(res)
+                if text and (t["name"] not in tool_outputs or round_idx == 0):
+                    tool_outputs[t["name"]] = text
 
-        if fuzz:
-            fuzz_arg_sets = synth_fuzz_args(t.get("inputSchema"))
-            if fuzz_arg_sets:
-                stats.setdefault("fuzz", {"attempted": 0, "ok": 0, "failed": 0})
-                print(f"[probe] fuzzing tool {t['name']} with {len(fuzz_arg_sets)} vector(s)")
-                for f_args in fuzz_arg_sets:
-                    stats["tools"]["called"] += 1
-                    stats["fuzz"]["attempted"] += 1
-                    f_ok, f_res = await _call_with_timeout(
-                        session.call_tool(t["name"], f_args), f"fuzz tool {t['name']}", call_timeout)
-                    if f_ok:
-                        stats["tools"]["ok"] += 1
-                        stats["fuzz"]["ok"] += 1
-                        f_text = _extract_text_content(f_res)
-                        if f_text and t["name"] not in tool_outputs:
-                            tool_outputs[t["name"]] = f_text
-                    else:
-                        stats["fuzz"]["failed"] += 1
+            if fuzz and round_idx == 0:
+                fuzz_arg_sets = synth_fuzz_args(t.get("inputSchema"))
+                if fuzz_arg_sets:
+                    stats.setdefault("fuzz", {"attempted": 0, "ok": 0, "failed": 0})
+                    print(f"[probe] fuzzing tool {t['name']} with {len(fuzz_arg_sets)} vector(s)")
+                    for f_args in fuzz_arg_sets:
+                        stats["tools"]["called"] += 1
+                        stats["fuzz"]["attempted"] += 1
+                        f_ok, f_res = await _call_with_timeout(
+                            session.call_tool(t["name"], f_args), f"fuzz tool {t['name']}", call_timeout)
+                        if f_ok:
+                            stats["tools"]["ok"] += 1
+                            stats["fuzz"]["ok"] += 1
+                            f_text = _extract_text_content(f_res)
+                            if f_text and t["name"] not in tool_outputs:
+                                tool_outputs[t["name"]] = f_text
+                        else:
+                            stats["fuzz"]["failed"] += 1
 
     print(f"[probe] discovered {len(resources_meta)} resource(s)")
     for r in resources_meta:
@@ -456,7 +467,7 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
 
     print(f"[probe] discovered {len(prompts_meta)} prompt(s)")
     for p in prompts_meta:
-        args = {a["name"]: "canary-input" for a in (p.get("arguments") or [])
+        args = {a["name"]: "valid-input" for a in (p.get("arguments") or [])
                 if a.get("required")}
         print(f"[probe] getting prompt {p['name']}({json.dumps(args)})")
         stats["prompts"]["called"] += 1
@@ -499,7 +510,7 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
 
 async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
               tracer: str | None = None, out_dir: str | None = None,
-              fuzz: bool = False):
+              fuzz: bool = False, rounds: int = 1):
     """Stdio transport: wrap the server in the platform's syscall tracer
     (an injected dylib on macOS, LD_PRELOAD or strace on Linux) and connect via stdio."""
     target_out_dir = out_dir or OUT_DIR
@@ -532,7 +543,7 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             tools_meta, resources_meta, prompts_meta, stats, tool_outputs = await _exercise(
-                session, call_timeout, fuzz=fuzz, trace_file=target_trace_file)
+                session, call_timeout, fuzz=fuzz, trace_file=target_trace_file, rounds=rounds)
     _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
                     tool_outputs=tool_outputs,
                     transport="stdio", syscalls_available=syscalls_available,
@@ -542,7 +553,8 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
 async def run_remote(url: str, *, transport: str,
                      call_timeout: float = DEFAULT_CALL_TIMEOUT,
                      out_dir: str | None = None,
-                     fuzz: bool = False):
+                     fuzz: bool = False,
+                     rounds: int = 1):
     """Remote transport (sse/streamable-http): connect to an already-running
     server. Syscall ground-truth is NOT available -- we can only verify the
     declared surface and detect rug-pulls. analyze.py is a no-op in this mode."""
@@ -572,7 +584,7 @@ async def run_remote(url: str, *, transport: str,
         read, write = conn[0], conn[1]
         async with ClientSession(read, write) as session:
             tools_meta, resources_meta, prompts_meta, stats, tool_outputs = await _exercise(
-                session, call_timeout, fuzz=fuzz, trace_file=target_trace_file)
+                session, call_timeout, fuzz=fuzz, trace_file=target_trace_file, rounds=rounds)
     _write_manifest([url], tools_meta, resources_meta, prompts_meta, stats,
                     tool_outputs=tool_outputs,
                     transport=transport, syscalls_available=False,

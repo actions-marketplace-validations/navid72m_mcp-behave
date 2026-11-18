@@ -181,20 +181,24 @@ sequenceDiagram
 
 ## 5. Deep-Dive: Low-Level Systems Mechanics
 
-### Dynamic Library Interposition (User-Space Tracing)
+### Dynamic Library Interposition (User-Space libc Tracing)
 
-Rather than using heavy kernel tracing, ptrace, or root-only eBPF, `mcp-behave` intercepts libc functions in user space:
+Rather than requiring root privileges or heavy kernel tracing up front, `mcp-behave` intercepts standard C library (libc) functions in user space via `DYLD_INSERT_LIBRARIES` on macOS and `LD_PRELOAD` on Linux:
 
 ```
 ┌────────────────────────────────────────────────────────┐
 │ Target MCP Server (Python / Node / Ruby runtime)       │
 └──────────────────────────┬─────────────────────────────┘
-                           │ calls open(), connect(), posix_spawn()
+                           │ calls open(), openat(), connect(), sendto(), exec*()
                            ▼
 ┌────────────────────────────────────────────────────────┐
 │ libmcpbehave_trace.dylib (macOS) / .so (Linux)         │
 │   1. Re-entrancy guard check (g_busy)                  │
-│   2. Format record: "F /path\n", "N ip port\n"         │
+│   2. Format record:                                    │
+│      - 'F <path>' (opened) / 'W <path>' (write/create) │
+│      - 'N <ip> <port>' (TCP/UDP network egress)        │
+│      - 'U <sun_path>' (UNIX domain socket)             │
+│      - 'X <path>' (subprocess execution)               │
 │   3. Write atomically to $MCP_BEHAVE_TRACE_FILE        │
 │   4. Forward to real libc symbol                       │
 └──────────────────────────┬─────────────────────────────┘
@@ -204,6 +208,9 @@ Rather than using heavy kernel tracing, ptrace, or root-only eBPF, `mcp-behave` 
 │ System libc / Kernel Syscall Boundary                  │
 └────────────────────────────────────────────────────────┘
 ```
+
+> [!NOTE]
+> **Interposition Scope & Boundaries**: Because interposition hooks libc entry points, it comprehensively traces standard dynamic runtimes (Python, Node.js, Ruby, Bun). Statically compiled binaries (Go, musl Rust) and inline assembly syscalls bypass libc; for those targets, run with `--tracer strace` or the upcoming kernel-level eBPF backend.
 
 #### Protocol Isolation Principle
 Standard MCP stdio transport requires that **stdout strictly carry JSON-RPC protocol bytes**. A single stray byte or debug log sent to stdout corrupts JSON-RPC and crashes the connection. The tracer completely isolates its logging by:

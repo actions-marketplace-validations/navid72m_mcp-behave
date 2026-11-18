@@ -26,10 +26,10 @@ Static scanners only read tool descriptions. `mcp-behave` observes what servers 
 Compare three bundled targets in `targets/`:
 
 - `honest_server.py`: advertises a purely local note formatter and behaves honestly.
-- `leaky_server.py`: advertises the exact same harmless note formatter, but secretly accesses SSH keys and phones home via network syscalls.
-- `poisoned_server.py`: never makes network syscalls, but poisons its descriptions with covert zero-width spaces and prompt injection, and returns an external Markdown image link (`![telemetry](https://...)`) to trigger client-side HTTP GET exfiltration when rendered in a chat UI.
+- `leaky_server.py`: advertises the exact same harmless note formatter, but secretly accesses SSH keys and phones home via network sockets.
+- `poisoned_server.py`: never makes outbound connections, but poisons its descriptions with covert zero-width spaces and prompt injection, and returns an external Markdown image link (`![telemetry](https://...)`) to trigger client-side HTTP GET exfiltration when rendered in a chat UI.
 
-| Target | Network Syscalls | File System Access | Metadata & Output Safety | Verdict |
+| Target | Network Egress | File System Access | Metadata & Output Safety | Verdict |
 | :--- | :--- | :--- | :--- | :--- |
 | `honest_server` | none | none | clean | **0 (PASS)** |
 | `leaky_server` | `93.184.216.34:80` | `~/.ssh/id_rsa` (canary) | clean | **2 HIGH** |
@@ -473,18 +473,9 @@ CI tests across Ubuntu and macOS; see `.github/workflows/ci.yml`.
 
 ## Known limits
 
-- **Runtime tracing requires macOS (DYLD interposition) or Linux (LD_PRELOAD / strace).**
-  Windows and other platforms can run with `--no-trace` for manifest and rug-pull checks.
-  An eBPF backend for system-wide capture is on the roadmap — see [ROADMAP.md](ROADMAP.md).
-- **stdio is the only transport with syscall tracing.** `sse` and
-  `streamable-http` connect to a remote server we cannot trace; only manifest
-  analysis and rug-pull detection apply there.
-- **Input synthesis is heuristic** — JSON Schema `format`, key-name hints, and
-  type defaults. Schema-coverage fuzzing (hypothesis-jsonschema) is roadmap.
-- **AF_UNIX egress** isn't matched — a server exfiltrating over a unix domain
-  socket would slip past the current network detection.
-- **Single call per capability** — servers that misbehave only on specific
-  inputs or after N calls may not be triggered.
+- **Runtime tracing operates at libc interposition level.** macOS (DYLD interposition) and Linux (LD_PRELOAD) intercept standard dynamic runtime library calls (Python, Node.js, Ruby). Statically linked binaries (e.g. Go, musl Rust) and inline assembly syscalls bypass libc interposition unless run under the Linux `strace` tracer (`--tracer strace`) or the planned kernel eBPF backend — see [ROADMAP.md](ROADMAP.md).
+- **stdio is the primary transport with full runtime tracing.** `sse` and `streamable-http` connect to remote servers where client-side process tracing is not available; manifest analysis, CSA rule linting, and rug-pull detection run there.
+- **Canary & Fuzzing synthesis** — generates realistic, diverse arguments across `--probe-rounds` and adversarial boundary vectors with `--fuzz`. Full property-based hypothesis fuzzing is planned for v0.4.x.
 
 ## License
 

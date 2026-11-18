@@ -5,8 +5,9 @@ previous runs (rug-pull detection).
 Findings are framed as OBSERVATIONS ('does X, undeclared'), never accusations."""
 import hashlib, json, os, re, socket, sys
 from pathlib import Path
-from .analyze import analyze
+from .analyze import analyze, is_sensitive_path
 
+# Backward-compatibility alias
 SENSITIVE = (".ssh", "id_rsa", "id_ed25519", ".env", ".aws", "credentials",
              ".netrc", "/etc/shadow", ".kube", ".docker/config")
 
@@ -48,6 +49,22 @@ PROMPT_INJECTION_PATTERN = re.compile(
 # Markdown and HTML external image exfiltration regex (CSA TTP: Output Prompt Injection / Data Exfiltration)
 MARKDOWN_IMAGE_PATTERN = re.compile(r'!\[[^\]]*\]\(\s*(https?://[^\s\)]+)')
 HTML_IMAGE_PATTERN = re.compile(r'<img\s+[^>]*src=[\"\'](https?://[^\"\'\s>]+)[\"\']', re.IGNORECASE)
+
+# Local/offline assertion patterns (avoids false positives from 'local cache', 'local file', etc.)
+LOCAL_ONLY_PATTERNS = (
+    re.compile(
+        r'\b(?:purely\s+local(?:ly)?|strictly\s+local(?:ly)?|local[- ]only|offline\s+(?:only|mode|operation)|'
+        r'runs\s+offline|completely\s+offline|no\s+network(?: access)?|no\s+internet(?: access)?|'
+        r'without\s+(?:network|internet)(?: access)?|zero\s+(?:network|internet))\b',
+        re.IGNORECASE,
+    ),
+)
+
+
+def _claims_local_operation(text: str) -> bool:
+    if not text:
+        return False
+    return any(p.search(text) for p in LOCAL_ONLY_PATTERNS)
 
 # Where per-server manifest hashes are persisted across runs for rug-pull
 # detection. Honors XDG; falls back to ~/.local/share. Override with $MCP_BEHAVE_STATE_DIR.
@@ -114,7 +131,7 @@ def _all_descriptions(manifest: dict) -> str:
     return " ".join(parts).lower()
 
 
-def _rugpull_check(manifest: dict) -> tuple[str, str] | None:
+def _rugpull_check(manifest: dict, persist: bool = True) -> tuple[str, str] | None:
     """Compare this run's manifest hash against the stored one for this server.
     Returns a finding tuple if changed, None otherwise. Updates the store either way."""
     cmd = manifest.get("server_cmd") or []
@@ -135,12 +152,12 @@ def _rugpull_check(manifest: dict) -> tuple[str, str] | None:
                        f"declared surface changed since last run "
                        f"(was {prev[:12]}, now {current[:12]}) -- "
                        f"possible rug-pull")
-    try:
-        record.write_text(json.dumps({"server_cmd": cmd,
-                                       "manifest_sha256": current}, indent=2))
-    except OSError as exc:
-        print(f"[report] warning: could not persist manifest state for rug-pull detection: {exc}",
-              file=sys.stderr)
+    if persist:
+        try:
+            record.write_text(json.dumps({"server_cmd": cmd, "manifest_sha256": current}, indent=2))
+        except OSError as exc:
+            print(f"[report] warning: could not persist manifest state for rug-pull detection: {exc}",
+                  file=sys.stderr)
     return finding
 
 
@@ -250,11 +267,19 @@ def _scan_outputs(manifest: dict) -> list[tuple[str, str]]:
     return findings
 
 
-def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, config: dict | None = None) -> list:
-    """Returns list of (severity, message) tuples. Pure function -- no I/O
-    except optional reverse-DNS lookups."""
-    descs = _all_descriptions(manifest)
-    claims_local = any(w in descs for w in ("local", "offline", "no network"))
+def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, config: dict | None = None, persist_rugpull: bool = True) -> list:
+    """Returns list of (severity, message) tuples."""
+    server_instructions = manifest.get("instructions") or ""
+    server_claims_local = _claims_local_operation(server_instructions)
+
+    tools = manifest.get("tools") or []
+    tool_local_claims = {
+        t.get("name", ""): _claims_local_operation(t.get("description", ""))
+        for t in tools
+    }
+    all_tools_claim_local = bool(tools) and all(tool_local_claims.values())
+
+    claims_local = server_claims_local or all_tools_claim_local or _claims_local_operation(_all_descriptions(manifest))
     findings = []
 
     for ipport in profile.get("network_connects", []):
@@ -264,14 +289,26 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
         note = " -- but a description claims local/offline operation" if claims_local else ""
         findings.append((sev, f"network egress to {where}{note}"))
 
-    for path in profile.get("files_opened", []):
-        if any(s in path for s in SENSITIVE):
-            findings.append(("HIGH", f"read a sensitive path: {path}"))
+    files_opened = profile.get("files_opened", [])
+    files_written = set(profile.get("files_written", []))
+
+    for path in files_opened:
+        is_sens, _ = is_sensitive_path(path)
+        if is_sens:
+            action = "modified or wrote to" if path in files_written else "read"
+            findings.append(("HIGH", f"{action} a sensitive path: {path}"))
+
+    for unix_sock in profile.get("unix_sockets", []):
+        # Flag container runtime control sockets as high risk
+        if any(sock_needle in unix_sock.lower() for sock_needle in ("docker.sock", "containerd.sock", "crio.sock", "podman.sock")):
+            findings.append(("HIGH", f"connected to container runtime control socket: {unix_sock}"))
+        else:
+            findings.append(("INFO", f"connected to unix domain socket: {unix_sock}"))
 
     for proc in profile.get("subprocesses", []):
         findings.append(("INFO", f"spawned subprocess: {proc}"))
 
-    rug = _rugpull_check(manifest)
+    rug = _rugpull_check(manifest, persist=persist_rugpull)
     if rug:
         findings.append(rug)
 
@@ -285,8 +322,8 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
     try:
         from . import lint as lint_mod
         findings.extend(lint_mod.lint_schema_and_permissions(manifest))
-    except Exception:
-        pass
+    except (ImportError, AttributeError, ValueError, TypeError) as exc:
+        print(f"[report] warning: static lint inspection failed: {exc}", file=sys.stderr)
 
     if config:
         from . import config as config_mod
@@ -302,9 +339,9 @@ def _tool_names(manifest: dict) -> str:
 def report(out_dir, *, resolve_dns: bool = True, show_scorecard: bool = False, config: dict | None = None) -> list:
     """Text reporter. Prints a human-readable summary; returns findings."""
     manifest, profile = load(out_dir)
-    findings = build_findings(manifest, profile, resolve_dns=resolve_dns, config=config)
-    descs = _all_descriptions(manifest)
-    claims_local = any(w in descs for w in ("local", "offline", "no network"))
+    findings = build_findings(manifest, profile, resolve_dns=resolve_dns, config=config, persist_rugpull=True)
+    server_instructions = manifest.get("instructions") or ""
+    claims_local = _claims_local_operation(server_instructions) or _claims_local_operation(_all_descriptions(manifest))
     syscalls_available = manifest.get("syscalls_available", True)
 
     print(f"\n  target tools: {_tool_names(manifest)}")
@@ -336,7 +373,7 @@ def report_json(out_dir, *, resolve_dns: bool = True, config: dict | None = None
     """JSON reporter. Returns a serializable dict for CI/CD consumption."""
     from . import scorecard as scorecard_mod
     manifest, profile = load(out_dir)
-    findings = build_findings(manifest, profile, resolve_dns=resolve_dns, config=config)
+    findings = build_findings(manifest, profile, resolve_dns=resolve_dns, config=config, persist_rugpull=True)
     scorecard = scorecard_mod.compute_scorecard(manifest, profile, findings)
     return {
         "server_cmd": manifest.get("server_cmd"),
