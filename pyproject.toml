@@ -32,7 +32,9 @@ dependencies = [
 test = ["pytest>=8.0"]
 
 [project.urls]
-Homepage = "https://github.com/navid72m/mcp-behave"
+Homepage = "https://www.navidmirnouri.com/mcp-behave/"
+Documentation = "https://www.navidmirnouri.com/mcp-behave/"
+Repository = "https://github.com/navid72m/mcp-behave"
 Issues = "https://github.com/navid72m/mcp-behave/issues"
 
 [project.scripts]

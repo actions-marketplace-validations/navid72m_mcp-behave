@@ -6,6 +6,13 @@
     "url": "https://github.com/navid72m/mcp-behave",
     "source": "github"
   },
+  "websiteUrl": "https://www.navidmirnouri.com/mcp-behave/",
+  "icons": [
+    {
+      "src": "https://www.navidmirnouri.com/mcp-behave/logo.png",
+      "mimeType": "image/png"
+    }
+  ],
   "version": "0.3.5",
   "packages": [
     {
