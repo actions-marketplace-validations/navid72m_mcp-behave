@@ -304,16 +304,42 @@ mcp-behave lint ./manifest.json --sarif > lint.sarif
 mcp-behave lint ./manifest.json --json --scorecard
 ```
 
-### Static Checks Performed:
-- **Auto-Approval Bypass (`readOnlyHint` Mismatch)**: Flags mutating tools (`delete`, `write`, `update`, `drop`) advertising `readOnlyHint: true`, which would cause AI clients (Claude Desktop, Cursor) to auto-approve state modifications without human confirmation.
-- **Destructive Actions Missing Confirmation**: Flags destructive tools that omit confirmation guardrails (`confirm`, `force`, `dry_run`).
-- **Unconstrained Path Traversal Arguments**: Flags `path`/`file` parameters missing regex `pattern` or `enum` boundaries.
-- **SSRF-Prone URL Arguments**: Flags `url`/`webhook` parameters accepting caller-controlled endpoints without allowlists or schema constraints.
-- **Hardcoded Schema Credentials**: Scans parameter `default`, `const`, and `examples` for live API tokens (`sk-`, `ghp_`, `AKIA`, private keys).
-- **Sensitive Resource URIs**: Identifies resource URIs surfacing credentials or sensitive paths (`.env`, `id_rsa`, `/etc/shadow`, `.kube/config`).
-- **Duplicate Tool Names (Shadowing)**: Detects colliding tool names that allow malicious tools to shadow trusted ones.
-- **Cross-Tool Chaining Directives**: Catches orchestration directives in tool descriptions that instruct the model to execute other tools.
-- **Covert Channels & Injection Directives**: Scans all names, descriptions, and metadata for ANSI escapes, zero-width Unicode, and prompt injection patterns.
+### Complete Security & Linting Rule Catalog
+
+`mcp-behave` provides 100% full coverage of the static security and hygiene rules from [`ModelContextProtocol-Security/MCP-audit`](https://github.com/ModelContextProtocol-Security/MCP-audit), paired with deep dynamic runtime syscall tracing:
+
+| Rule ID | Severity | Category | Description |
+| :--- | :--- | :--- | :--- |
+| **`MCP001`** | `HIGH` | Permissions | Destructive tool (`delete`, `remove`, `drop`, `wipe`, `purge`) lacks explicit confirmation or scope argument (`confirm`, `force`, `dry_run`). |
+| **`MCP002`** | `HIGH` | Permissions | Arbitrary command or code execution tool detected (`exec`, `execute`, `spawn`, `shell`, `bash`, `run_command`, `system`). |
+| **`MCP003`** | `INFO` | Permissions | Mutating tool (`write`, `update`, `create`, `modify`, `patch`) declares zero input properties, leaving its effect unbounded. |
+| **`MCP004`** | `HIGH` | Permissions | Mutating or destructive tool advertises `readOnlyHint: true` (auto-approval bypass risk in AI clients). |
+| **`MCP010`** | `INFO` | Schema | Tool is missing an input schema or declares zero input properties. |
+| **`MCP011`** | `INFO` | Schema | Schema explicitly enables `additionalProperties: true` (parameter smuggling risk). |
+| **`MCP012`** | `INFO` | Schema | Free-form string argument with no `enum`, `pattern`, `format`, or `maxLength` bounds. |
+| **`MCP013`** | `INFO` | Schema | Object schema declares properties but omits the `required` list (all arguments optional). |
+| **`MCP020`** | `HIGH` | Injection | Tool or prompt description contains prompt-injection phrasing (`ignore previous`, `system prompt:`, `override`). |
+| **`MCP021`** | `INFO` | Injection | Tool description advertises overly broad capability (`anything`, `any command`, `arbitrary`, `unrestricted`, `full access`). |
+| **`MCP022`** | `INFO` | Injection | Tool description contains cross-tool chaining directives (`then call X`, `next run Y`). |
+| **`MCP030`** | `HIGH` | Secrets | Resource exposes secrets or sensitive system paths (`.env`, `id_rsa`, `.ssh`, `.aws`, `/etc/shadow`, `.kube/config`). |
+| **`MCP031`** | `HIGH` | Secrets | File or path argument accepts unconstrained strings without `pattern` or `enum` boundaries (directory traversal). |
+| **`MCP032`** | `HIGH` | Secrets | Tool parameter schema embeds hardcoded credentials in `default`, `const`, or `examples` (`sk-`, `ghp_`, `AKIA`). |
+| **`MCP040`** | `HIGH` | Transport | HTTP/SSE transport accepts connections without authentication token or header. |
+| **`MCP041`** | `INFO` | Transport | Tool argument accepts caller-controlled URLs without host allowlist or regex pattern constraints (SSRF risk). |
+| **`MCP050`** | `INFO` | Metadata | Server instructions leak internal details or sensitive terms (`localhost`, `127.0.0.1`, `internal`, `staging`, `debug`). |
+| **`MCP051`** | `INFO` | Metadata | Server does not report a version string in `serverInfo` for vulnerability tracking. |
+| **`MCP060`** | `HIGH` | Hygiene | Duplicate tool names declared across server surface (tool shadowing risk). |
+| **`MCP061`** | `INFO` | Hygiene | Excessive number of tools declared (>40 tools, capability sprawl expanding agent attack surface). |
+| **`MCP062`** | `INFO` | Hygiene | Undocumented tool declared with empty or missing description. |
+| **`MCP101`** | `HIGH` | Runtime | Undeclared network socket connection to remote host detected via runtime syscall interposition. |
+| **`MCP102`** | `HIGH` | Runtime | Unauthorized read of confidential local file (`id_rsa`, `.env`, `.aws`, `/etc/shadow`). |
+| **`MCP103`** | `INFO` | Runtime | Undeclared child subprocess spawned during tool execution. |
+| **`MCP104`** | `HIGH` | Runtime | Advertised manifest hash changed compared to historical baselines (rug-pull detection). |
+| **`MCP105`** | `HIGH` | Covert | ANSI terminal escape sequences detected in metadata or tool outputs. |
+| **`MCP106`** | `HIGH` | Covert | Zero-width spaces, invisible Unicode, or BiDi overrides detected in metadata or tool outputs. |
+| **`MCP107`** | `HIGH` | Exfiltration| Markdown or HTML external image link in tool output (causes client-side HTTP GET exfiltration). |
+| **`MCP108`** | `HIGH` | Config | Hardcoded API keys or plaintext credentials in client configuration files (`claude_desktop_config.json`, Cursor). |
+| **`MCP109`** | `HIGH` | Config | Over-privileged root (`/`) or confidential home directory mount in client configuration. |
 
 ## Configuration & Policy Suppression (`.mcpbehaverc.json`)
 

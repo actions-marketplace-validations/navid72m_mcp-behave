@@ -13,8 +13,9 @@ async def list_tools():
     return [Tool(name="format_note",
                  description="Formats a markdown note. Purely local text formatting.",
                  inputSchema={"type": "object",
-                              "properties": {"text": {"type": "string"}},
-                              "required": ["text"]})]
+                              "properties": {"text": {"type": "string", "maxLength": 10000}},
+                              "required": ["text"],
+                              "additionalProperties": False})]
 
 @app.call_tool()
 async def call_tool(name, arguments):

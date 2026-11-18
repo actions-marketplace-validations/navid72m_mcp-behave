@@ -220,6 +220,7 @@ def test_lint_cli_execution(tmp_path, capsys):
                 "inputSchema": {
                     "type": "object",
                     "properties": {"query": {"type": "string", "enum": ["a", "b"]}},
+                    "required": ["query"],
                     "additionalProperties": False,
                 },
             }
@@ -287,3 +288,178 @@ def test_lint_cli_config_suppression(tmp_path):
 
     exit_code = lint.main([str(mf), "--config", str(cfg), "--fail-on", "high"])
     assert exit_code == 0
+
+
+def test_lint_arbitrary_execution_tool():
+    manifest = {
+        "tools": [
+            {
+                "name": "run_shell_cmd",
+                "description": "Executes shell commands on host.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"cmd": {"type": "string"}},
+                    "required": ["cmd"],
+                    "additionalProperties": False,
+                },
+            }
+        ]
+    }
+    findings = lint.lint_manifest(manifest)
+    assert any("appears to execute arbitrary commands or code" in msg for sev, msg in findings)
+
+
+def test_lint_unscoped_mutating_tool():
+    manifest = {
+        "tools": [
+            {
+                "name": "update_database",
+                "description": "Updates persistent system records.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            }
+        ]
+    }
+    findings = lint.lint_manifest(manifest)
+    assert any("declares no input properties -- effect is unbounded" in msg for sev, msg in findings)
+
+
+def test_lint_missing_input_schema():
+    manifest = {
+        "tools": [
+            {
+                "name": "get_status",
+                "description": "Returns status information.",
+            }
+        ]
+    }
+    findings = lint.lint_manifest(manifest)
+    assert any("missing an input schema or declares no input properties" in msg for sev, msg in findings)
+
+
+def test_lint_unconstrained_string_arg():
+    manifest = {
+        "tools": [
+            {
+                "name": "echo_message",
+                "description": "Echoes a message.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"msg": {"type": "string"}},
+                    "required": ["msg"],
+                    "additionalProperties": False,
+                },
+            }
+        ]
+    }
+    findings = lint.lint_manifest(manifest)
+    assert any("free-form string with no enum, pattern, format, or maxLength constraint" in msg for sev, msg in findings)
+
+
+def test_lint_missing_required_list():
+    manifest = {
+        "tools": [
+            {
+                "name": "search_items",
+                "description": "Searches for items.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "maxLength": 50}},
+                    "additionalProperties": False,
+                },
+            }
+        ]
+    }
+    findings = lint.lint_manifest(manifest)
+    assert any("declares 1 properties but no required list" in msg for sev, msg in findings)
+
+
+def test_lint_overly_broad_description():
+    manifest = {
+        "tools": [
+            {
+                "name": "magic_tool",
+                "description": "Can perform arbitrary operations and anything required.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"op": {"type": "string", "maxLength": 10}},
+                    "required": ["op"],
+                    "additionalProperties": False,
+                },
+            }
+        ]
+    }
+    findings = lint.lint_manifest(manifest)
+    assert any("advertises overly broad capability" in msg for sev, msg in findings)
+
+
+def test_lint_http_unauthenticated():
+    manifest = {
+        "transport": "http",
+        "url": "http://127.0.0.1:8080/mcp",
+        "authProvided": False,
+        "tools": [],
+    }
+    findings = lint.lint_manifest(manifest)
+    assert any("HTTP transport at 'http://127.0.0.1:8080/mcp' accepts connections without authentication" in msg for sev, msg in findings)
+
+
+def test_lint_internal_metadata_leak():
+    manifest = {
+        "instructions": "Running on staging internal cluster at 127.0.0.1 for debugging.",
+        "tools": [],
+    }
+    findings = lint.lint_manifest(manifest)
+    assert any("server instructions leak internal details" in msg for sev, msg in findings)
+
+
+def test_lint_missing_server_version():
+    manifest = {
+        "serverInfo": {
+            "name": "unversioned-server",
+        },
+        "tools": [],
+    }
+    findings = lint.lint_manifest(manifest)
+    assert any("server does not report a version string in serverInfo" in msg for sev, msg in findings)
+
+
+def test_lint_capability_sprawl():
+    tools = [
+        {
+            "name": f"tool_{i}",
+            "description": f"Tool number {i}.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"x": {"type": "number"}},
+                "required": ["x"],
+                "additionalProperties": False,
+            },
+        }
+        for i in range(45)
+    ]
+    manifest = {"tools": tools}
+    findings = lint.lint_manifest(manifest)
+    assert any("exceeds capability sprawl threshold" in msg for sev, msg in findings)
+
+
+def test_lint_missing_tool_description():
+    manifest = {
+        "tools": [
+            {
+                "name": "unnamed_action",
+                "description": "   ",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"x": {"type": "number"}},
+                    "required": ["x"],
+                    "additionalProperties": False,
+                },
+            }
+        ]
+    }
+    findings = lint.lint_manifest(manifest)
+    assert any("tool 'unnamed_action' has no description" in msg for sev, msg in findings)

@@ -172,6 +172,114 @@ RULES = {
         "helpUri": "https://modelcontextprotocol-security.io/ttps/prompt-injection/",
         "properties": {"tags": ["security", "prompt-injection", "chaining"]}
     },
+    "MCP019": {
+        "id": "MCP019",
+        "name": "ArbitraryCommandExecution",
+        "shortDescription": {"text": "Tool exposes arbitrary command or code execution"},
+        "fullDescription": {"text": "A tool appears to execute arbitrary system commands, shell scripts, or evaluate code, introducing remote code execution risks."},
+        "defaultConfiguration": {"level": "error"},
+        "helpUri": "https://modelcontextprotocol-security.io/ttps/privilege-access-control/",
+        "properties": {"tags": ["security", "command-execution", "rce", "csa-ttp"]}
+    },
+    "MCP021": {
+        "id": "MCP021",
+        "name": "OverlyBroadCapability",
+        "shortDescription": {"text": "Tool advertises overly broad capability"},
+        "fullDescription": {"text": "A tool description uses vague terms like 'anything' or 'arbitrary', indicating unbounded capability scope."},
+        "defaultConfiguration": {"level": "note"},
+        "helpUri": "https://modelcontextprotocol-security.io/ttps/prompt-injection/",
+        "properties": {"tags": ["security", "least-privilege", "hygiene"]}
+    },
+    "MCP023": {
+        "id": "MCP023",
+        "name": "UnscopedMutatingTool",
+        "shortDescription": {"text": "Mutating tool has an unscoped input surface"},
+        "fullDescription": {"text": "A tool that writes or mutates state declares zero input properties, allowing unbounded modifications."},
+        "defaultConfiguration": {"level": "note"},
+        "helpUri": "https://modelcontextprotocol-security.io/ttps/privilege-access-control/",
+        "properties": {"tags": ["security", "permissions", "least-privilege"]}
+    },
+    "MCP024": {
+        "id": "MCP024",
+        "name": "MissingInputSchema",
+        "shortDescription": {"text": "Tool is missing an input schema"},
+        "fullDescription": {"text": "A tool does not declare an input schema or properties, leaving its arguments unvalidated."},
+        "defaultConfiguration": {"level": "note"},
+        "helpUri": "https://modelcontextprotocol-security.io/hardening/",
+        "properties": {"tags": ["security", "schema-validation"]}
+    },
+    "MCP025": {
+        "id": "MCP025",
+        "name": "UnboundedAdditionalProperties",
+        "shortDescription": {"text": "Schema allows unbounded additional properties"},
+        "fullDescription": {"text": "An object input schema explicitly enables additionalProperties: true, enabling parameter smuggling."},
+        "defaultConfiguration": {"level": "note"},
+        "helpUri": "https://modelcontextprotocol-security.io/hardening/",
+        "properties": {"tags": ["security", "schema-validation", "parameter-smuggling"]}
+    },
+    "MCP026": {
+        "id": "MCP026",
+        "name": "UnconstrainedStringArgument",
+        "shortDescription": {"text": "Unconstrained string argument"},
+        "fullDescription": {"text": "A string argument has no enum, pattern, format, or maxLength constraint, allowing arbitrary payloads."},
+        "defaultConfiguration": {"level": "note"},
+        "helpUri": "https://modelcontextprotocol-security.io/hardening/",
+        "properties": {"tags": ["security", "schema-validation", "input-validation"]}
+    },
+    "MCP027": {
+        "id": "MCP027",
+        "name": "MissingRequiredProperties",
+        "shortDescription": {"text": "Object schema has no required properties"},
+        "fullDescription": {"text": "A tool schema declares properties but omits the required array, making all arguments optional."},
+        "defaultConfiguration": {"level": "note"},
+        "helpUri": "https://modelcontextprotocol-security.io/hardening/",
+        "properties": {"tags": ["security", "schema-validation"]}
+    },
+    "MCP028": {
+        "id": "MCP028",
+        "name": "UnauthenticatedHTTPTransport",
+        "shortDescription": {"text": "HTTP transport has no authentication"},
+        "fullDescription": {"text": "The server exposes MCP tools over HTTP/SSE without requiring authentication tokens or headers."},
+        "defaultConfiguration": {"level": "error"},
+        "helpUri": "https://modelcontextprotocol-security.io/hardening/",
+        "properties": {"tags": ["security", "transport", "authentication"]}
+    },
+    "MCP029": {
+        "id": "MCP029",
+        "name": "InternalMetadataLeak",
+        "shortDescription": {"text": "Server metadata leaks internal information"},
+        "fullDescription": {"text": "Server instructions contain internal hostnames, debug flags, or sensitive keywords."},
+        "defaultConfiguration": {"level": "note"},
+        "helpUri": "https://modelcontextprotocol-security.io/hardening/",
+        "properties": {"tags": ["security", "metadata", "information-disclosure"]}
+    },
+    "MCP030": {
+        "id": "MCP030",
+        "name": "MissingServerVersion",
+        "shortDescription": {"text": "Server does not report a version string"},
+        "fullDescription": {"text": "The server does not report a version in serverInfo, hindering vulnerability tracking."},
+        "defaultConfiguration": {"level": "note"},
+        "helpUri": "https://modelcontextprotocol-security.io/hardening/",
+        "properties": {"tags": ["security", "metadata", "hygiene"]}
+    },
+    "MCP031": {
+        "id": "MCP031",
+        "name": "CapabilitySprawl",
+        "shortDescription": {"text": "Excessive number of tools (capability sprawl)"},
+        "fullDescription": {"text": "The server exposes more than 40 tools, expanding the attack surface and increasing tool selection errors."},
+        "defaultConfiguration": {"level": "note"},
+        "helpUri": "https://modelcontextprotocol-security.io/hardening/",
+        "properties": {"tags": ["security", "hygiene", "least-privilege"]}
+    },
+    "MCP032": {
+        "id": "MCP032",
+        "name": "MissingToolDescription",
+        "shortDescription": {"text": "Tool has no description"},
+        "fullDescription": {"text": "A tool provides no description, preventing review and model grounding."},
+        "defaultConfiguration": {"level": "note"},
+        "helpUri": "https://modelcontextprotocol-security.io/hardening/",
+        "properties": {"tags": ["security", "hygiene", "documentation"]}
+    },
 }
 
 
@@ -194,6 +302,30 @@ def classify_rule_id(severity: str, message: str) -> str:
         return "MCP017"
     if "cross-tool chaining" in msg:
         return "MCP018"
+    if "arbitrary command" in msg or "arbitrary execution risk" in msg or "execute arbitrary" in msg:
+        return "MCP019"
+    if "unscoped input" in msg or "declares no input properties -- effect is unbounded" in msg:
+        return "MCP023"
+    if "missing an input schema" in msg:
+        return "MCP024"
+    if "additionalproperties" in msg:
+        return "MCP025"
+    if "free-form string with no enum" in msg:
+        return "MCP026"
+    if "declares" in msg and "properties but no required list" in msg:
+        return "MCP027"
+    if "overly broad capability" in msg:
+        return "MCP021"
+    if "http transport" in msg and ("without authentication" in msg or "no authentication" in msg):
+        return "MCP028"
+    if "leak internal details" in msg or "metadata leaks internal" in msg:
+        return "MCP029"
+    if "version string in serverinfo" in msg or "did not report a version" in msg:
+        return "MCP030"
+    if "capability sprawl" in msg or "sprawl threshold" in msg:
+        return "MCP031"
+    if "has no description" in msg or "undocumented tool" in msg:
+        return "MCP032"
     if "network egress" in msg:
         return "MCP001"
     if "sensitive path" in msg or "id_rsa" in msg or "id_ed25519" in msg or ".ssh" in msg:

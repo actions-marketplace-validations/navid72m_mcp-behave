@@ -20,12 +20,21 @@ from . import scorecard as scorecard_mod
 
 DESTRUCTIVE_VERBS = (
     "delete", "remove", "destroy", "drop", "truncate", "wipe", "erase",
-    "purge", "reset", "revoke", "kill", "terminate", "shutdown",
+    "purge", "overwrite", "reset", "revoke", "kill", "terminate", "shutdown",
+)
+
+EXEC_VERBS = (
+    "exec", "execute", "spawn", "shell", "bash", "sh ", "command", "eval",
+    "run_command", "system", "subprocess",
+)
+
+WRITE_VERBS = (
+    "write", "update", "create", "modify", "patch", "insert", "upload", "put", "set",
 )
 
 MUTATING_VERBS = (
     *DESTRUCTIVE_VERBS,
-    "write", "update", "create", "modify", "patch", "insert", "upload", "put", "set",
+    *WRITE_VERBS,
 )
 
 CONFIRM_HINTS = (
@@ -37,13 +46,26 @@ PATH_ARG_KEYWORDS = (
 )
 
 URL_ARG_KEYWORDS = (
-    "url", "uri", "webhook", "endpoint", "callback", "href", "link",
+    "url", "uri", "webhook", "endpoint", "callback", "href", "link", "host",
+)
+
+VAGUE_TERMS = (
+    "anything", "any file", "any command", "arbitrary", "everything",
+    "all files", "unrestricted", "full access", "whatever",
+)
+
+INTERNAL_METADATA_TERMS = (
+    "internal", "localhost", "127.0.0.1", "todo", "fixme", "debug", "staging",
+    "password", "api_key", "apikey", "token=", "secret",
 )
 
 SECRET_PATH_NEEDLES = (
-    ".env", "id_rsa", "id_ed25519", ".ssh", ".aws", ".kube", "/etc/passwd",
-    "/etc/shadow", ".npmrc", ".git/config", "credentials", "secrets",
+    ".env", "id_rsa", "id_ed25519", ".ssh", ".pem", ".key", "private_key",
+    ".aws", ".kube", "/etc/passwd", "/etc/shadow", ".npmrc", ".git/config",
+    ".dockercfg", "credentials", "secrets",
 )
+
+SPRAWL_THRESHOLD = 40
 
 SECRET_PATTERNS = (
     re.compile(r"sk-ant-[a-zA-Z0-9_\-]{20,}"),
@@ -74,7 +96,50 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
     tools = manifest.get("tools") or []
     resources = manifest.get("resources") or []
 
-    # 1. Tool Name Uniqueness (MCP017 / Tool Shadowing)
+    # 1. Capability Sprawl (MCP061 / Hygiene)
+    if len(tools) > SPRAWL_THRESHOLD:
+        findings.append((
+            "INFO",
+            f"server exposes {len(tools)} tools (exceeds capability sprawl threshold of {SPRAWL_THRESHOLD}) -- capability sprawl attack surface"
+        ))
+
+    # 2. Server Metadata & Instructions (MCP050 / MCP051)
+    server_info = manifest.get("serverInfo") or manifest.get("server")
+    instructions = manifest.get("instructions")
+    if isinstance(server_info, dict) and not instructions:
+        instructions = server_info.get("instructions")
+
+    if instructions and isinstance(instructions, str):
+        inst_lower = instructions.lower()
+        inst_hit = next((s for s in INTERNAL_METADATA_TERMS if s in inst_lower), None)
+        if inst_hit:
+            findings.append((
+                "INFO",
+                f"server instructions leak internal details or sensitive terms ('{inst_hit}') -- metadata leakage risk"
+            ))
+
+    if isinstance(server_info, dict) and server_info:
+        ver = server_info.get("version")
+        if not ver or not str(ver).strip():
+            findings.append((
+                "INFO",
+                "server does not report a version string in serverInfo -- version tracking risk"
+            ))
+
+    # 3. Transport Security (MCP040 / Transport)
+    if manifest.get("transport") == "http":
+        auth_provided = manifest.get("authProvided")
+        conn = manifest.get("connection")
+        if isinstance(conn, dict) and auth_provided is None:
+            auth_provided = conn.get("authProvided")
+        if not auth_provided:
+            url = manifest.get("url") or (conn.get("url") if isinstance(conn, dict) else None) or "HTTP endpoint"
+            findings.append((
+                "HIGH",
+                f"HTTP transport at '{url}' accepts connections without authentication token or header"
+            ))
+
+    # 4. Tool Name Uniqueness (MCP060 / Hygiene / Tool Shadowing)
     tool_names: Dict[str, int] = {}
     for t in tools:
         name = t.get("name", "unnamed")
@@ -87,16 +152,32 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
                 f"duplicate tool name '{name}' declared {count} times -- tool shadowing risk"
             ))
 
-    # 2. Tool-Level Schema & Permission Inspections
+    # 5. Tool-Level Schema & Permission Inspections
     for tool in tools:
         tname = tool.get("name", "unnamed")
-        tdesc = tool.get("description", "")
+        tdesc = tool.get("description", "") or ""
         annotations = tool.get("annotations") or {}
         read_only = (tool.get("readOnlyHint") is True) or (annotations.get("readOnlyHint") is True)
 
         haystack = f"{tname} {tdesc}".lower()
 
-        # Check: Cross-Tool Chaining Directives (MCP018)
+        # Check: Missing Tool Description (MCP062)
+        if not tdesc.strip():
+            findings.append((
+                "INFO",
+                f"tool '{tname}' has no description -- undocumented tool capability"
+            ))
+
+        # Check: Overly Broad Capability Description (MCP021)
+        if tdesc:
+            vague_hit = next((v for v in VAGUE_TERMS if v in tdesc.lower()), None)
+            if vague_hit:
+                findings.append((
+                    "INFO",
+                    f"tool '{tname}' advertises overly broad capability ('{vague_hit}') -- unbounded scope"
+                ))
+
+        # Check: Cross-Tool Chaining Directives (MCP022)
         chain_match = CHAINING_DIRECTIVE_PATTERN.search(tdesc)
         if chain_match:
             findings.append((
@@ -104,7 +185,15 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
                 f"tool '{tname}' description contains cross-tool chaining directive: '{chain_match.group()}'"
             ))
 
-        # Check: readOnlyHint Mismatch (MCP011)
+        # Check: Arbitrary Execution Tool (MCP002)
+        exec_hit = next((v for v in EXEC_VERBS if v in tname.lower() or (tdesc and v in tdesc.lower())), None)
+        if exec_hit:
+            findings.append((
+                "HIGH",
+                f"tool '{tname}' appears to execute arbitrary commands or code (matched '{exec_hit.strip()}') -- arbitrary execution risk"
+            ))
+
+        # Check: readOnlyHint Mismatch (MCP004)
         if read_only:
             hit = next((v for v in MUTATING_VERBS if v in haystack), None)
             if hit:
@@ -113,7 +202,7 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
                     f"tool '{tname}' advertises readOnlyHint: true but implies mutating or destructive action ('{hit}') -- auto-approval bypass risk"
                 ))
 
-        # Check: Destructive Action Missing Confirmation (MCP012)
+        # Check: Destructive Action Missing Confirmation (MCP001)
         destructive_hit = next((v for v in DESTRUCTIVE_VERBS if v in haystack), None)
         schema = tool.get("inputSchema") or {}
         props = schema.get("properties") or {}
@@ -129,15 +218,38 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
                     f"destructive tool '{tname}' implies destructive action ('{destructive_hit}') but declares no confirmation or scoping parameter"
                 ))
 
-        # Check: Schema Unbounded Additional Properties (explicitly set to True)
-        if schema.get("type") == "object" or props:
-            if props and schema.get("additionalProperties") is True:
+        # Check: Mutating Tool with Unscoped Input (MCP003)
+        write_hit = next((v for v in WRITE_VERBS if v in haystack), None)
+        if write_hit and not destructive_hit and len(props) == 0:
+            findings.append((
+                "INFO",
+                f"mutating tool '{tname}' mutates state ('{write_hit}') but declares no input properties -- effect is unbounded"
+            ))
+
+        # Check: Missing Input Schema (MCP010)
+        empty_schema = (not schema) or (schema.get("type") == "object" and len(props) == 0)
+        if empty_schema and not write_hit:
+            findings.append((
+                "INFO",
+                f"tool '{tname}' is missing an input schema or declares no input properties"
+            ))
+
+        # Check: Object Schema Has No Required Properties (MCP013)
+        if len(props) > 0 and (not schema.get("required") or len(schema["required"]) == 0):
+            findings.append((
+                "INFO",
+                f"tool '{tname}' declares {len(props)} properties but no required list -- every argument is optional"
+            ))
+
+        # Check: Schema Unbounded Additional Properties (explicitly set to True) (MCP011)
+        if (schema.get("type") == "object" or props) and props:
+            if schema.get("additionalProperties") is True:
                 findings.append((
                     "INFO",
                     f"tool '{tname}' input schema explicitly enables additionalProperties: true -- parameter smuggling risk"
                 ))
 
-        # Parameter-Level Checks (Path traversal, SSRF, Hardcoded secrets)
+        # Parameter-Level Checks (Path traversal, SSRF, Hardcoded secrets, Unconstrained strings)
         for pname, pdef in props.items():
             if not isinstance(pdef, dict):
                 continue
@@ -146,7 +258,7 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
             ptype = pdef.get("type")
             is_string = (ptype == "string") or (ptype is None)
 
-            # Check: Path Traversal Argument (MCP013)
+            # Check: Path Traversal Argument (MCP031)
             is_path_param = any(k in pname_lower for k in PATH_ARG_KEYWORDS)
             if is_path_param and is_string:
                 has_constraints = bool(pdef.get("pattern") or pdef.get("enum"))
@@ -156,7 +268,7 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
                         f"tool '{tname}' argument '{pname}' accepts unconstrained filesystem path without pattern or enum validation -- path traversal risk"
                     ))
 
-            # Check: SSRF Argument (MCP014)
+            # Check: SSRF Argument (MCP041)
             is_url_param = any(k in pname_lower for k in URL_ARG_KEYWORDS) or pdef.get("format") in ("uri", "url")
             if is_url_param and is_string:
                 has_url_constraints = bool(pdef.get("pattern") or pdef.get("enum"))
@@ -166,7 +278,7 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
                         f"tool '{tname}' argument '{pname}' accepts caller-controlled URL without host allowlist or pattern constraints -- SSRF risk"
                     ))
 
-            # Check: Hardcoded Secret in Default/Const/Examples (MCP015)
+            # Check: Hardcoded Secret in Default/Const/Examples (MCP032)
             candidates = [pdef.get("default"), pdef.get("const")]
             if isinstance(pdef.get("examples"), list):
                 candidates.extend(pdef["examples"])
@@ -178,7 +290,16 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
                     ))
                     break
 
-    # 3. Sensitive Resources (MCP016)
+            # Check: Unconstrained String Argument (MCP012)
+            if is_string and not is_path_param and not is_url_param:
+                bounded = bool(pdef.get("enum") or pdef.get("pattern") or pdef.get("format") or pdef.get("maxLength"))
+                if not bounded:
+                    findings.append((
+                        "INFO",
+                        f"tool '{tname}' argument '{pname}' is a free-form string with no enum, pattern, format, or maxLength constraint"
+                    ))
+
+    # 6. Sensitive Resources (MCP030)
     for res in resources:
         ruri = res.get("uri", "")
         rname = res.get("name", "")

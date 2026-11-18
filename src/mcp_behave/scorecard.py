@@ -64,6 +64,30 @@ def compute_scorecard(manifest: Dict[str, Any], profile: Dict[str, Any], finding
             integrity_deductions.append((-10, "Duplicate tool names enable tool shadowing"))
         elif "cross-tool chaining" in m:
             metadata_deductions.append((-5, "Description directs cross-tool chaining"))
+        elif "arbitrary command" in m or "arbitrary execution" in m:
+            metadata_deductions.append((-15, "Tool exposes arbitrary command or code execution capability"))
+        elif "mutates state" in m and "no input properties" in m:
+            integrity_deductions.append((-5, "Mutating tool declares no input properties"))
+        elif "missing an input schema" in m:
+            integrity_deductions.append((-5, "Tool missing an input schema"))
+        elif "additionalproperties" in m:
+            integrity_deductions.append((-3, "Schema explicitly enables additionalProperties"))
+        elif "free-form string" in m:
+            integrity_deductions.append((-2, "Unconstrained free-form string argument"))
+        elif "no required list" in m:
+            integrity_deductions.append((-2, "Object schema has no required properties"))
+        elif "overly broad capability" in m:
+            metadata_deductions.append((-5, "Tool advertises overly broad capability"))
+        elif "http transport" in m and "without authentication" in m:
+            integrity_deductions.append((-15, "HTTP transport exposes tools without authentication"))
+        elif "server instructions leak" in m:
+            metadata_deductions.append((-5, "Server instructions leak internal details"))
+        elif "version string in serverinfo" in m:
+            metadata_deductions.append((-2, "Server does not report a version string"))
+        elif "capability sprawl" in m:
+            metadata_deductions.append((-5, "Capability sprawl (excessive tools declared)"))
+        elif "has no description" in m:
+            metadata_deductions.append((-2, "Tool has no description"))
 
     # Calculate category scores (floor at 0)
     runtime_score = max(0, runtime_max + sum(pts for pts, _ in runtime_deductions))
