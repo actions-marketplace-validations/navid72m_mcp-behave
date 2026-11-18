@@ -1,7 +1,11 @@
 # mcp-behave
 
-[![mcp-behave MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/navid72m/mcp-behave/badges/score.svg)](https://glama.ai/mcp/servers/navid72m/mcp-behave)
+[![CI](https://github.com/navid72m/mcp-behave/actions/workflows/ci.yml/badge.svg)](https://github.com/navid72m/mcp-behave/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/mcp-behave.svg)](https://pypi.org/project/mcp-behave/)
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/mcp-behave?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/mcp-behave)
+[![npm version](https://img.shields.io/npm/v/mcp-behave.svg)](https://www.npmjs.com/package/mcp-behave)
+[![mcp-behave MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/navid72m/mcp-behave/badges/score.svg)](https://glama.ai/mcp/servers/navid72m/mcp-behave)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Runtime behavioral auditor for MCP servers.** Runs an MCP server under
 a runtime tracer (macOS dylib, Linux `LD_PRELOAD`, or `strace`), exercises
@@ -13,8 +17,9 @@ Static scanners read tool descriptions. `mcp-behave` watches behavior.
 
 ![mcp-behave demo](demo.gif)
 
-> See [`ARCHITECTURE.md`](ARCHITECTURE.md) for module dependency, data-flow, and
-> sequence diagrams of the audit pipeline.
+> 📖 **Read the research article**: [Auditing Real-World MCP Servers with mcp-behave](https://www.navidmirnouri.com/blog/auditing-mcp-servers-with-mcp-behave.html) for an empirical audit comparing real-world packages and investigating known MCP vulnerability classes.
+>
+> 🏗️ **Architecture & Systems Internals**: See [`ARCHITECTURE.md`](ARCHITECTURE.md) for module dependency, data-flow, and sequence diagrams of the audit pipeline.
 
 ## The idea in one contrast
 
@@ -33,17 +38,25 @@ A static scanner reads two harmless tools. `mcp-behave` sees the difference:
 The honest server producing **zero** findings matters as much as the leaky one
 tripping two — false positives would kill credibility.
 
-## Install
+## Install & Quickstart
+
+Run directly without manual installation:
 
 ```bash
-# Via Python (pip / uv)
-pip install mcp-behave
-# or run directly with uv:
-uvx mcp-behave
+# Via npx (Node.js ecosystem — zero install)
+npx mcp-behave <server-command>
 
-# Via npm (npx)
-npx mcp-behave
-# or install globally:
+# Via uvx (Python ecosystem — zero install)
+uvx mcp-behave <server-command>
+```
+
+Or install into your local environment:
+
+```bash
+# Via pip
+pip install mcp-behave
+
+# Via npm
 npm install -g mcp-behave
 ```
 
@@ -106,15 +119,28 @@ Exit codes: `0` clean, `3` findings at or above `--fail-on` threshold,
 
 ```bash
 # Start MCP server over stdio
-mcp-behave serve
+npx mcp-behave serve
 # or
 uvx mcp-behave serve
 ```
 
-### Claude Desktop / Cursor Configuration
+### Claude Desktop / Cursor / Cline Configuration
 
 Add to your `claude_desktop_config.json` or Cursor MCP settings:
 
+**Option A: Using `npx` (No Python virtualenv setup needed)**
+```json
+{
+  "mcpServers": {
+    "mcp-behave": {
+      "command": "npx",
+      "args": ["-y", "mcp-behave", "serve"]
+    }
+  }
+}
+```
+
+**Option B: Using `uvx`**
 ```json
 {
   "mcpServers": {
