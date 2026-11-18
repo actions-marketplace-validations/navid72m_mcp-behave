@@ -6,12 +6,12 @@
     "url": "https://github.com/navid72m/mcp-behave",
     "source": "github"
   },
-  "version": "0.3.4",
+  "version": "0.3.5",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mcp-behave",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "transport": {
         "type": "stdio"
       }
@@ -19,7 +19,7 @@
     {
       "registryType": "npm",
       "identifier": "mcp-behave",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "transport": {
         "type": "stdio"
       }

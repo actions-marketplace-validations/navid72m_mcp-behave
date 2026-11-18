@@ -46,6 +46,8 @@ typedef int (*fn_open_t)(const char *, int, ...);
 typedef int (*fn_openat_t)(int, const char *, int, ...);
 typedef int (*fn_connect_t)(int, const struct sockaddr *, socklen_t);
 typedef ssize_t (*fn_sendto_t)(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
+typedef ssize_t (*fn_sendmsg_t)(int, const struct msghdr *, int);
+typedef int (*fn_sendmmsg_t)(int, struct mmsg_hdr *, unsigned int, int);
 typedef int (*fn_execve_t)(const char *, char *const [], char *const []);
 typedef int (*fn_execv_t)(const char *, char *const []);
 typedef int (*fn_execvp_t)(const char *, char *const []);
@@ -58,6 +60,8 @@ static fn_openat_t real_openat = NULL;
 static fn_openat_t real_openat64 = NULL;
 static fn_connect_t real_connect = NULL;
 static fn_sendto_t real_sendto = NULL;
+static fn_sendmsg_t real_sendmsg = NULL;
+static fn_sendmmsg_t real_sendmmsg = NULL;
 static fn_execve_t real_execve = NULL;
 static fn_execv_t real_execv = NULL;
 static fn_execvp_t real_execvp = NULL;
@@ -110,10 +114,45 @@ static void emit(const char *buf, size_t len) {
 static void log_tag(char tag, const char *val) {
     if (g_busy || g_trace_fd < 0 || !val) return;
     g_busy = 1;
-    char b[1200];
+    char b[4096];
     int n = snprintf(b, sizeof b, "%c %s\n", tag, val);
-    if (n > 0) emit(b, (size_t)(n < (int)sizeof b ? n : (int)sizeof b - 1));
+    if (n >= (int)sizeof(b)) {
+        emit(b, sizeof(b) - 1);
+        size_t vlen = strlen(val);
+        const char *tail = (vlen > 512) ? (val + vlen - 512) : val;
+        char alert[1024];
+        int an = snprintf(alert, sizeof alert, "! TRUNCATED %c %s\n", tag, tail);
+        if (an > 0) emit(alert, (size_t)(an < (int)sizeof alert ? an : (int)sizeof alert - 1));
+    } else if (n > 0) {
+        emit(b, (size_t)(n < (int)sizeof b ? n : (int)sizeof b - 1));
+    }
     g_busy = 0;
+}
+
+static void check_symlink_and_log(const char *path, int is_write) {
+    if (!path || !*path) return;
+    char resolved[4096];
+    if (realpath(path, resolved)) {
+        if (strcmp(path, resolved) != 0) {
+            log_tag('F', resolved);
+            if (is_write) log_tag('W', resolved);
+        }
+    }
+}
+
+static void check_fd_and_log(int fd, const char *orig_path, int is_write) {
+    if (fd < 0 || !orig_path) return;
+    char proc_link[64];
+    snprintf(proc_link, sizeof(proc_link), "/proc/self/fd/%d", fd);
+    char fd_path[4096];
+    ssize_t len = readlink(proc_link, fd_path, sizeof(fd_path) - 1);
+    if (len > 0) {
+        fd_path[len] = '\0';
+        if (strcmp(orig_path, fd_path) != 0) {
+            log_tag('F', fd_path);
+            if (is_write) log_tag('W', fd_path);
+        }
+    }
 }
 
 __attribute__((constructor))
@@ -132,6 +171,8 @@ static void mcpbehave_init(void) {
     real_openat64 = (fn_openat_t)dlsym(RTLD_NEXT, "openat64");
     real_connect = (fn_connect_t)dlsym(RTLD_NEXT, "connect");
     real_sendto = (fn_sendto_t)dlsym(RTLD_NEXT, "sendto");
+    real_sendmsg = (fn_sendmsg_t)dlsym(RTLD_NEXT, "sendmsg");
+    real_sendmmsg = (fn_sendmmsg_t)dlsym(RTLD_NEXT, "sendmmsg");
     real_execve = (fn_execve_t)dlsym(RTLD_NEXT, "execve");
     real_execv = (fn_execv_t)dlsym(RTLD_NEXT, "execv");
     real_execvp = (fn_execvp_t)dlsym(RTLD_NEXT, "execvp");
@@ -162,21 +203,30 @@ int open(const char *path, int flags, ...) {
     mode = extract_mode(flags, ap);
     va_end(ap);
 
+    int is_write = is_write_flags(flags);
     log_tag('F', path);
-    if (is_write_flags(flags)) {
+    if (is_write) {
         log_tag('W', path);
     }
+    check_symlink_and_log(path, is_write);
+
     if (!real_open) {
         real_open = (fn_open_t)dlsym(RTLD_NEXT, "open");
         if (!real_open) {
 #ifdef SYS_openat
-            return (int)syscall(SYS_openat, AT_FDCWD, path, flags, mode);
+            int fd = (int)syscall(SYS_openat, AT_FDCWD, path, flags, mode);
+            check_fd_and_log(fd, path, is_write);
+            return fd;
 #elif defined(SYS_open)
-            return (int)syscall(SYS_open, path, flags, mode);
+            int fd = (int)syscall(SYS_open, path, flags, mode);
+            check_fd_and_log(fd, path, is_write);
+            return fd;
 #endif
         }
     }
-    return real_open(path, flags, mode);
+    int fd = real_open(path, flags, mode);
+    check_fd_and_log(fd, path, is_write);
+    return fd;
 }
 
 #ifdef open64
@@ -190,17 +240,22 @@ int open64(const char *path, int flags, ...) {
     mode = extract_mode(flags, ap);
     va_end(ap);
 
+    int is_write = is_write_flags(flags);
     log_tag('F', path);
-    if (is_write_flags(flags)) {
+    if (is_write) {
         log_tag('W', path);
     }
+    check_symlink_and_log(path, is_write);
+
     if (!real_open64) {
         real_open64 = (fn_open_t)dlsym(RTLD_NEXT, "open64");
         if (!real_open64) {
             return open(path, flags, mode);
         }
     }
-    return real_open64(path, flags, mode);
+    int fd = real_open64(path, flags, mode);
+    check_fd_and_log(fd, path, is_write);
+    return fd;
 }
 
 int openat(int dirfd, const char *path, int flags, ...) {
@@ -210,19 +265,26 @@ int openat(int dirfd, const char *path, int flags, ...) {
     mode = extract_mode(flags, ap);
     va_end(ap);
 
+    int is_write = is_write_flags(flags);
     log_tag('F', path);
-    if (is_write_flags(flags)) {
+    if (is_write) {
         log_tag('W', path);
     }
+    check_symlink_and_log(path, is_write);
+
     if (!real_openat) {
         real_openat = (fn_openat_t)dlsym(RTLD_NEXT, "openat");
         if (!real_openat) {
 #ifdef SYS_openat
-            return (int)syscall(SYS_openat, dirfd, path, flags, mode);
+            int fd = (int)syscall(SYS_openat, dirfd, path, flags, mode);
+            check_fd_and_log(fd, path, is_write);
+            return fd;
 #endif
         }
     }
-    return real_openat(dirfd, path, flags, mode);
+    int fd = real_openat(dirfd, path, flags, mode);
+    check_fd_and_log(fd, path, is_write);
+    return fd;
 }
 
 #ifdef openat64
@@ -236,46 +298,64 @@ int openat64(int dirfd, const char *path, int flags, ...) {
     mode = extract_mode(flags, ap);
     va_end(ap);
 
+    int is_write = is_write_flags(flags);
     log_tag('F', path);
-    if (is_write_flags(flags)) {
+    if (is_write) {
         log_tag('W', path);
     }
+    check_symlink_and_log(path, is_write);
+
     if (!real_openat64) {
         real_openat64 = (fn_openat_t)dlsym(RTLD_NEXT, "openat64");
         if (!real_openat64) {
             return openat(dirfd, path, flags, mode);
         }
     }
-    return real_openat64(dirfd, path, flags, mode);
+    int fd = real_openat64(dirfd, path, flags, mode);
+    check_fd_and_log(fd, path, is_write);
+    return fd;
 }
 
-/* ---- connect & sendto -------------------------------------------------- */
+/* ---- socket egress inspection (connect, sendto, sendmsg, sendmmsg) ---- */
+static void inspect_sockaddr(const struct sockaddr *addr, socklen_t len) {
+    if (!addr || g_trace_fd < 0) return;
+    char ip[INET6_ADDRSTRLEN] = {0};
+    int port = -1;
+    if (addr->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *s = (const struct sockaddr_in *)addr;
+        inet_ntop(AF_INET, &s->sin_addr, ip, sizeof ip);
+        port = ntohs(s->sin_port);
+    } else if (addr->sa_family == AF_INET6 && len >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *s = (const struct sockaddr_in6 *)addr;
+        inet_ntop(AF_INET6, &s->sin6_addr, ip, sizeof ip);
+        port = ntohs(s->sin6_port);
+    } else if (addr->sa_family == AF_UNIX) {
+        const struct sockaddr_un *u = (const struct sockaddr_un *)addr;
+        if (u->sun_path[0] != '\0') {
+            char b[1040];
+            int n = snprintf(b, sizeof b, "U %s\n", u->sun_path);
+            if (n > 0) emit(b, (size_t)n);
+        } else if (len > (socklen_t)sizeof(sa_family_t)) {
+            char name[108] = {0};
+            size_t max_name = len - sizeof(sa_family_t);
+            if (max_name > sizeof(name) - 1) max_name = sizeof(name) - 1;
+            memcpy(name, u->sun_path + 1, max_name);
+            char b[1040];
+            int n = snprintf(b, sizeof b, "U @%s\n", name);
+            if (n > 0) emit(b, (size_t)n);
+        }
+    }
+    if (port >= 0) {
+        char b[128];
+        int n = snprintf(b, sizeof b, "N %s %d\n", ip, port);
+        if (n > 0) emit(b, (size_t)n);
+    }
+}
+
 int connect(int fd, const struct sockaddr *addr, socklen_t len) {
     if (!g_busy && addr && g_trace_fd >= 0) {
         g_busy = 1;
-        char ip[INET6_ADDRSTRLEN] = {0};
-        int port = -1;
-        if (addr->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
-            const struct sockaddr_in *s = (const struct sockaddr_in *)addr;
-            inet_ntop(AF_INET, &s->sin_addr, ip, sizeof ip);
-            port = ntohs(s->sin_port);
-        } else if (addr->sa_family == AF_INET6 && len >= (socklen_t)sizeof(struct sockaddr_in6)) {
-            const struct sockaddr_in6 *s = (const struct sockaddr_in6 *)addr;
-            inet_ntop(AF_INET6, &s->sin6_addr, ip, sizeof ip);
-            port = ntohs(s->sin6_port);
-        } else if (addr->sa_family == AF_UNIX) {
-            const struct sockaddr_un *u = (const struct sockaddr_un *)addr;
-            if (u->sun_path[0]) {
-                char b[1040];
-                int n = snprintf(b, sizeof b, "U %s\n", u->sun_path);
-                if (n > 0) emit(b, (size_t)n);
-            }
-        }
-        if (port >= 0) {
-            char b[128];
-            int n = snprintf(b, sizeof b, "N %s %d\n", ip, port);
-            if (n > 0) emit(b, (size_t)n);
-        }
+        inspect_sockaddr(addr, len);
         g_busy = 0;
     }
     if (!real_connect) {
@@ -295,34 +375,7 @@ ssize_t sendto(int fd, const void *buf, size_t len, int flags,
                const struct sockaddr *dest_addr, socklen_t addrlen) {
     if (!g_busy && dest_addr && g_trace_fd >= 0) {
         g_busy = 1;
-        if (dest_addr->sa_family == AF_INET && addrlen >= (socklen_t)sizeof(struct sockaddr_in)) {
-            char ip[INET6_ADDRSTRLEN] = {0};
-            const struct sockaddr_in *s = (const struct sockaddr_in *)dest_addr;
-            inet_ntop(AF_INET, &s->sin_addr, ip, sizeof ip);
-            int port = ntohs(s->sin_port);
-            if (port >= 0) {
-                char b[128];
-                int n = snprintf(b, sizeof b, "N %s %d\n", ip, port);
-                if (n > 0) emit(b, (size_t)n);
-            }
-        } else if (dest_addr->sa_family == AF_INET6 && addrlen >= (socklen_t)sizeof(struct sockaddr_in6)) {
-            char ip[INET6_ADDRSTRLEN] = {0};
-            const struct sockaddr_in6 *s = (const struct sockaddr_in6 *)dest_addr;
-            inet_ntop(AF_INET6, &s->sin6_addr, ip, sizeof ip);
-            int port = ntohs(s->sin6_port);
-            if (port >= 0) {
-                char b[128];
-                int n = snprintf(b, sizeof b, "N %s %d\n", ip, port);
-                if (n > 0) emit(b, (size_t)n);
-            }
-        } else if (dest_addr->sa_family == AF_UNIX) {
-            const struct sockaddr_un *u = (const struct sockaddr_un *)dest_addr;
-            if (u->sun_path[0]) {
-                char b[1040];
-                int n = snprintf(b, sizeof b, "U %s\n", u->sun_path);
-                if (n > 0) emit(b, (size_t)n);
-            }
-        }
+        inspect_sockaddr(dest_addr, addrlen);
         g_busy = 0;
     }
     if (!real_sendto) {
@@ -336,6 +389,48 @@ ssize_t sendto(int fd, const void *buf, size_t len, int flags,
         }
     }
     return real_sendto(fd, buf, len, flags, dest_addr, addrlen);
+}
+
+ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
+    if (!g_busy && msg && msg->msg_name && g_trace_fd >= 0) {
+        g_busy = 1;
+        inspect_sockaddr((const struct sockaddr *)msg->msg_name, msg->msg_namelen);
+        g_busy = 0;
+    }
+    if (!real_sendmsg) {
+        real_sendmsg = (fn_sendmsg_t)dlsym(RTLD_NEXT, "sendmsg");
+        if (!real_sendmsg) {
+#ifdef SYS_sendmsg
+            return (ssize_t)syscall(SYS_sendmsg, fd, msg, flags);
+#else
+            return -1;
+#endif
+        }
+    }
+    return real_sendmsg(fd, msg, flags);
+}
+
+int sendmmsg(int fd, struct mmsg_hdr *msgvec, unsigned int vlen, int flags) {
+    if (!g_busy && msgvec && g_trace_fd >= 0) {
+        g_busy = 1;
+        for (unsigned int i = 0; i < vlen; i++) {
+            if (msgvec[i].msg_hdr.msg_name) {
+                inspect_sockaddr((const struct sockaddr *)msgvec[i].msg_hdr.msg_name, msgvec[i].msg_hdr.msg_namelen);
+            }
+        }
+        g_busy = 0;
+    }
+    if (!real_sendmmsg) {
+        real_sendmmsg = (fn_sendmmsg_t)dlsym(RTLD_NEXT, "sendmmsg");
+        if (!real_sendmmsg) {
+#ifdef SYS_sendmmsg
+            return (int)syscall(SYS_sendmmsg, fd, msgvec, vlen, flags);
+#else
+            return -1;
+#endif
+        }
+    }
+    return real_sendmmsg(fd, msgvec, vlen, flags);
 }
 
 /* ---- subprocess launch ------------------------------------------------- */

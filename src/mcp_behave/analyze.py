@@ -78,6 +78,37 @@ def is_sensitive_path(path: str) -> tuple[bool, str]:
     if "secrets" in parts and "kubernetes.io" in parts:
         return True, "kubernetes.io/token"
 
+    # GPG private keys and keyrings
+    if ".gnupg" in parts:
+        return True, ".gnupg"
+    for part in parts:
+        if part in ("secring.gpg", "trustdb.gpg", "pubring.kbx"):
+            return True, part
+
+    # Package manager and git credentials
+    for part in parts:
+        if part in (".npmrc", ".pypirc", ".git-credentials", ".gitconfig"):
+            return True, part
+
+    # Cloud provider CLI configurations
+    if ".azure" in parts:
+        return True, ".azure"
+    if "gcloud" in parts:
+        for part in parts:
+            if part in ("credentials.db", "application_default_credentials.json", "access_tokens.db", "properties"):
+                return True, f"gcloud/{part}"
+        if any("gcloud" in p for p in parts):
+            return True, "gcloud"
+
+    # Browser profile secrets and credential databases
+    browser_dirs = ("google/chrome", "chromium", "firefox", "bravesoftware", "brave-browser", "safari")
+    browser_secret_files = ("login data", "cookies", "cookies.sqlite", "key4.db", "logins.json", "web data")
+    norm_lower = norm.lower()
+    if any(b in norm_lower for b in browser_dirs):
+        for part in parts:
+            if part in browser_secret_files:
+                return True, f"browser/{part}"
+
     # Generic private key file extensions
     base = Path(norm).name.lower()
     if base.endswith((".pem", ".key")) and any(s in base for s in ("private", "id_", "secret", "server", "cert")):
@@ -148,13 +179,14 @@ def real_port(entry: str) -> bool:
 
 
 def _is_native(sample: list[str]) -> bool:
-    """Heuristic: native lines start with 'F ', 'W ', 'U ', 'N ', or 'X '.
-    strace lines look like 'openat(AT_FDCWD, ...'."""
+    """Heuristic: native lines start with 'F ', 'W ', 'U ', 'N ', 'X ', 'M ', or '! '."""
     for line in sample:
         s = line.rstrip("\n")
         if not s:
             continue
-        return len(s) >= 2 and s[0] in "FWUNX" and s[1] == " "
+        if s.startswith("! "):
+            return True
+        return len(s) >= 2 and s[0] in "FWUNXM" and s[1] == " "
     return False
 
 
@@ -164,31 +196,77 @@ def _analyze_native(lines) -> dict:
     unix_sockets = set()
     nets = set()
     execs = set()
+    truncated_paths = set()
+    tool_network_connects = {}
+    current_tool = None
     filtered_files = 0
 
     for line in lines:
         s = line.rstrip("\n")
+        if not s:
+            continue
+        if s.startswith("! TRUNCATED "):
+            parts = s[12:].split(" ", 1)
+            t_tag = parts[0] if parts else ""
+            t_tail = parts[1] if len(parts) > 1 else ""
+            if t_tail:
+                truncated_paths.add(t_tail)
+                norm = os.path.normpath(_clean_path(t_tail))
+                if interesting_file(norm):
+                    files_opened.add(norm)
+                    if t_tag == "W":
+                        files_written.add(norm)
+            continue
+
         if len(s) < 2 or s[1] != " ":
             continue
         tag, val = s[0], s[2:]
-        if tag == "F":
+        if tag == "M":
+            if val.startswith("CALL_START "):
+                current_tool = val[11:].strip()
+            elif val.startswith("CALL_END "):
+                current_tool = None
+        elif tag == "F":
             norm = os.path.normpath(_clean_path(val))
+            if len(norm) > 1024 or len(val) > 1024:
+                truncated_paths.add(norm)
             if interesting_file(norm):
                 files_opened.add(norm)
             else:
                 filtered_files += 1
+            # Check symlinks at analysis time
+            try:
+                if os.path.islink(norm) or (os.path.exists(norm) and os.path.islink(val)):
+                    real = os.path.realpath(norm)
+                    if real != norm and interesting_file(real):
+                        files_opened.add(real)
+            except (OSError, ValueError):
+                pass
         elif tag == "W":
             norm = os.path.normpath(_clean_path(val))
+            if len(norm) > 1024 or len(val) > 1024:
+                truncated_paths.add(norm)
             files_written.add(norm)
             if interesting_file(norm):
                 files_opened.add(norm)
+            try:
+                if os.path.islink(norm) or (os.path.exists(norm) and os.path.islink(val)):
+                    real = os.path.realpath(norm)
+                    if real != norm and interesting_file(real):
+                        files_opened.add(real)
+                        files_written.add(real)
+            except (OSError, ValueError):
+                pass
         elif tag == "U":
             norm = os.path.normpath(_clean_path(val))
             unix_sockets.add(norm)
         elif tag == "N":
             ip, _, port = val.rpartition(" ")
             if ip and interesting_net(ip):
-                nets.add(f"{ip}:{port}")
+                conn = f"{ip}:{port}"
+                nets.add(conn)
+                if current_tool:
+                    tool_network_connects.setdefault(current_tool, []).append(conn)
         elif tag == "X":
             execs.add(os.path.normpath(_clean_path(val)))
 
@@ -198,6 +276,8 @@ def _analyze_native(lines) -> dict:
         "unix_sockets": sorted(unix_sockets),
         "network_connects": sorted(n for n in nets if real_port(n)),
         "subprocesses": sorted(execs),
+        "truncated_paths": sorted(truncated_paths),
+        "tool_network_connects": tool_network_connects,
         "_meta": {"files_filtered_as_noise": filtered_files},
     }
 
@@ -214,12 +294,15 @@ def analyze(path: str) -> dict:
     unix_sockets = set()
     nets = set()
     execs = set()
+    truncated_paths = set()
     filtered_files = 0
 
     with open(path, errors="replace") as f:
         for line in f:
             if (m := OPENAT.search(line)):
                 p = os.path.normpath(_clean_path(m.group(1)))
+                if len(p) > 1024:
+                    truncated_paths.add(p)
                 if interesting_file(p):
                     files_opened.add(p)
                 else:
@@ -235,6 +318,8 @@ def analyze(path: str) -> dict:
         "unix_sockets": sorted(unix_sockets),
         "network_connects": sorted(n for n in nets if real_port(n)),
         "subprocesses": sorted(execs),
+        "truncated_paths": sorted(truncated_paths),
+        "tool_network_connects": {},
         "_meta": {"files_filtered_as_noise": filtered_files},
     }
 

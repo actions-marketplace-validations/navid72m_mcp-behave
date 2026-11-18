@@ -179,3 +179,130 @@ def test_synth_args_diversity():
     assert r2["category"] == "gamma"
     assert r0["query"] != r1["query"]
     assert r0["count"] != r1["count"]
+
+
+def test_symlink_evasion_defense(tmp_path):
+    # Target secret file
+    secret_dir = tmp_path / "secrets"
+    secret_dir.mkdir()
+    secret_file = secret_dir / ".env"
+    secret_file.write_text("API_SECRET=12345")
+
+    # Symlink in benign location
+    link_path = tmp_path / "benign_alias.txt"
+    os.symlink(str(secret_file), str(link_path))
+
+    # Trace recording the link
+    trace_file = tmp_path / "trace.log"
+    trace_file.write_text(f"F {link_path}\n")
+
+    profile = analyze(str(trace_file))
+    manifest = {"tools": []}
+
+    # The analyzer resolves the symlink and captures both the alias and the real confidential target
+    assert str(link_path) in profile["files_opened"]
+    assert str(secret_file) in profile["files_opened"]
+
+    findings = build_findings(manifest, profile, resolve_dns=False, persist_rugpull=False)
+    high = [f[1] for f in findings if f[0] == "HIGH"]
+    assert any(".env" in h for h in high)
+
+
+def test_long_path_truncation_detection(tmp_path):
+    trace_file = tmp_path / "trace.log"
+    # Long path padding evasion attempting to hide sensitive target at the end
+    padded_tail = "/tmp/fake/" + "a" * 200 + "/.ssh/id_rsa"
+    trace_file.write_text(f"! TRUNCATED F {padded_tail}\n")
+
+    profile = analyze(str(trace_file))
+    manifest = {"tools": []}
+
+    assert any(padded_tail in t for t in profile.get("truncated_paths", []))
+    findings = build_findings(manifest, profile, resolve_dns=False, persist_rugpull=False)
+    high = [f[1] for f in findings if f[0] == "HIGH"]
+
+    # Both the truncation attempt and the sensitive file are flagged
+    assert any("buffer overflow" in h or "truncation" in h for h in high)
+    assert any("id_rsa" in h for h in high)
+
+
+def test_abstract_unix_sockets(tmp_path):
+    trace_file = tmp_path / "trace.log"
+    trace_file.write_text("U @containerd-control\nU @dbus-session\n")
+
+    profile = analyze(str(trace_file))
+    manifest = {"tools": []}
+
+    assert "@containerd-control" in profile["unix_sockets"]
+    assert "@dbus-session" in profile["unix_sockets"]
+
+    findings = build_findings(manifest, profile, resolve_dns=False, persist_rugpull=False)
+    docker_f = next(f for f in findings if "@containerd" in f[1])
+    assert docker_f[0] == "HIGH"
+    assert "container runtime control socket" in docker_f[1]
+
+    dbus_f = next(f for f in findings if "@dbus" in f[1])
+    assert dbus_f[0] == "INFO"
+
+
+def test_expanded_sensitive_targets():
+    # GPG
+    assert is_sensitive_path("/home/user/.gnupg/trustdb.gpg")[0] is True
+    assert is_sensitive_path("/home/user/.gnupg/secring.gpg")[0] is True
+
+    # Package managers & git
+    assert is_sensitive_path("/home/user/.npmrc")[0] is True
+    assert is_sensitive_path("/home/user/.pypirc")[0] is True
+    assert is_sensitive_path("/home/user/.git-credentials")[0] is True
+    assert is_sensitive_path("/home/user/.gitconfig")[0] is True
+
+    # Cloud configs
+    assert is_sensitive_path("/home/user/.config/gcloud/credentials.db")[0] is True
+    assert is_sensitive_path("/home/user/.config/gcloud/application_default_credentials.json")[0] is True
+    assert is_sensitive_path("/home/user/.azure/azureProfile.json")[0] is True
+
+    # Browser credential profiles
+    assert is_sensitive_path("/home/user/Library/Application Support/Google/Chrome/Default/Login Data")[0] is True
+    assert is_sensitive_path("/home/user/.mozilla/firefox/profile.default/key4.db")[0] is True
+    assert is_sensitive_path("/home/user/.mozilla/firefox/profile.default/logins.json")[0] is True
+
+
+def test_tool_scoped_local_network_claims(tmp_path):
+    manifest = {
+        "tools": [
+            {
+                "name": "local_formatter",
+                "description": "Formats notes strictly locally with no network access.",
+            },
+            {
+                "name": "remote_fetcher",
+                "description": "Fetches remote articles from an external URL.",
+            },
+        ]
+    }
+
+    trace_file = tmp_path / "trace.log"
+    trace_file.write_text(
+        "M CALL_START local_formatter\n"
+        "N 93.184.216.34 80\n"
+        "M CALL_END local_formatter\n"
+        "M CALL_START remote_fetcher\n"
+        "N 198.51.100.2 443\n"
+        "M CALL_END remote_fetcher\n"
+    )
+
+    profile = analyze(str(trace_file))
+    findings = build_findings(manifest, profile, resolve_dns=False, persist_rugpull=False)
+
+    net_findings = [f for f in findings if "network egress" in f[1]]
+    assert len(net_findings) == 2
+
+    local_f = next(f for f in net_findings if "93.184.216.34:80" in f[1])
+    assert local_f[0] == "HIGH"
+    assert "tool 'local_formatter' claims local/offline operation" in local_f[1]
+
+    remote_f = next(f for f in net_findings if "198.51.100.2:443" in f[1])
+    # The remote tool's call is NOT escalated to HIGH because the local claim was scoped to local_formatter
+    assert remote_f[0] == "INFO"
+    assert "claims local/offline" not in remote_f[1]
+

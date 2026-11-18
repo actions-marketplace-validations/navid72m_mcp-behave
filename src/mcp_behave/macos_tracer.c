@@ -36,6 +36,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/param.h>
 #include <spawn.h>
 
 /* ---- dyld interpose table macro (Apple-specific) ---------------------- */
@@ -84,10 +85,41 @@ static void emit(const char *buf, size_t len) {
 static void log_tag(char tag, const char *val) {
     if (g_busy || g_trace_fd < 0 || !val) return;
     g_busy = 1;
-    char b[1200];
+    char b[4096];
     int n = snprintf(b, sizeof b, "%c %s\n", tag, val);
-    if (n > 0) emit(b, (size_t)(n < (int)sizeof b ? n : (int)sizeof b - 1));
+    if (n >= (int)sizeof(b)) {
+        emit(b, sizeof(b) - 1);
+        size_t vlen = strlen(val);
+        const char *tail = (vlen > 512) ? (val + vlen - 512) : val;
+        char alert[1024];
+        int an = snprintf(alert, sizeof alert, "! TRUNCATED %c %s\n", tag, tail);
+        if (an > 0) emit(alert, (size_t)(an < (int)sizeof alert ? an : (int)sizeof alert - 1));
+    } else if (n > 0) {
+        emit(b, (size_t)n);
+    }
     g_busy = 0;
+}
+
+static void check_symlink_and_log(const char *path, int is_write) {
+    if (!path || !*path) return;
+    char resolved[MAXPATHLEN];
+    if (realpath(path, resolved)) {
+        if (strcmp(path, resolved) != 0) {
+            log_tag('F', resolved);
+            if (is_write) log_tag('W', resolved);
+        }
+    }
+}
+
+static void check_fd_and_log(int fd, const char *orig_path, int is_write) {
+    if (fd < 0 || !orig_path) return;
+    char fd_path[MAXPATHLEN];
+    if (fcntl(fd, F_GETPATH, fd_path) >= 0 && fd_path[0]) {
+        if (strcmp(orig_path, fd_path) != 0) {
+            log_tag('F', fd_path);
+            if (is_write) log_tag('W', fd_path);
+        }
+    }
 }
 
 /* ---- open / openat ---------------------------------------------------- *
@@ -98,11 +130,15 @@ int my_open(const char *path, int flags, ...) {
     if (flags & O_CREAT) {
         va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap);
     }
+    int is_write = (((flags & O_ACCMODE) == O_WRONLY) || ((flags & O_ACCMODE) == O_RDWR) || (flags & O_CREAT));
     log_tag('F', path);
-    if (((flags & O_ACCMODE) == O_WRONLY) || ((flags & O_ACCMODE) == O_RDWR) || (flags & O_CREAT)) {
+    if (is_write) {
         log_tag('W', path);
     }
-    return open(path, flags, mode);
+    check_symlink_and_log(path, is_write);
+    int fd = open(path, flags, mode);
+    check_fd_and_log(fd, path, is_write);
+    return fd;
 }
 DYLD_INTERPOSE(my_open, open)
 
@@ -111,41 +147,58 @@ int my_openat(int dirfd, const char *path, int flags, ...) {
     if (flags & O_CREAT) {
         va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap);
     }
+    int is_write = (((flags & O_ACCMODE) == O_WRONLY) || ((flags & O_ACCMODE) == O_RDWR) || (flags & O_CREAT));
     log_tag('F', path);
-    if (((flags & O_ACCMODE) == O_WRONLY) || ((flags & O_ACCMODE) == O_RDWR) || (flags & O_CREAT)) {
+    if (is_write) {
         log_tag('W', path);
     }
-    return openat(dirfd, path, flags, mode);
+    check_symlink_and_log(path, is_write);
+    int fd = openat(dirfd, path, flags, mode);
+    check_fd_and_log(fd, path, is_write);
+    return fd;
 }
 DYLD_INTERPOSE(my_openat, openat)
 
-/* ---- connect & sendto (the network-visibility win over dtruss) --------- */
+/* ---- socket egress inspection (connect, sendto, sendmsg) -------------- */
+static void inspect_sockaddr(const struct sockaddr *addr, socklen_t len) {
+    if (!addr || g_trace_fd < 0) return;
+    char ip[INET6_ADDRSTRLEN] = {0};
+    int port = -1;
+    if (addr->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *s = (const struct sockaddr_in *)addr;
+        inet_ntop(AF_INET, &s->sin_addr, ip, sizeof ip);
+        port = ntohs(s->sin_port);
+    } else if (addr->sa_family == AF_INET6 && len >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *s = (const struct sockaddr_in6 *)addr;
+        inet_ntop(AF_INET6, &s->sin6_addr, ip, sizeof ip);
+        port = ntohs(s->sin6_port);
+    } else if (addr->sa_family == AF_UNIX) {
+        const struct sockaddr_un *u = (const struct sockaddr_un *)addr;
+        if (u->sun_path[0] != '\0') {
+            char b[1040];
+            int n = snprintf(b, sizeof b, "U %s\n", u->sun_path);
+            if (n > 0) emit(b, (size_t)n);
+        } else if (len > (socklen_t)sizeof(sa_family_t)) {
+            char name[108] = {0};
+            size_t max_name = len - sizeof(sa_family_t);
+            if (max_name > sizeof(name) - 1) max_name = sizeof(name) - 1;
+            memcpy(name, u->sun_path + 1, max_name);
+            char b[1040];
+            int n = snprintf(b, sizeof b, "U @%s\n", name);
+            if (n > 0) emit(b, (size_t)n);
+        }
+    }
+    if (port >= 0) {
+        char b[128];
+        int n = snprintf(b, sizeof b, "N %s %d\n", ip, port);
+        if (n > 0) emit(b, (size_t)n);
+    }
+}
+
 int my_connect(int fd, const struct sockaddr *addr, socklen_t len) {
     if (!g_busy && addr && g_trace_fd >= 0) {
         g_busy = 1;
-        char ip[INET6_ADDRSTRLEN] = {0};
-        int port = -1;
-        if (addr->sa_family == AF_INET && len >= (socklen_t)sizeof(struct sockaddr_in)) {
-            const struct sockaddr_in *s = (const struct sockaddr_in *)addr;
-            inet_ntop(AF_INET, &s->sin_addr, ip, sizeof ip);
-            port = ntohs(s->sin_port);
-        } else if (addr->sa_family == AF_INET6 && len >= (socklen_t)sizeof(struct sockaddr_in6)) {
-            const struct sockaddr_in6 *s = (const struct sockaddr_in6 *)addr;
-            inet_ntop(AF_INET6, &s->sin6_addr, ip, sizeof ip);
-            port = ntohs(s->sin6_port);
-        } else if (addr->sa_family == AF_UNIX) {
-            const struct sockaddr_un *u = (const struct sockaddr_un *)addr;
-            if (u->sun_path[0]) {
-                char b[1040];
-                int n = snprintf(b, sizeof b, "U %s\n", u->sun_path);
-                if (n > 0) emit(b, (size_t)n);
-            }
-        }
-        if (port >= 0) {
-            char b[128];
-            int n = snprintf(b, sizeof b, "N %s %d\n", ip, port);
-            if (n > 0) emit(b, (size_t)n);
-        }
+        inspect_sockaddr(addr, len);
         g_busy = 0;
     }
     return connect(fd, addr, len);
@@ -156,39 +209,22 @@ ssize_t my_sendto(int fd, const void *buf, size_t len, int flags,
                   const struct sockaddr *dest_addr, socklen_t addrlen) {
     if (!g_busy && dest_addr && g_trace_fd >= 0) {
         g_busy = 1;
-        if (dest_addr->sa_family == AF_INET && addrlen >= (socklen_t)sizeof(struct sockaddr_in)) {
-            char ip[INET6_ADDRSTRLEN] = {0};
-            const struct sockaddr_in *s = (const struct sockaddr_in *)dest_addr;
-            inet_ntop(AF_INET, &s->sin_addr, ip, sizeof ip);
-            int port = ntohs(s->sin_port);
-            if (port >= 0) {
-                char b[128];
-                int n = snprintf(b, sizeof b, "N %s %d\n", ip, port);
-                if (n > 0) emit(b, (size_t)n);
-            }
-        } else if (dest_addr->sa_family == AF_INET6 && addrlen >= (socklen_t)sizeof(struct sockaddr_in6)) {
-            char ip[INET6_ADDRSTRLEN] = {0};
-            const struct sockaddr_in6 *s = (const struct sockaddr_in6 *)dest_addr;
-            inet_ntop(AF_INET6, &s->sin6_addr, ip, sizeof ip);
-            int port = ntohs(s->sin6_port);
-            if (port >= 0) {
-                char b[128];
-                int n = snprintf(b, sizeof b, "N %s %d\n", ip, port);
-                if (n > 0) emit(b, (size_t)n);
-            }
-        } else if (dest_addr->sa_family == AF_UNIX) {
-            const struct sockaddr_un *u = (const struct sockaddr_un *)dest_addr;
-            if (u->sun_path[0]) {
-                char b[1040];
-                int n = snprintf(b, sizeof b, "U %s\n", u->sun_path);
-                if (n > 0) emit(b, (size_t)n);
-            }
-        }
+        inspect_sockaddr(dest_addr, addrlen);
         g_busy = 0;
     }
     return sendto(fd, buf, len, flags, dest_addr, addrlen);
 }
 DYLD_INTERPOSE(my_sendto, sendto)
+
+ssize_t my_sendmsg(int fd, const struct msghdr *msg, int flags) {
+    if (!g_busy && msg && msg->msg_name && g_trace_fd >= 0) {
+        g_busy = 1;
+        inspect_sockaddr((const struct sockaddr *)msg->msg_name, msg->msg_namelen);
+        g_busy = 0;
+    }
+    return sendmsg(fd, msg, flags);
+}
+DYLD_INTERPOSE(my_sendmsg, sendmsg)
 
 /* ---- subprocess launch (posix_spawn, execve, execv, execvp) --- */
 int my_execve(const char *path, char *const argv[], char *const envp[]) {

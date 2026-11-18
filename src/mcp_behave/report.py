@@ -279,14 +279,38 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
     }
     all_tools_claim_local = bool(tools) and all(tool_local_claims.values())
 
-    claims_local = server_claims_local or all_tools_claim_local or _claims_local_operation(_all_descriptions(manifest))
     findings = []
+
+    for trunc in profile.get("truncated_paths", []):
+        findings.append(("HIGH", f"suspicious path truncation or buffer overflow attempt: {trunc[:120]}"))
+
+    tool_network = profile.get("tool_network_connects", {})
+    net_to_tool = {}
+    for t_name, conns in tool_network.items():
+        for c in conns:
+            net_to_tool[c] = t_name
 
     for ipport in profile.get("network_connects", []):
         host = _resolve(ipport) if resolve_dns else None
         where = f"{ipport} ({host})" if host else ipport
-        sev = "HIGH" if claims_local else "INFO"
-        note = " -- but a description claims local/offline operation" if claims_local else ""
+        origin_tool = net_to_tool.get(ipport)
+
+        # Scoped local claim check:
+        # A network connection is HIGH severity if:
+        # 1. Server-level instructions claim local/offline, OR
+        # 2. All declared tools claim local/offline, OR
+        # 3. The specific tool that initiated the connection claims local/offline.
+        tool_claims_local = tool_local_claims.get(origin_tool, False) if origin_tool else False
+        is_violating_local = server_claims_local or all_tools_claim_local or tool_claims_local
+
+        sev = "HIGH" if is_violating_local else "INFO"
+        if is_violating_local:
+            if origin_tool and tool_claims_local and not (server_claims_local or all_tools_claim_local):
+                note = f" -- but tool '{origin_tool}' claims local/offline operation"
+            else:
+                note = " -- but a description claims local/offline operation"
+        else:
+            note = ""
         findings.append((sev, f"network egress to {where}{note}"))
 
     files_opened = profile.get("files_opened", [])
@@ -300,7 +324,7 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
 
     for unix_sock in profile.get("unix_sockets", []):
         # Flag container runtime control sockets as high risk
-        if any(sock_needle in unix_sock.lower() for sock_needle in ("docker.sock", "containerd.sock", "crio.sock", "podman.sock")):
+        if any(sock_needle in unix_sock.lower() for sock_needle in ("docker", "containerd", "crio", "podman")) :
             findings.append(("HIGH", f"connected to container runtime control socket: {unix_sock}"))
         else:
             findings.append(("INFO", f"connected to unix domain socket: {unix_sock}"))
@@ -341,7 +365,9 @@ def report(out_dir, *, resolve_dns: bool = True, show_scorecard: bool = False, c
     manifest, profile = load(out_dir)
     findings = build_findings(manifest, profile, resolve_dns=resolve_dns, config=config, persist_rugpull=True)
     server_instructions = manifest.get("instructions") or ""
-    claims_local = _claims_local_operation(server_instructions) or _claims_local_operation(_all_descriptions(manifest))
+    tools = manifest.get("tools") or []
+    all_tools_claim_local = bool(tools) and all(_claims_local_operation(t.get("description", "")) for t in tools)
+    claims_local = _claims_local_operation(server_instructions) or all_tools_claim_local
     syscalls_available = manifest.get("syscalls_available", True)
 
     print(f"\n  target tools: {_tool_names(manifest)}")
