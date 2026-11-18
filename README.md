@@ -36,7 +36,15 @@ tripping two — false positives would kill credibility.
 ## Install
 
 ```bash
+# Via Python (pip / uv)
 pip install mcp-behave
+# or run directly with uv:
+uvx mcp-behave
+
+# Via npm (npx)
+npx mcp-behave
+# or install globally:
+npm install -g mcp-behave
 ```
 
 ### Tracer Requirements
