@@ -2,6 +2,7 @@
 <!-- mcp-name: io.github.navid72m/mcp-behave -->
 
 [![CI](https://github.com/navid72m/mcp-behave/actions/workflows/ci.yml/badge.svg)](https://github.com/navid72m/mcp-behave/actions/workflows/ci.yml)
+[![Website](https://img.shields.io/badge/Website-mcp--behave-cyan)](https://navid72m.github.io/mcp-behave/)
 [![PyPI version](https://img.shields.io/pypi/v/mcp-behave.svg)](https://pypi.org/project/mcp-behave/)
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/mcp-behave?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/mcp-behave)
 [![npm version](https://img.shields.io/npm/v/mcp-behave.svg)](https://www.npmjs.com/package/mcp-behave)
