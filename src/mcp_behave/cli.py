@@ -124,6 +124,15 @@ SUBCOMMANDS = {"push", "serve"}
 
 def main(argv=None):
     raw_argv = sys.argv[1:] if argv is None else list(argv)
+    # Strip leading binary name if passed by container entrypoints/wrappers
+    if raw_argv and raw_argv[0] in ("mcp-behave", "mcp_behave"):
+        raw_argv = raw_argv[1:]
+
+    if not raw_argv:
+        # Default with no arguments: start the FastMCP server
+        from . import server as server_mod
+        return server_mod.main([])
+
     if raw_argv and raw_argv[0] in SUBCOMMANDS:
         sub = raw_argv[0]
         rest = raw_argv[1:]
@@ -135,7 +144,7 @@ def main(argv=None):
             return server_mod.main(rest)
 
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
 
     if not args.server_command:
         parser.error("no server command given. "

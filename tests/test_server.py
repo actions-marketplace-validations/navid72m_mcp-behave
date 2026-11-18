@@ -56,3 +56,28 @@ def test_cli_serve_help(capsys):
     assert exc.value.code == 0
     captured = capsys.readouterr()
     assert "mcp-behave serve" in captured.out
+
+
+def test_cli_default_to_serve(monkeypatch):
+    called = []
+    from mcp_behave import server as server_mod
+    monkeypatch.setattr(server_mod, "main", lambda argv: called.append(argv))
+
+    # Test empty args
+    cli_main([])
+    assert called == [[]]
+
+    # Test "mcp-behave"
+    called.clear()
+    cli_main(["mcp-behave"])
+    assert called == [[]]
+
+    # Test "serve"
+    called.clear()
+    cli_main(["serve"])
+    assert called == [[]]
+
+    # Test "mcp-behave", "serve"
+    called.clear()
+    cli_main(["mcp-behave", "serve"])
+    assert called == [[]]

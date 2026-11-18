@@ -1,4 +1,9 @@
 FROM python:3.12-slim
+
+LABEL org.opencontainers.image.source="https://github.com/navid72m/mcp-behave"
+LABEL org.opencontainers.image.description="Runtime behavioral auditor and security scanner for Model Context Protocol (MCP) servers"
+LABEL org.opencontainers.image.licenses="MIT"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc libc6-dev strace curl ca-certificates gnupg \
     && rm -rf /var/lib/apt/lists/*
@@ -19,3 +24,4 @@ COPY . .
 RUN pip install --no-cache-dir .
 # Run inside the repo so planted canaries in ./sandbox_home are used as $HOME.
 ENTRYPOINT ["bash", "run.sh"]
+CMD ["serve"]
