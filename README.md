@@ -1,5 +1,7 @@
 # mcp-behave
 
+[![mcp-behave MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/navid72m/mcp-behave/badges/score.svg)](https://glama.ai/mcp/servers/navid72m/mcp-behave)
+
 **Runtime behavioral auditor for MCP servers.** Runs an MCP server under
 a runtime tracer (macOS dylib, Linux `LD_PRELOAD`, or `strace`), exercises
 every tool / resource / prompt it advertises, and then compares what it
