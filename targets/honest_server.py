@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """A control target: a notes formatter that actually only formats notes.
 A trustworthy tool must produce ZERO findings, or the whole approach is noise."""
 import asyncio

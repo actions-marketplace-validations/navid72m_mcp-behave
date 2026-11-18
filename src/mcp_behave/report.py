@@ -16,8 +16,22 @@ def _state_dir() -> Path:
     override = os.environ.get("MCP_BEHAVE_STATE_DIR")
     if override:
         return Path(override)
-    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    return Path(base) / "mcp-behave" / "manifests"
+    import tempfile
+    candidates = [
+        Path(os.environ.get("XDG_DATA_HOME") or "~/.local/share").expanduser() / "mcp-behave" / "manifests",
+        Path("~/.mcp-behave/manifests").expanduser(),
+        Path(tempfile.gettempdir()) / f"mcp-behave-manifests-{os.getuid()}",
+    ]
+    for d in candidates:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            test_file = d / ".write_test"
+            test_file.write_text("ok")
+            test_file.unlink()
+            return d
+        except (OSError, PermissionError):
+            continue
+    return Path(tempfile.gettempdir())
 
 
 def _server_fingerprint(server_cmd: list[str]) -> str:
@@ -28,17 +42,18 @@ def _server_fingerprint(server_cmd: list[str]) -> str:
     return hashlib.sha256(json.dumps(server_cmd or []).encode()).hexdigest()[:16]
 
 
+import concurrent.futures
+
 def _resolve(ip: str, timeout: float = 0.5) -> str | None:
     """Reverse-DNS, best-effort. Network failures or PTR-less IPs return None."""
-    old = socket.getdefaulttimeout()
+    addr = ip.split(":")[0]
     try:
-        socket.setdefaulttimeout(timeout)
-        host, _, _ = socket.gethostbyaddr(ip.split(":")[0])
-        return host
-    except (socket.herror, socket.gaierror, OSError):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(socket.gethostbyaddr, addr)
+            host, _, _ = future.result(timeout=timeout)
+            return host
+    except Exception:
         return None
-    finally:
-        socket.setdefaulttimeout(old)
 
 
 def load(out_dir):

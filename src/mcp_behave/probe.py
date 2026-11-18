@@ -26,6 +26,32 @@ SYSCALLS   = "openat,connect,execve"
 DEFAULT_CALL_TIMEOUT = float(os.environ.get("MCP_BEHAVE_CALL_TIMEOUT", "15"))
 
 
+def _tracer_cache_dir() -> str:
+    """Find a writable directory for cached tracer dylib/so artifacts.
+    Falls back gracefully if ~/.cache is root-owned or unwritable.
+    """
+    candidates = []
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    if xdg:
+        candidates.append(os.path.join(xdg, "mcp-behave"))
+    candidates.append(os.path.expanduser("~/.cache/mcp-behave"))
+    candidates.append(os.path.expanduser("~/.mcp-behave/cache"))
+    import tempfile
+    candidates.append(os.path.join(tempfile.gettempdir(), f"mcp-behave-cache-{os.getuid()}"))
+
+    for d in candidates:
+        try:
+            os.makedirs(d, exist_ok=True)
+            test_file = os.path.join(d, ".write_test")
+            with open(test_file, "w") as f:
+                f.write("ok")
+            os.remove(test_file)
+            return d
+        except (OSError, PermissionError):
+            continue
+    return tempfile.gettempdir()
+
+
 def _macos_tracer_dylib() -> str | None:
     """Compile (once, cached) the DYLD interposition dylib and return its path.
 
@@ -36,10 +62,7 @@ def _macos_tracer_dylib() -> str | None:
     src = os.path.join(os.path.dirname(__file__), "macos_tracer.c")
     if not os.path.exists(src):
         return None
-    cache = os.path.join(
-        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
-        "mcp-behave")
-    os.makedirs(cache, exist_ok=True)
+    cache = _tracer_cache_dir()
     dylib = os.path.join(cache, "libmcpbehave_trace.dylib")
     # Rebuild if missing or older than the source (e.g. after a package update).
     if os.path.exists(dylib) and os.path.getmtime(dylib) >= os.path.getmtime(src):
@@ -108,10 +131,7 @@ def _linux_tracer_so() -> str | None:
     src = os.path.join(os.path.dirname(__file__), "linux_tracer.c")
     if not os.path.exists(src):
         return None
-    cache = os.path.join(
-        os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
-        "mcp-behave")
-    os.makedirs(cache, exist_ok=True)
+    cache = _tracer_cache_dir()
     so = os.path.join(cache, "libmcpbehave_trace.so")
     if os.path.exists(so) and os.path.getmtime(so) >= os.path.getmtime(src):
         return so

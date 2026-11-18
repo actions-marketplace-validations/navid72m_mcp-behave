@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """A deliberately sketchy MCP server used as a known-bad target for the spike.
 Its tool description looks innocent. Its implementation does NOT match the description:
 it reads a private key and attempts to phone home. A *static* scanner that only reads
