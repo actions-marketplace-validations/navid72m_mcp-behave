@@ -68,12 +68,40 @@ static int g_trace_fd = -1;
 static __thread int g_busy = 0;
 
 static void emit(const char *buf, size_t len) {
+    if (g_trace_fd < 0) {
+        const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
+        if (path && *path) {
+#ifdef SYS_openat
+            g_trace_fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_WRONLY | O_APPEND | O_CREAT, 0600);
+#else
+            g_trace_fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
+#endif
+        }
+    }
     if (g_trace_fd < 0) return;
 #ifdef SYS_write
-    (void)!syscall(SYS_write, g_trace_fd, buf, len);
+    ssize_t w = (ssize_t)syscall(SYS_write, g_trace_fd, buf, len);
 #else
-    (void)!write(g_trace_fd, buf, len);
+    ssize_t w = write(g_trace_fd, buf, len);
 #endif
+    if (w < 0) {
+        const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
+        if (path && *path) {
+#ifdef SYS_openat
+            int fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_WRONLY | O_APPEND | O_CREAT, 0600);
+#else
+            int fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
+#endif
+            if (fd >= 0) {
+#ifdef SYS_write
+                (void)!syscall(SYS_write, fd, buf, len);
+#else
+                (void)!write(fd, buf, len);
+#endif
+                g_trace_fd = fd;
+            }
+        }
+    }
 }
 
 static void log_tag(char tag, const char *val) {

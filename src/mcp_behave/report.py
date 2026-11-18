@@ -108,6 +108,9 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True) -> l
         if any(s in path for s in SENSITIVE):
             findings.append(("HIGH", f"read a sensitive path: {path}"))
 
+    for proc in profile.get("subprocesses", []):
+        findings.append(("INFO", f"spawned subprocess: {proc}"))
+
     rug = _rugpull_check(manifest)
     if rug:
         findings.append(rug)

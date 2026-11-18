@@ -10,7 +10,10 @@ import sys
 import tempfile
 from typing import Any, Dict, List, Union
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except (ImportError, ModuleNotFoundError):
+    from mcp.server.mcpserver import MCPServer as FastMCP
 
 from . import __version__
 from . import probe as probe_mod

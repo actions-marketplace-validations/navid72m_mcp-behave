@@ -59,8 +59,25 @@ static void mcpbehave_init(void) {
 }
 
 static void emit(const char *buf, size_t len) {
+    if (g_trace_fd < 0) {
+        const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
+        if (path && *path) {
+            g_trace_fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
+        }
+    }
     if (g_trace_fd < 0) return;
-    (void)!write(g_trace_fd, buf, len);   /* single write() ~ atomic per record */
+    ssize_t w = write(g_trace_fd, buf, len);
+    if (w < 0) {
+        /* If write fails (e.g. child process closed fds before exec), reopen */
+        const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
+        if (path && *path) {
+            int fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
+            if (fd >= 0) {
+                (void)!write(fd, buf, len);
+                g_trace_fd = fd;
+            }
+        }
+    }
 }
 
 static void log_tag(char tag, const char *val) {
@@ -121,12 +138,24 @@ int my_connect(int fd, const struct sockaddr *addr, socklen_t len) {
 }
 DYLD_INTERPOSE(my_connect, connect)
 
-/* ---- subprocess launch (posix_spawn is what Python's subprocess uses) --- */
+/* ---- subprocess launch (posix_spawn, execve, execv, execvp) --- */
 int my_execve(const char *path, char *const argv[], char *const envp[]) {
     log_tag('X', path);
     return execve(path, argv, envp);
 }
 DYLD_INTERPOSE(my_execve, execve)
+
+int my_execv(const char *path, char *const argv[]) {
+    log_tag('X', path);
+    return execv(path, argv);
+}
+DYLD_INTERPOSE(my_execv, execv)
+
+int my_execvp(const char *file, char *const argv[]) {
+    log_tag('X', file);
+    return execvp(file, argv);
+}
+DYLD_INTERPOSE(my_execvp, execvp)
 
 int my_posix_spawn(pid_t *pid, const char *path,
         const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *at,

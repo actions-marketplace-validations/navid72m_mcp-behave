@@ -245,6 +245,8 @@ def synth_args(schema: dict) -> dict:
         spec = spec or {}
         if isinstance(spec.get("enum"), list) and spec["enum"]:
             return spec["enum"][0]
+        if "default" in spec and spec["default"] is not None:
+            return spec["default"]
         fmt = spec.get("format")
         if fmt in FORMAT_VALUES:
             return FORMAT_VALUES[fmt]
@@ -253,7 +255,10 @@ def synth_args(schema: dict) -> dict:
             for needle, value in KEYNAME_HINTS:
                 if needle in k:
                     return value
-        return TYPE_DEFAULTS.get(spec.get("type", "string"), "canary-input")
+        val = TYPE_DEFAULTS.get(spec.get("type", "string"), "canary-input")
+        if isinstance(val, (int, float)) and "minimum" in spec and val < spec["minimum"]:
+            val = spec["minimum"]
+        return val
 
     return {key: synth_one(key, spec)
             for key, spec in (schema or {}).get("properties", {}).items()}
