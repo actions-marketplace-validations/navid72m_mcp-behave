@@ -1,6 +1,6 @@
 {
   "name": "mcp-behave",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Runtime behavioral auditor for MCP servers — scope-violation detection via native interposition & syscall tracing",
   "main": "bin/mcp-behave.js",
   "bin": "./bin/mcp-behave.js",
