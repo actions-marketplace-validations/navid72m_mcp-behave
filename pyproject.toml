@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-behave"
-version = "0.3.0"
+version = "0.3.1"
 description = "Runtime behavioral auditor for MCP servers — scope-violation detection via native interposition & syscall tracing"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -43,8 +43,9 @@ mcp-behave-server = "mcp_behave.server:main"
 packages = ["src/mcp_behave"]
 
 [tool.hatch.build.targets.sdist]
-exclude = [
-    "/sandbox_home",
-    "/.env*",
-    "/.github",
+include = [
+    "/src",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
 ]

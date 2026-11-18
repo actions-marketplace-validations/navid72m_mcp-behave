@@ -12,8 +12,10 @@ from typing import Any, Dict, List, Optional, Union
 
 try:
     from mcp.server.fastmcp import FastMCP
+    from mcp.types import ToolAnnotations
 except (ImportError, ModuleNotFoundError):
     from mcp.server.mcpserver import MCPServer as FastMCP
+    ToolAnnotations = None
 
 from . import __version__
 from . import probe as probe_mod
@@ -35,6 +37,7 @@ mcp = FastMCP(
         "prompts using canary inputs, captures system calls (network, files, subprocesses), "
         "and detects undeclared behaviors or manifest rug-pulls."
     ),
+    annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False) if ToolAnnotations else None,
 )
 async def audit_server(
     command: Union[List[str], str],
@@ -99,6 +102,7 @@ async def audit_server(
         "without executing tool actions or tracing syscalls. Also checks for manifest "
         "rug-pulls against prior recorded runs."
     ),
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True) if ToolAnnotations else None,
 )
 async def inspect_manifest(
     command: Union[List[str], str],
@@ -153,6 +157,7 @@ async def inspect_manifest(
         "to discover all configured MCP servers and detect security risks (hardcoded API keys/tokens, "
         "over-privileged root/home directory mounts, shell command wrappers)."
     ),
+    annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True) if ToolAnnotations else None,
 )
 async def scan_client_configs(
     custom_config_path: Optional[str] = None,

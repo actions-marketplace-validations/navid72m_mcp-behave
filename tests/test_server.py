@@ -24,6 +24,12 @@ def test_server_tools_registered():
         assert "inspect_manifest" in names
         assert "scan_client_configs" in names
 
+        # Verify tool annotations
+        by_name = {t.name: t for t in tools}
+        assert by_name["inspect_manifest"].annotations.readOnlyHint is True
+        assert by_name["scan_client_configs"].annotations.readOnlyHint is True
+        assert by_name["audit_server"].annotations.readOnlyHint is False
+
     asyncio.run(run())
 
 
