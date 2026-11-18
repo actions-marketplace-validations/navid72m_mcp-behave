@@ -334,6 +334,13 @@ def report_json(out_dir, *, resolve_dns: bool = True) -> dict:
     }
 
 
+def report_sarif(out_dir, *, resolve_dns: bool = True) -> dict:
+    """SARIF reporter. Returns an OASIS SARIF v2.1.0 dict for GitHub Code Scanning."""
+    from . import sarif as sarif_mod
+    json_data = report_json(out_dir, resolve_dns=resolve_dns)
+    return sarif_mod.to_sarif(json_data)
+
+
 if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("OUT_DIR", "/tmp/mcp_behave_out")
     report(out)

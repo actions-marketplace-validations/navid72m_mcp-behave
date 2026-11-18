@@ -78,6 +78,9 @@ mcp-behave --no-trace python -m mcp_server_fetch
 # Machine-readable output for CI:
 mcp-behave --json --fail-on high python -m mcp_server_fetch
 
+# OASIS SARIF v2.1.0 output for GitHub Code Scanning:
+mcp-behave --sarif python -m mcp_server_fetch > results.sarif
+
 # Connect to an already-running remote server (manifest analysis only,
 # no syscall trace possible):
 mcp-behave --transport sse http://localhost:8000/sse
@@ -91,6 +94,7 @@ Exit codes: `0` clean, `3` findings at or above `--fail-on` threshold,
 - `--no-trace` — skip syscall tracing and run manifest analysis only.
 - `--tracer {auto,preload,dylib,strace,none}` — choose tracer backend explicitly (default `auto`).
 - `--json` — emit findings as JSON on stdout.
+- `--sarif` — emit findings as OASIS SARIF v2.1.0 on stdout (for GitHub Code Scanning / CI).
 - `--fail-on {never,info,high}` — severity that triggers exit code 3 (default `high`).
 - `--no-dns` — skip reverse-DNS lookups (faster, offline-safe).
 - `--timeout SECONDS` — per-call timeout (default 15).

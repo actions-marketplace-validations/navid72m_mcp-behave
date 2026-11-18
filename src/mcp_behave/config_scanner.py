@@ -448,6 +448,10 @@ def main(argv=None, default_audit=False) -> int:
         help="Emit results as JSON on stdout.",
     )
     parser.add_argument(
+        "--sarif", action="store_true",
+        help="Emit results as OASIS SARIF v2.1.0 on stdout for GitHub Code Scanning.",
+    )
+    parser.add_argument(
         "--no-trace", action="store_true",
         help="Skip syscall tracing during server audits (manifest analysis only).",
     )
@@ -484,7 +488,11 @@ def main(argv=None, default_audit=False) -> int:
             for f in a_info.get("findings", []):
                 total_findings.append((f["severity"], f["message"]))
 
-    if args.json:
+    if args.sarif:
+        from . import sarif as sarif_mod
+        sarif_doc = sarif_mod.configs_to_sarif(scan_data, audit_data)
+        print(json.dumps(sarif_doc, indent=2))
+    elif args.json:
         payload = {
             "configs_found": scan_data.get("configs_found", []),
             "servers": scan_data.get("servers", []),

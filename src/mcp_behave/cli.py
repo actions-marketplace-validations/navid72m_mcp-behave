@@ -74,6 +74,10 @@ def _build_parser():
              "Useful for CI pipelines.",
     )
     p.add_argument(
+        "--sarif", action="store_true",
+        help="Emit findings as OASIS SARIF v2.1.0 on stdout for GitHub Code Scanning / CI.",
+    )
+    p.add_argument(
         "--fail-on", choices=("never", "info", "high"), default="high",
         help="Exit non-zero when a finding at or above this severity is "
              "produced (default: %(default)s).",
@@ -155,12 +159,12 @@ def main(argv=None):
         parser.error("no server command given. "
                      "Example: mcp-behave python -m mcp_server_fetch")
 
-    # In --json mode, suppress the human-readable banners so stdout stays
+    # In --json or --sarif mode, suppress the human-readable banners so stdout stays
     # machine-parseable. We can't easily silence probe.py's progress prints
     # without rewiring it, so they go to stderr by setting stdout=/dev/null
     # for the probe call would be wrong (we'd lose real errors). Instead,
-    # accept that probe progress lines mingle with stderr in JSON mode.
-    quiet = args.json
+    # accept that probe progress lines mingle with stderr in JSON/SARIF mode.
+    quiet = args.json or args.sarif
 
     os.environ["OUT_DIR"] = args.out_dir  # probe/report read this
 
@@ -214,7 +218,12 @@ def main(argv=None):
         else:
             return 1
 
-    if args.json:
+    if args.sarif:
+        result = report_mod.report_sarif(args.out_dir, resolve_dns=not args.no_dns)
+        print(json.dumps(result, indent=2))
+        raw_json = report_mod.report_json(args.out_dir, resolve_dns=not args.no_dns)
+        findings = [(f["severity"], f["message"]) for f in raw_json["findings"]]
+    elif args.json:
         result = report_mod.report_json(args.out_dir, resolve_dns=not args.no_dns)
         print(json.dumps(result, indent=2))
         findings = [(f["severity"], f["message"]) for f in result["findings"]]
