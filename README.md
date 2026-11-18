@@ -72,6 +72,19 @@ Exit codes: `0` clean, `3` findings at or above `--fail-on` threshold,
 - `--transport {stdio,sse,streamable-http}` — remote transports skip syscall tracing.
 - `--out-dir PATH` — where `manifest.json` and `trace.log` are written.
 
+### Environment Variables
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `OUT_DIR` | `/tmp/mcp_behave_out` | Directory where probe output (`manifest.json` and `trace.log`) is stored. |
+| `TRACE_FILE` | `$OUT_DIR/trace.log` | Path to the raw syscall trace log file. |
+| `MCP_BEHAVE_CALL_TIMEOUT` | `15` | Timeout in seconds per individual tool, resource, or prompt call during exercise. |
+| `MCP_BEHAVE_STATE_DIR` | `$XDG_DATA_HOME/mcp-behave/manifests` | Storage location for historical manifest hashes used in rug-pull detection. |
+| `MCP_BEHAVE_DEBUG` | *(unset)* | Set to `1` to print full Python tracebacks on probe failures. |
+| `PROBE_NOISE_EXTRA` | *(empty)* | Colon-separated path substrings to filter out as benign noise during trace analysis. |
+| `MCP_BEHAVE_DASHBOARD_URL` | *(unset)* | Target dashboard URL for `mcp-behave push`. |
+| `MCP_BEHAVE_TOKEN` | *(unset)* | API bearer token for `mcp-behave push`. |
+
 ## Run as an MCP Server (Glama, Claude Desktop, Cursor)
 
 `mcp-behave` can run as an MCP server exposing behavioral security tools to AI agents:
