@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.navid72m/mcp-behave",
+  "description": "Runtime behavioral auditor for MCP servers: scope-violation detection and runtime tracing",
+  "repository": {
+    "url": "https://github.com/navid72m/mcp-behave",
+    "source": "github"
+  },
+  "version": "0.3.4",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mcp-behave",
+      "version": "0.3.4",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registryType": "npm",
+      "identifier": "mcp-behave",
+      "version": "0.3.4",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 # mcp-behave
+<!-- mcp-name: io.github.navid72m/mcp-behave -->
 
 [![CI](https://github.com/navid72m/mcp-behave/actions/workflows/ci.yml/badge.svg)](https://github.com/navid72m/mcp-behave/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/mcp-behave.svg)](https://pypi.org/project/mcp-behave/)
