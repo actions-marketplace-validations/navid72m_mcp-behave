@@ -55,5 +55,9 @@ jobs:
           sudo chmod +x /usr/local/bin/mcp-publisher
       - name: Authenticate with MCP Registry
         run: mcp-publisher login github-oidc
+      - name: Wait for package registries replication
+        run: |
+          echo "Waiting 30 seconds for package registries (PyPI / npm) to replicate..."
+          sleep 30
       - name: Publish to MCP Registry
         run: mcp-publisher publish server.json
