@@ -10,6 +10,8 @@ execution.
 
 Static scanners read tool descriptions. `mcp-behave` watches behavior.
 
+![mcp-behave demo](demo.gif)
+
 > See [`ARCHITECTURE.md`](ARCHITECTURE.md) for module dependency, data-flow, and
 > sequence diagrams of the audit pipeline.
 
