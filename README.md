@@ -195,6 +195,16 @@ and prints the response body to stderr.
 - **Rug-pull** — the declared manifest hash changes between runs of the same
   server (e.g. a tool's description silently changes after the user trusts it).
   Hashes persist under `$XDG_DATA_HOME/mcp-behave/manifests/`.
+- **Covert Channel & Metadata Injection** (CSA TTP: Tool Description Poisoning) — ANSI
+  terminal escape codes (`\x1b`), invisible zero-width Unicode (`\u200B`, `\u200C`,
+  `\u200D`, `\uFEFF`, `\u2060`), BiDi overrides (`\u202A`–`\u202E`, `\u2066`–`\u2069`),
+  Unicode tag characters, and prompt injection directive patterns (`Ignore previous instructions`,
+  `SYSTEM PROMPT:`, `<system>`, etc.) embedded in tool/parameter descriptions, resource URIs,
+  or prompt metadata.
+- **Tool Output Safety & Markdown Exfiltration** (CSA TTP: Output Prompt Injection / Data Exfiltration) —
+  captures runtime tool responses during probe execution and flags client-side HTTP GET
+  exfiltration vectors (such as external Markdown images `![...](https://...)` and HTML `<img src="...">` tags),
+  as well as ANSI escapes, invisible Unicode, and prompt injection payloads returned in tool outputs.
 
 Findings are framed as observations ("does X, undeclared"), never accusations.
 

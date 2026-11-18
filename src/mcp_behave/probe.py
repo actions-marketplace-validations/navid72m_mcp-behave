@@ -295,14 +295,32 @@ async def _list_safely(coro, label: str):
 
 async def _call_with_timeout(coro, label: str, timeout: float):
     try:
-        await asyncio.wait_for(coro, timeout=timeout)
-        return True
+        res = await asyncio.wait_for(coro, timeout=timeout)
+        return True, res
     except asyncio.TimeoutError:
         print(f"[probe]   {label} timed out after {timeout}s")
-        return False
+        return False, None
     except Exception as exc:
         print(f"[probe]   {label} raised: {exc}")
-        return False
+        return False, None
+
+
+def _extract_text_content(res) -> str:
+    """Extract concatenated string content from an MCP call result."""
+    if res is None:
+        return ""
+    content = getattr(res, "content", None)
+    if content is None and isinstance(res, dict):
+        content = res.get("content", [])
+    if not isinstance(content, list):
+        return ""
+    texts = []
+    for item in content:
+        if hasattr(item, "text"):
+            texts.append(str(item.text))
+        elif isinstance(item, dict) and "text" in item:
+            texts.append(str(item["text"]))
+    return "\n".join(texts)
 
 
 async def _discover_manifest(session: ClientSession):
@@ -334,6 +352,7 @@ async def _exercise(session: ClientSession, call_timeout: float):
     """Shared logic: discover + exercise tools, resources, prompts on a live session."""
     stats = {"tools": {"called": 0, "ok": 0}, "resources": {"called": 0, "ok": 0},
              "prompts": {"called": 0, "ok": 0}}
+    tool_outputs = {}
 
     tools_meta, resources_meta, prompts_meta = await _discover_manifest(session)
 
@@ -342,16 +361,21 @@ async def _exercise(session: ClientSession, call_timeout: float):
         args = synth_args(t.get("inputSchema"))
         print(f"[probe] calling tool {t['name']}({json.dumps(args)})")
         stats["tools"]["called"] += 1
-        if await _call_with_timeout(
-            session.call_tool(t["name"], args), f"tool {t['name']}", call_timeout):
+        ok, res = await _call_with_timeout(
+            session.call_tool(t["name"], args), f"tool {t['name']}", call_timeout)
+        if ok:
             stats["tools"]["ok"] += 1
+            text = _extract_text_content(res)
+            if text:
+                tool_outputs[t["name"]] = text
 
     print(f"[probe] discovered {len(resources_meta)} resource(s)")
     for r in resources_meta:
         print(f"[probe] reading resource {r['uri']}")
         stats["resources"]["called"] += 1
-        if await _call_with_timeout(
-            session.read_resource(r["uri"]), f"resource {r['uri']}", call_timeout):
+        ok, _ = await _call_with_timeout(
+            session.read_resource(r["uri"]), f"resource {r['uri']}", call_timeout)
+        if ok:
             stats["resources"]["ok"] += 1
 
     print(f"[probe] discovered {len(prompts_meta)} prompt(s)")
@@ -360,14 +384,16 @@ async def _exercise(session: ClientSession, call_timeout: float):
                 if a.get("required")}
         print(f"[probe] getting prompt {p['name']}({json.dumps(args)})")
         stats["prompts"]["called"] += 1
-        if await _call_with_timeout(
-            session.get_prompt(p["name"], args), f"prompt {p['name']}", call_timeout):
+        ok, _ = await _call_with_timeout(
+            session.get_prompt(p["name"], args), f"prompt {p['name']}", call_timeout)
+        if ok:
             stats["prompts"]["ok"] += 1
 
-    return tools_meta, resources_meta, prompts_meta, stats
+    return tools_meta, resources_meta, prompts_meta, stats, tool_outputs
 
 
 def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
+                    tool_outputs: dict | None = None,
                     *, transport: str, syscalls_available: bool,
                     manifest_file: str | None = None, trace_file: str | None = None):
     m_file = manifest_file or MANIFEST
@@ -379,6 +405,7 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
         "tools": tools_meta,
         "resources": resources_meta,
         "prompts": prompts_meta,
+        "tool_outputs": tool_outputs or {},
         "manifest_sha256": hashlib.sha256(
             json.dumps({"tools": tools_meta, "resources": resources_meta,
                         "prompts": prompts_meta}, sort_keys=True).encode()
@@ -425,9 +452,10 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
 
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
-            tools_meta, resources_meta, prompts_meta, stats = await _exercise(
+            tools_meta, resources_meta, prompts_meta, stats, tool_outputs = await _exercise(
                 session, call_timeout)
     _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
+                    tool_outputs=tool_outputs,
                     transport="stdio", syscalls_available=syscalls_available,
                     manifest_file=target_manifest_file, trace_file=target_trace_file)
 
@@ -463,9 +491,10 @@ async def run_remote(url: str, *, transport: str,
         # streamable_http returns (read, write, _); sse returns (read, write)
         read, write = conn[0], conn[1]
         async with ClientSession(read, write) as session:
-            tools_meta, resources_meta, prompts_meta, stats = await _exercise(
+            tools_meta, resources_meta, prompts_meta, stats, tool_outputs = await _exercise(
                 session, call_timeout)
     _write_manifest([url], tools_meta, resources_meta, prompts_meta, stats,
+                    tool_outputs=tool_outputs,
                     transport=transport, syscalls_available=False,
                     manifest_file=target_manifest_file, trace_file=target_trace_file)
 

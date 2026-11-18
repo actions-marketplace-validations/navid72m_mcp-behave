@@ -322,6 +322,16 @@ flowchart TD
     START --> RUG{"Manifest SHA-256 differs<br/>from stored fingerprint?"}
     RUG -- "Yes" --> F_HI_RUG["HIGH: declared surface changed<br/>since last run (rug-pull alert)"]
     RUG -- "No" --> CLEAN["No rug-pull"]
+
+    %% CSA TTP: Metadata Covert Channels & Injection
+    START --> META{"Metadata scan:<br/>ANSI, invisible Unicode,<br/>prompt injection?"}
+    META -- "Yes" --> F_HI_META["HIGH: Covert channel or injection<br/>in tool/prompt/resource metadata"]
+    META -- "No" --> CLEAN_META["Clean metadata"]
+
+    %% CSA TTP: Tool Output Exfiltration & Safety
+    START --> OUT_CHECK{"Tool output scan:<br/>Markdown image ![...](https://...)<br/>or output injection?"}
+    OUT_CHECK -- "Yes" --> F_HI_OUT["HIGH: External image link or<br/>payload in tool output (exfiltration risk)"]
+    OUT_CHECK -- "No" --> CLEAN_OUT["Safe tool outputs"]
 ```
 
 ### Exit Codes & CI Integration

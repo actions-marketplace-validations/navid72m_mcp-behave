@@ -26,6 +26,12 @@ def _classify_finding(msg: str) -> tuple[str, str]:
         return "sensitive_file_read", msg[len("read a sensitive path: ") :]
     if msg.startswith("declared surface changed"):
         return "rug_pull", msg
+    if "prompt injection" in msg.lower():
+        return "prompt_injection", msg
+    if "external image" in msg.lower():
+        return "data_exfiltration", msg
+    if "ansi escape" in msg.lower() or "invisible" in msg.lower() or "bidi" in msg.lower():
+        return "covert_channel", msg
     return "other", msg
 
 
