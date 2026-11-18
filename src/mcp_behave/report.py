@@ -288,7 +288,7 @@ def _tool_names(manifest: dict) -> str:
     return ", ".join(t["name"] for t in manifest.get("tools", [])) or "(none)"
 
 
-def report(out_dir, *, resolve_dns: bool = True) -> list:
+def report(out_dir, *, resolve_dns: bool = True, show_scorecard: bool = False) -> list:
     """Text reporter. Prints a human-readable summary; returns findings."""
     manifest, profile = load(out_dir)
     findings = build_findings(manifest, profile, resolve_dns=resolve_dns)
@@ -312,13 +312,21 @@ def report(out_dir, *, resolve_dns: bool = True) -> list:
         icon = "[!]" if sev == "HIGH" else "[i]"
         print(f"  {icon} {sev:4} {msg}")
     print()
+
+    if show_scorecard:
+        from . import scorecard as scorecard_mod
+        card = scorecard_mod.compute_scorecard(manifest, profile, findings)
+        scorecard_mod.print_scorecard(card)
+
     return findings
 
 
 def report_json(out_dir, *, resolve_dns: bool = True) -> dict:
     """JSON reporter. Returns a serializable dict for CI/CD consumption."""
+    from . import scorecard as scorecard_mod
     manifest, profile = load(out_dir)
     findings = build_findings(manifest, profile, resolve_dns=resolve_dns)
+    scorecard = scorecard_mod.compute_scorecard(manifest, profile, findings)
     return {
         "server_cmd": manifest.get("server_cmd"),
         "manifest_sha256": manifest.get("manifest_sha256"),
@@ -330,6 +338,7 @@ def report_json(out_dir, *, resolve_dns: bool = True) -> dict:
         },
         "observed": profile,
         "findings": [{"severity": s, "message": m} for s, m in findings],
+        "scorecard": scorecard,
         "stats": manifest.get("_stats", {}),
     }
 

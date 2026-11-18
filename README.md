@@ -81,6 +81,17 @@ mcp-behave --json --fail-on high python -m mcp_server_fetch
 # OASIS SARIF v2.1.0 output for GitHub Code Scanning:
 mcp-behave --sarif python -m mcp_server_fetch > results.sarif
 
+# Evaluate with objective CSA Security Scorecard & Letter Grade (A+ to F):
+mcp-behave --scorecard python -m mcp_server_fetch
+
+# Adversarial input fuzzing (path traversal, command injection, buffer boundary stress):
+mcp-behave --fuzz python -m mcp_server_fetch
+
+# Correlated Traffic & Syscall Inspector (real-time RPC-to-syscall timeline):
+mcp-behave inspect python targets/leaky_server.py
+# (or replay a previous audit output directory)
+mcp-behave inspect /tmp/mcp_behave_out
+
 # Connect to an already-running remote server (manifest analysis only,
 # no syscall trace possible):
 mcp-behave --transport sse http://localhost:8000/sse
@@ -93,6 +104,8 @@ Exit codes: `0` clean, `3` findings at or above `--fail-on` threshold,
 
 - `--no-trace` — skip syscall tracing and run manifest analysis only.
 - `--tracer {auto,preload,dylib,strace,none}` — choose tracer backend explicitly (default `auto`).
+- `--scorecard` — print an objective 0–100 CSA Security Selection Scorecard with letter grade (`A+` to `F`).
+- `--fuzz` — run adversarial input fuzzing against tool schemas (boundary mutations, path traversal, injection vectors).
 - `--json` — emit findings as JSON on stdout.
 - `--sarif` — emit findings as OASIS SARIF v2.1.0 on stdout (for GitHub Code Scanning / CI).
 - `--fail-on {never,info,high}` — severity that triggers exit code 3 (default `high`).
@@ -185,6 +198,90 @@ mcp-behave scan-configs --json
 3. **Shell Command Wrappers**: Detects servers executed via raw shell interpreters (`bash -c`, `sh -c`, `powershell -c`).
 4. **Unpinned Packages**: Identifies `npx` / `uvx` servers without version pins that pull untracked latest updates.
 5. **Live Behavioral Verification**: When `--audit` is passed (or via `audit-configs`), boots each server in isolation to verify actual system call behaviors (network egress, sensitive file reads, covert prompt injection).
+
+## Correlated Traffic & Syscall Inspector (`mcp-behave inspect`)
+
+Inspired by the [CSA MCP Security Inspection framework](https://modelcontextprotocol-security.io/audit/mcp-inspector.html), `mcp-behave inspect` runs an MCP server and displays a unified, chronological timeline connecting high-level JSON-RPC protocol messages directly to the underlying operating system syscalls they trigger:
+
+```bash
+# Run and inspect a server in real time:
+mcp-behave inspect python targets/leaky_server.py
+
+# Or replay and correlate a previous audit output directory:
+mcp-behave inspect /tmp/mcp_behave_out
+```
+
+```text
+======================================================================
+  MCP BEHAVIORAL INSPECTOR (Correlated Traffic & Syscall Stream)
+======================================================================
+  Target Server: python targets/leaky_server.py
+  Syscall Trace: Active
+  Tools Exposed: 1 declared tool(s)
+----------------------------------------------------------------------
+
+[PHASE 1: INITIALIZATION & HANDSHAKE]
+  [RPC] -> initialize(protocolVersion="2024-11-05")
+  [RPC] <- initialized()
+  [RPC] -> tools/list()  (1 tools returned)
+
+[PHASE 2: CAPABILITY EXECUTION]
+
+  ▶ tools/call "format_note"
+    [!] VIOLATION: file    ~/.ssh/id_rsa
+    [!] VIOLATION: network 93.184.216.34:80
+    [RPC]  <- response text: "# Note content"
+
+======================================================================
+  VERDICT: POLICY FINDINGS DETECTED
+    [!] HIGH network egress to 93.184.216.34:80 -- but a description claims local/offline operation
+    [!] HIGH read a sensitive path: ~/.ssh/id_rsa
+======================================================================
+```
+
+## CSA Security Selection Scorecard (`--scorecard`)
+
+Provides an objective 0–100 numerical rating and letter grade (`A+` to `F`) based on the [Cloud Security Alliance (CSA) Selection Scorecard](https://modelcontextprotocol-security.io/):
+
+- **Runtime Safety (40 pts)**: Penalizes undeclared network egress (-20 pts), sensitive filesystem credential reads (-20 pts), and unauthorized subprocess shells (-5 pts).
+- **Metadata Hygiene (25 pts)**: Penalizes tool description prompt injection (-10 pts), zero-width covert Unicode (-10 pts), and terminal ANSI sequences (-10 pts).
+- **Output Safety (20 pts)**: Penalizes client-side HTTP GET image exfiltration (-15 pts), output prompt injection (-10 pts), and output ANSI/covert channels (-5 pts).
+- **Surface Integrity (15 pts)**: Penalizes silent manifest rug-pulls (-10 pts) and misleading local/offline claims (-5 pts).
+
+```bash
+mcp-behave --scorecard python targets/honest_server.py
+```
+
+```text
+============================================================
+  MCP SECURITY SELECTION SCORECARD (CSA Standard)
+============================================================
+  Overall Score:   95 / 100
+  Security Grade: [ A+ ]  (PASSED)
+------------------------------------------------------------
+  Category Breakdown:
+    • Runtime System Safety  : 35 / 40  (-5 pts)
+        - -5 pts: Spawns child subprocess or system command shell
+    • Metadata Hygiene       : 25 / 25  (Pass)
+    • Output Safety          : 20 / 20  (Pass)
+    • Surface & Integrity    : 15 / 15  (Pass)
+============================================================
+```
+
+Scorecard metrics (`mcpSecurityScore`, `mcpSecurityGrade`, `mcpPassed`) are also automatically embedded into `--sarif` and `--json` outputs for automated CI gatekeeping.
+
+## Adversarial Schema Fuzzing (`--fuzz`)
+
+Instead of only synthesizing benign placeholder arguments, passing `--fuzz` automatically exercises tools against adversarial boundary vectors:
+- **Path traversal strings**: `../../../../etc/passwd`, `..\..\..\..\Windows\win.ini`
+- **Command & shell injection**: `; id;`, `| id`, `$(whoami)`, `` `id` ``
+- **Format string & crash payloads**: `%s%s%s%s%s%s`, `\x00\x00\x00`
+- **Buffer stress**: Long repeating strings (4KB boundary test)
+- **Numeric & boolean boundary tests**: `0`, `-1`, `2147483647`, `1e308`, `NaN`, `true`, `false`
+
+```bash
+mcp-behave --fuzz python -m mcp_server_fetch
+```
 
 ## Push results to a dashboard
 

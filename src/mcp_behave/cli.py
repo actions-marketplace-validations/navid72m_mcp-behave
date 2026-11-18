@@ -60,6 +60,7 @@ def _build_parser():
                     "Subcommands:\n"
                     "  `mcp-behave scan-configs` scans local AI client configs (Claude Desktop, Cursor, etc.)\n"
                     "  `mcp-behave audit-configs` scans and runs behavioral audits on all configured servers\n"
+                    "  `mcp-behave inspect` displays correlated live JSON-RPC traffic and OS syscall stream\n"
                     "  `mcp-behave serve` runs mcp-behave as an MCP server\n"
                     "  `mcp-behave push` uploads an audit result to an mcp-behave dashboard",
     )
@@ -76,6 +77,14 @@ def _build_parser():
     p.add_argument(
         "--sarif", action="store_true",
         help="Emit findings as OASIS SARIF v2.1.0 on stdout for GitHub Code Scanning / CI.",
+    )
+    p.add_argument(
+        "--fuzz", action="store_true",
+        help="Run adversarial input fuzzing against tool schemas (path traversal, command injection, buffer stress).",
+    )
+    p.add_argument(
+        "--scorecard", action="store_true",
+        help="Print an objective 0-100 CSA Security Selection Scorecard and letter grade (A+ to F).",
     )
     p.add_argument(
         "--fail-on", choices=("never", "info", "high"), default="high",
@@ -125,7 +134,7 @@ def _exit_code(findings: list, fail_on: str) -> int:
     return 3 if any(SEV_RANK.get(s, 0) >= threshold for s, _ in findings) else 0
 
 
-SUBCOMMANDS = {"push", "serve", "scan-configs", "audit-configs"}
+SUBCOMMANDS = {"push", "serve", "scan-configs", "audit-configs", "inspect"}
 
 
 def main(argv=None):
@@ -151,9 +160,15 @@ def main(argv=None):
         elif sub in ("scan-configs", "audit-configs"):
             from . import config_scanner
             return config_scanner.main(rest, default_audit=(sub == "audit-configs"))
+        elif sub == "inspect":
+            from . import inspect as inspect_mod
+            return inspect_mod.main(rest)
 
     parser = _build_parser()
     args = parser.parse_args(raw_argv)
+
+    if args.server_command and args.server_command[0] == "--":
+        args.server_command = args.server_command[1:]
 
     if not args.server_command:
         parser.error("no server command given. "
@@ -179,7 +194,7 @@ def main(argv=None):
         if not quiet:
             print(f"=== STEP 1: observe ({tracer_label}) ===")
         coro = probe_mod.run(args.server_command, call_timeout=args.timeout,
-                             tracer=tracer_choice)
+                             tracer=tracer_choice, fuzz=args.fuzz)
     else:
         if len(args.server_command) != 1:
             parser.error(f"--transport {args.transport} expects exactly one URL argument")
@@ -189,7 +204,8 @@ def main(argv=None):
                   "only manifest analysis runs.", file=sys.stderr)
         coro = probe_mod.run_remote(args.server_command[0],
                                     transport=args.transport,
-                                    call_timeout=args.timeout)
+                                    call_timeout=args.timeout,
+                                    fuzz=args.fuzz)
 
     try:
         asyncio.run(coro)
@@ -229,7 +245,7 @@ def main(argv=None):
         findings = [(f["severity"], f["message"]) for f in result["findings"]]
     else:
         print("=== STEP 2: declared-vs-observed diff ===")
-        findings = report_mod.report(args.out_dir, resolve_dns=not args.no_dns)
+        findings = report_mod.report(args.out_dir, resolve_dns=not args.no_dns, show_scorecard=args.scorecard)
 
     return _exit_code(findings, args.fail_on)
 

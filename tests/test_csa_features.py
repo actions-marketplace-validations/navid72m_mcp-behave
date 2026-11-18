@@ -235,3 +235,24 @@ def test_poisoned_fixture_server_end_to_end(tmp_path, monkeypatch):
     # Verify runtime output markdown image exfiltration detected
     assert any("https://attacker-c2.example/exfiltrate" in m for m in messages)
     assert len(high) >= 3
+
+
+def test_synth_fuzz_args():
+    schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "count": {"type": "integer"},
+            "mode": {"type": "string", "enum": ["read", "write"]}
+        }
+    }
+    fuzz_sets = probe.synth_fuzz_args(schema)
+    assert len(fuzz_sets) >= 5
+    # Verify path traversal payload generated
+    assert any("../../../../../../../../etc/passwd" in f.get("path", "") for f in fuzz_sets)
+    # Verify command injection payload generated
+    assert any("; id; whoami" in f.get("path", "") for f in fuzz_sets)
+    # Verify boundary integer generated
+    assert any(f.get("count") in (-1, 0, 2147483647) for f in fuzz_sets)
+    # Verify enum is respected
+    assert all(f.get("mode") in ("read", "write") for f in fuzz_sets)

@@ -191,22 +191,29 @@ def to_sarif(report_data: Dict[str, Any], artifact_override: Optional[str] = Non
     # Filter rules list to rules relevant to mcp-behave (include all standard rules for validation)
     rules_list = list(RULES.values())
 
+    run_obj: Dict[str, Any] = {
+        "tool": {
+            "driver": {
+                "name": "mcp-behave",
+                "version": __version__,
+                "informationUri": "https://github.com/navid72m/mcp-behave",
+                "rules": rules_list,
+            }
+        },
+        "results": results,
+    }
+
+    if "scorecard" in report_data:
+        run_obj["properties"] = {
+            "mcpSecurityScore": report_data["scorecard"].get("score"),
+            "mcpSecurityGrade": report_data["scorecard"].get("grade"),
+            "mcpPassed": report_data["scorecard"].get("passed"),
+        }
+
     sarif_doc = {
         "$schema": SARIF_SCHEMA,
         "version": "2.1.0",
-        "runs": [
-            {
-                "tool": {
-                    "driver": {
-                        "name": "mcp-behave",
-                        "version": __version__,
-                        "informationUri": "https://github.com/navid72m/mcp-behave",
-                        "rules": rules_list,
-                    }
-                },
-                "results": results,
-            }
-        ]
+        "runs": [run_obj]
     }
 
     return sarif_doc

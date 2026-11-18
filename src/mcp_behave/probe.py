@@ -284,6 +284,48 @@ def synth_args(schema: dict) -> dict:
             for key, spec in (schema or {}).get("properties", {}).items()}
 
 
+def synth_fuzz_args(schema: dict | None) -> list[dict]:
+    """Generate adversarial boundary and fuzzing arguments for a tool's JSON Schema (Idea 3).
+    Tests for path traversal, command injection, format string injection, and boundary overflow."""
+    if not schema or not isinstance(schema, dict):
+        return []
+    props = schema.get("properties", {})
+    if not props:
+        return []
+
+    # Adversarial payloads categorized by target vulnerability
+    FUZZ_VECTORS = [
+        ("../../../../../../../../etc/passwd", -1),
+        ("..\\..\\..\\..\\windows\\win.ini", 0),
+        ("; id; whoami", 2147483647),
+        ("`id`", 0),
+        ("| whoami", -1),
+        ("%s%s%s%s%n", 1),
+        ("' OR '1'='1' --", 1),
+        ("A" * 1000, 9999999),
+        ("", 0),
+    ]
+
+    base_args = synth_args(schema)
+    fuzz_variations = []
+
+    for str_payload, num_payload in FUZZ_VECTORS:
+        variant = dict(base_args)
+        for key, spec in props.items():
+            if not isinstance(spec, dict):
+                continue
+            t = spec.get("type", "string")
+            if t == "string":
+                if not spec.get("enum"):
+                    variant[key] = str_payload
+            elif t in ("integer", "number"):
+                variant[key] = num_payload
+        if variant != base_args and variant not in fuzz_variations:
+            fuzz_variations.append(variant)
+
+    return fuzz_variations
+
+
 async def _list_safely(coro, label: str):
     """Some servers don't implement resources/ or prompts/. Tolerate that."""
     try:
@@ -348,7 +390,18 @@ async def _discover_manifest(session: ClientSession):
     return tools_meta, resources_meta, prompts_meta
 
 
-async def _exercise(session: ClientSession, call_timeout: float):
+def _emit_trace_marker(trace_file: str | None, tag: str, val: str = ""):
+    if not trace_file:
+        return
+    try:
+        with open(trace_file, "a") as f:
+            f.write(f"M {tag} {val}\n")
+    except OSError:
+        pass
+
+
+async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = False,
+                    trace_file: str | None = None):
     """Shared logic: discover + exercise tools, resources, prompts on a live session."""
     stats = {"tools": {"called": 0, "ok": 0}, "resources": {"called": 0, "ok": 0},
              "prompts": {"called": 0, "ok": 0}}
@@ -361,20 +414,43 @@ async def _exercise(session: ClientSession, call_timeout: float):
         args = synth_args(t.get("inputSchema"))
         print(f"[probe] calling tool {t['name']}({json.dumps(args)})")
         stats["tools"]["called"] += 1
+        _emit_trace_marker(trace_file, "CALL_START", t["name"])
         ok, res = await _call_with_timeout(
             session.call_tool(t["name"], args), f"tool {t['name']}", call_timeout)
+        _emit_trace_marker(trace_file, "CALL_END", t["name"])
         if ok:
             stats["tools"]["ok"] += 1
             text = _extract_text_content(res)
             if text:
                 tool_outputs[t["name"]] = text
 
+        if fuzz:
+            fuzz_arg_sets = synth_fuzz_args(t.get("inputSchema"))
+            if fuzz_arg_sets:
+                stats.setdefault("fuzz", {"attempted": 0, "ok": 0, "failed": 0})
+                print(f"[probe] fuzzing tool {t['name']} with {len(fuzz_arg_sets)} vector(s)")
+                for f_args in fuzz_arg_sets:
+                    stats["tools"]["called"] += 1
+                    stats["fuzz"]["attempted"] += 1
+                    f_ok, f_res = await _call_with_timeout(
+                        session.call_tool(t["name"], f_args), f"fuzz tool {t['name']}", call_timeout)
+                    if f_ok:
+                        stats["tools"]["ok"] += 1
+                        stats["fuzz"]["ok"] += 1
+                        f_text = _extract_text_content(f_res)
+                        if f_text and t["name"] not in tool_outputs:
+                            tool_outputs[t["name"]] = f_text
+                    else:
+                        stats["fuzz"]["failed"] += 1
+
     print(f"[probe] discovered {len(resources_meta)} resource(s)")
     for r in resources_meta:
         print(f"[probe] reading resource {r['uri']}")
         stats["resources"]["called"] += 1
+        _emit_trace_marker(trace_file, "RES_START", r["uri"])
         ok, _ = await _call_with_timeout(
             session.read_resource(r["uri"]), f"resource {r['uri']}", call_timeout)
+        _emit_trace_marker(trace_file, "RES_END", r["uri"])
         if ok:
             stats["resources"]["ok"] += 1
 
@@ -384,8 +460,10 @@ async def _exercise(session: ClientSession, call_timeout: float):
                 if a.get("required")}
         print(f"[probe] getting prompt {p['name']}({json.dumps(args)})")
         stats["prompts"]["called"] += 1
+        _emit_trace_marker(trace_file, "PR_START", p["name"])
         ok, _ = await _call_with_timeout(
             session.get_prompt(p["name"], args), f"prompt {p['name']}", call_timeout)
+        _emit_trace_marker(trace_file, "PR_END", p["name"])
         if ok:
             stats["prompts"]["ok"] += 1
 
@@ -420,7 +498,8 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
 
 
 async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
-              tracer: str | None = None, out_dir: str | None = None):
+              tracer: str | None = None, out_dir: str | None = None,
+              fuzz: bool = False):
     """Stdio transport: wrap the server in the platform's syscall tracer
     (an injected dylib on macOS, LD_PRELOAD or strace on Linux) and connect via stdio."""
     target_out_dir = out_dir or OUT_DIR
@@ -453,7 +532,7 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             tools_meta, resources_meta, prompts_meta, stats, tool_outputs = await _exercise(
-                session, call_timeout)
+                session, call_timeout, fuzz=fuzz, trace_file=target_trace_file)
     _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
                     tool_outputs=tool_outputs,
                     transport="stdio", syscalls_available=syscalls_available,
@@ -462,7 +541,8 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
 
 async def run_remote(url: str, *, transport: str,
                      call_timeout: float = DEFAULT_CALL_TIMEOUT,
-                     out_dir: str | None = None):
+                     out_dir: str | None = None,
+                     fuzz: bool = False):
     """Remote transport (sse/streamable-http): connect to an already-running
     server. Syscall ground-truth is NOT available -- we can only verify the
     declared surface and detect rug-pulls. analyze.py is a no-op in this mode."""
@@ -492,7 +572,7 @@ async def run_remote(url: str, *, transport: str,
         read, write = conn[0], conn[1]
         async with ClientSession(read, write) as session:
             tools_meta, resources_meta, prompts_meta, stats, tool_outputs = await _exercise(
-                session, call_timeout)
+                session, call_timeout, fuzz=fuzz, trace_file=target_trace_file)
     _write_manifest([url], tools_meta, resources_meta, prompts_meta, stats,
                     tool_outputs=tool_outputs,
                     transport=transport, syscalls_available=False,
