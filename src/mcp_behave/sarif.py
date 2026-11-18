@@ -100,12 +100,100 @@ RULES = {
         "helpUri": "https://modelcontextprotocol-security.io/ttps/privilege-access-control/excessive-tool-permissions/",
         "properties": {"tags": ["security", "excessive-permissions"]}
     },
+    "MCP011": {
+        "id": "MCP011",
+        "name": "ReadOnlyHintMismatch",
+        "shortDescription": {"text": "Mutating or destructive tool advertises readOnlyHint"},
+        "fullDescription": {"text": "A tool that deletes, writes, or modifies state advertises readOnlyHint: true, causing AI clients to auto-approve executions without user confirmation."},
+        "defaultConfiguration": {"level": "error"},
+        "helpUri": "https://modelcontextprotocol-security.io/ttps/privilege-access-control/",
+        "properties": {"tags": ["security", "confused-deputy", "auto-approval-bypass"]}
+    },
+    "MCP012": {
+        "id": "MCP012",
+        "name": "DestructiveActionConfirmation",
+        "shortDescription": {"text": "Destructive tool lacks confirmation or scope argument"},
+        "fullDescription": {"text": "A tool that performs deletion or destructive actions has no explicit confirmation parameter (e.g. confirm, force, dry_run)."},
+        "defaultConfiguration": {"level": "error"},
+        "helpUri": "https://modelcontextprotocol-security.io/hardening/",
+        "properties": {"tags": ["security", "destructive-action", "safety"]}
+    },
+    "MCP013": {
+        "id": "MCP013",
+        "name": "PathTraversalArgument",
+        "shortDescription": {"text": "Unconstrained filesystem path argument"},
+        "fullDescription": {"text": "A file or path parameter accepts arbitrary strings without pattern or enum constraints, inviting path traversal."},
+        "defaultConfiguration": {"level": "error"},
+        "helpUri": "https://modelcontextprotocol-security.io/ttps/path-traversal/",
+        "properties": {"tags": ["security", "path-traversal"]}
+    },
+    "MCP014": {
+        "id": "MCP014",
+        "name": "SSRFArgument",
+        "shortDescription": {"text": "Unconstrained URL argument enables SSRF"},
+        "fullDescription": {"text": "A URL parameter accepts arbitrary external endpoints without destination host allowlists or schema pattern constraints."},
+        "defaultConfiguration": {"level": "note"},
+        "helpUri": "https://modelcontextprotocol-security.io/ttps/data-exfiltration/",
+        "properties": {"tags": ["security", "ssrf"]}
+    },
+    "MCP015": {
+        "id": "MCP015",
+        "name": "HardcodedSchemaSecret",
+        "shortDescription": {"text": "Hardcoded credential in tool schema default or example"},
+        "fullDescription": {"text": "A tool input schema contains real API tokens or secrets in default, const, or example values."},
+        "defaultConfiguration": {"level": "error"},
+        "helpUri": "https://modelcontextprotocol-security.io/hardening/credentials/",
+        "properties": {"tags": ["security", "hardcoded-secret"]}
+    },
+    "MCP016": {
+        "id": "MCP016",
+        "name": "SensitiveResourceURI",
+        "shortDescription": {"text": "Resource surfaces sensitive file or credential"},
+        "fullDescription": {"text": "An advertised resource URI points directly at confidential credentials or system files."},
+        "defaultConfiguration": {"level": "error"},
+        "helpUri": "https://modelcontextprotocol-security.io/ttps/privilege-access-control/",
+        "properties": {"tags": ["security", "credential-exposure"]}
+    },
+    "MCP017": {
+        "id": "MCP017",
+        "name": "DuplicateToolName",
+        "shortDescription": {"text": "Duplicate tool name enables tool shadowing"},
+        "fullDescription": {"text": "Multiple tools share the exact same name, making invocation ambiguous and allowing malicious tools to shadow trusted ones."},
+        "defaultConfiguration": {"level": "error"},
+        "helpUri": "https://modelcontextprotocol-security.io/ttps/tool-poisoning/",
+        "properties": {"tags": ["security", "shadowing", "hygiene"]}
+    },
+    "MCP018": {
+        "id": "MCP018",
+        "name": "CrossToolChaining",
+        "shortDescription": {"text": "Description directs cross-tool chaining"},
+        "fullDescription": {"text": "A tool description instructs the model to call other tools, smuggling tool-shadowing or execution hijacking directives."},
+        "defaultConfiguration": {"level": "note"},
+        "helpUri": "https://modelcontextprotocol-security.io/ttps/prompt-injection/",
+        "properties": {"tags": ["security", "prompt-injection", "chaining"]}
+    },
 }
 
 
 def classify_rule_id(severity: str, message: str) -> str:
     """Map an mcp-behave finding message to a formal SARIF rule ID."""
     msg = message.lower()
+    if "readonlyhint" in msg:
+        return "MCP011"
+    if "destructive action" in msg or "confirmation or scoping" in msg:
+        return "MCP012"
+    if "path traversal" in msg or "unconstrained filesystem path" in msg:
+        return "MCP013"
+    if "ssrf" in msg or "caller-controlled url" in msg:
+        return "MCP014"
+    if "schema default/examples" in msg or "schema default" in msg:
+        return "MCP015"
+    if "surfaces sensitive system path" in msg or ("resource" in msg and "sensitive" in msg):
+        return "MCP016"
+    if "duplicate tool name" in msg:
+        return "MCP017"
+    if "cross-tool chaining" in msg:
+        return "MCP018"
     if "network egress" in msg:
         return "MCP001"
     if "sensitive path" in msg or "id_rsa" in msg or "id_ed25519" in msg or ".ssh" in msg:

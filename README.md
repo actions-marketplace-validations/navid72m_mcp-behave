@@ -87,6 +87,10 @@ mcp-behave --scorecard python -m mcp_server_fetch
 # Adversarial input fuzzing (path traversal, command injection, buffer boundary stress):
 mcp-behave --fuzz python -m mcp_server_fetch
 
+# Static manifest & schema linter (offline, no server execution):
+mcp-behave lint ./manifest.json
+cat ./tools.json | mcp-behave lint -
+
 # Correlated Traffic & Syscall Inspector (real-time RPC-to-syscall timeline):
 mcp-behave inspect python targets/leaky_server.py
 # (or replay a previous audit output directory)
@@ -106,6 +110,7 @@ Exit codes: `0` clean, `3` findings at or above `--fail-on` threshold,
 - `--tracer {auto,preload,dylib,strace,none}` — choose tracer backend explicitly (default `auto`).
 - `--scorecard` — print an objective 0–100 CSA Security Selection Scorecard with letter grade (`A+` to `F`).
 - `--fuzz` — run adversarial input fuzzing against tool schemas (boundary mutations, path traversal, injection vectors).
+- `--config PATH` — path to custom `.mcpbehaverc.json` configuration file.
 - `--json` — emit findings as JSON on stdout.
 - `--sarif` — emit findings as OASIS SARIF v2.1.0 on stdout (for GitHub Code Scanning / CI).
 - `--fail-on {never,info,high}` — severity that triggers exit code 3 (default `high`).
@@ -281,6 +286,60 @@ Instead of only synthesizing benign placeholder arguments, passing `--fuzz` auto
 
 ```bash
 mcp-behave --fuzz python -m mcp_server_fetch
+```
+
+## Static Manifest Linter (`mcp-behave lint`)
+
+Audit static MCP manifests, tool definitions, resources, and prompt definitions completely offline without executing or spawning any server process:
+
+```bash
+# Lint a manifest file:
+mcp-behave lint path/to/manifest.json
+
+# Lint a tools list or piped JSON stream:
+cat tools.json | mcp-behave lint -
+
+# Emit SARIF for pull request annotations or JSON for CI gatekeeping:
+mcp-behave lint ./manifest.json --sarif > lint.sarif
+mcp-behave lint ./manifest.json --json --scorecard
+```
+
+### Static Checks Performed:
+- **Auto-Approval Bypass (`readOnlyHint` Mismatch)**: Flags mutating tools (`delete`, `write`, `update`, `drop`) advertising `readOnlyHint: true`, which would cause AI clients (Claude Desktop, Cursor) to auto-approve state modifications without human confirmation.
+- **Destructive Actions Missing Confirmation**: Flags destructive tools that omit confirmation guardrails (`confirm`, `force`, `dry_run`).
+- **Unconstrained Path Traversal Arguments**: Flags `path`/`file` parameters missing regex `pattern` or `enum` boundaries.
+- **SSRF-Prone URL Arguments**: Flags `url`/`webhook` parameters accepting caller-controlled endpoints without allowlists or schema constraints.
+- **Hardcoded Schema Credentials**: Scans parameter `default`, `const`, and `examples` for live API tokens (`sk-`, `ghp_`, `AKIA`, private keys).
+- **Sensitive Resource URIs**: Identifies resource URIs surfacing credentials or sensitive paths (`.env`, `id_rsa`, `/etc/shadow`, `.kube/config`).
+- **Duplicate Tool Names (Shadowing)**: Detects colliding tool names that allow malicious tools to shadow trusted ones.
+- **Cross-Tool Chaining Directives**: Catches orchestration directives in tool descriptions that instruct the model to execute other tools.
+- **Covert Channels & Injection Directives**: Scans all names, descriptions, and metadata for ANSI escapes, zero-width Unicode, and prompt injection patterns.
+
+## Configuration & Policy Suppression (`.mcpbehaverc.json`)
+
+Drop a `.mcpbehaverc.json` (or `.mcpbehaverc`) in your project root to customize rule enforcement, suppress known exceptions, or override finding severities:
+
+```json
+{
+  "fail_on": "high",
+  "disabled_rules": ["MCP014", "additionalProperties"],
+  "severity_overrides": {
+    "spawned subprocess": "HIGH",
+    "network egress": "INFO"
+  },
+  "ignore": [
+    "legacy_tool_name",
+    "fetch_url.note"
+  ],
+  "timeout": 20.0,
+  "no_dns": false
+}
+```
+
+You can also pass an explicit configuration file via the `--config <path>` flag across both live auditing and static linting:
+```bash
+mcp-behave --config ./security-policy.json python -m mcp_server_fetch
+mcp-behave lint ./manifest.json --config .mcpbehaverc.json
 ```
 
 ## Push results to a dashboard

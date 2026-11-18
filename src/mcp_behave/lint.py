@@ -1,0 +1,379 @@
+"""Static Manifest Linter for MCP servers (mcp-behave lint).
+
+Audits static tool manifests, tool definitions, resources, and prompt definitions
+completely offline without spawning or executing any server process.
+"""
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from . import __version__
+from . import config as config_mod
+from . import report as report_mod
+from . import sarif as sarif_mod
+from . import scorecard as scorecard_mod
+
+DESTRUCTIVE_VERBS = (
+    "delete", "remove", "destroy", "drop", "truncate", "wipe", "erase",
+    "purge", "reset", "revoke", "kill", "terminate", "shutdown",
+)
+
+MUTATING_VERBS = (
+    *DESTRUCTIVE_VERBS,
+    "write", "update", "create", "modify", "patch", "insert", "upload", "put", "set",
+)
+
+CONFIRM_HINTS = (
+    "confirm", "confirmation", "acknowledge", "force", "dry_run", "dryrun", "yes", "approve",
+)
+
+PATH_ARG_KEYWORDS = (
+    "path", "file", "filename", "filepath", "dir", "directory", "location",
+)
+
+URL_ARG_KEYWORDS = (
+    "url", "uri", "webhook", "endpoint", "callback", "href", "link",
+)
+
+SECRET_PATH_NEEDLES = (
+    ".env", "id_rsa", "id_ed25519", ".ssh", ".aws", ".kube", "/etc/passwd",
+    "/etc/shadow", ".npmrc", ".git/config", "credentials", "secrets",
+)
+
+SECRET_PATTERNS = (
+    re.compile(r"sk-ant-[a-zA-Z0-9_\-]{20,}"),
+    re.compile(r"sk-[a-zA-Z0-9_\-]{20,}"),
+    re.compile(r"ghp_[0-9a-zA-Z]{36}"),
+    re.compile(r"github_pat_[0-9a-zA-Z_]{20,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"xox[baprs]-[0-9a-zA-Z]{10,}"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+)
+
+CHAINING_DIRECTIVE_PATTERN = re.compile(
+    r'(?i)(?:\bthen\s+(?:call|invoke|use)\b|\buse your (?:other|available) tools\b|\bnext,\s*(?:run|call)\s+\w+)'
+)
+
+
+def _check_secret_value(val: Any) -> bool:
+    """Check if a default/example value matches credential patterns."""
+    if not isinstance(val, str) or not val.strip():
+        return False
+    v = val.strip()
+    return any(p.search(v) for p in SECRET_PATTERNS)
+
+
+def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """Inspect tool schemas, permissions, resources, and descriptions for security risks."""
+    findings: List[Tuple[str, str]] = []
+    tools = manifest.get("tools") or []
+    resources = manifest.get("resources") or []
+
+    # 1. Tool Name Uniqueness (MCP017 / Tool Shadowing)
+    tool_names: Dict[str, int] = {}
+    for t in tools:
+        name = t.get("name", "unnamed")
+        tool_names[name] = tool_names.get(name, 0) + 1
+
+    for name, count in tool_names.items():
+        if count > 1:
+            findings.append((
+                "HIGH",
+                f"duplicate tool name '{name}' declared {count} times -- tool shadowing risk"
+            ))
+
+    # 2. Tool-Level Schema & Permission Inspections
+    for tool in tools:
+        tname = tool.get("name", "unnamed")
+        tdesc = tool.get("description", "")
+        annotations = tool.get("annotations") or {}
+        read_only = (tool.get("readOnlyHint") is True) or (annotations.get("readOnlyHint") is True)
+
+        haystack = f"{tname} {tdesc}".lower()
+
+        # Check: Cross-Tool Chaining Directives (MCP018)
+        chain_match = CHAINING_DIRECTIVE_PATTERN.search(tdesc)
+        if chain_match:
+            findings.append((
+                "INFO",
+                f"tool '{tname}' description contains cross-tool chaining directive: '{chain_match.group()}'"
+            ))
+
+        # Check: readOnlyHint Mismatch (MCP011)
+        if read_only:
+            hit = next((v for v in MUTATING_VERBS if v in haystack), None)
+            if hit:
+                findings.append((
+                    "HIGH",
+                    f"tool '{tname}' advertises readOnlyHint: true but implies mutating or destructive action ('{hit}') -- auto-approval bypass risk"
+                ))
+
+        # Check: Destructive Action Missing Confirmation (MCP012)
+        destructive_hit = next((v for v in DESTRUCTIVE_VERBS if v in haystack), None)
+        schema = tool.get("inputSchema") or {}
+        props = schema.get("properties") or {}
+
+        if destructive_hit:
+            has_confirm = any(
+                any(c in pname.lower() for c in CONFIRM_HINTS)
+                for pname in props.keys()
+            )
+            if not has_confirm:
+                findings.append((
+                    "HIGH",
+                    f"destructive tool '{tname}' implies destructive action ('{destructive_hit}') but declares no confirmation or scoping parameter"
+                ))
+
+        # Check: Schema Unbounded Additional Properties (explicitly set to True)
+        if schema.get("type") == "object" or props:
+            if props and schema.get("additionalProperties") is True:
+                findings.append((
+                    "INFO",
+                    f"tool '{tname}' input schema explicitly enables additionalProperties: true -- parameter smuggling risk"
+                ))
+
+        # Parameter-Level Checks (Path traversal, SSRF, Hardcoded secrets)
+        for pname, pdef in props.items():
+            if not isinstance(pdef, dict):
+                continue
+
+            pname_lower = pname.lower()
+            ptype = pdef.get("type")
+            is_string = (ptype == "string") or (ptype is None)
+
+            # Check: Path Traversal Argument (MCP013)
+            is_path_param = any(k in pname_lower for k in PATH_ARG_KEYWORDS)
+            if is_path_param and is_string:
+                has_constraints = bool(pdef.get("pattern") or pdef.get("enum"))
+                if not has_constraints:
+                    findings.append((
+                        "HIGH",
+                        f"tool '{tname}' argument '{pname}' accepts unconstrained filesystem path without pattern or enum validation -- path traversal risk"
+                    ))
+
+            # Check: SSRF Argument (MCP014)
+            is_url_param = any(k in pname_lower for k in URL_ARG_KEYWORDS) or pdef.get("format") in ("uri", "url")
+            if is_url_param and is_string:
+                has_url_constraints = bool(pdef.get("pattern") or pdef.get("enum"))
+                if not has_url_constraints:
+                    findings.append((
+                        "INFO",
+                        f"tool '{tname}' argument '{pname}' accepts caller-controlled URL without host allowlist or pattern constraints -- SSRF risk"
+                    ))
+
+            # Check: Hardcoded Secret in Default/Const/Examples (MCP015)
+            candidates = [pdef.get("default"), pdef.get("const")]
+            if isinstance(pdef.get("examples"), list):
+                candidates.extend(pdef["examples"])
+            for val in candidates:
+                if _check_secret_value(val):
+                    findings.append((
+                        "HIGH",
+                        f"tool '{tname}' parameter '{pname}' contains secret-like hardcoded value in schema default/examples"
+                    ))
+                    break
+
+    # 3. Sensitive Resources (MCP016)
+    for res in resources:
+        ruri = res.get("uri", "")
+        rname = res.get("name", "")
+        rdesc = res.get("description", "")
+        rhaystack = f"{ruri} {rname} {rdesc}".lower()
+
+        res_hit = next((s for s in SECRET_PATH_NEEDLES if s in rhaystack), None)
+        if res_hit:
+            findings.append((
+                "HIGH",
+                f"resource '{ruri or rname}' surfaces sensitive system path or secret credentials ('{res_hit}')"
+            ))
+
+    return findings
+
+
+def lint_manifest(manifest: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """Perform static schema and contract inspection across manifest components."""
+    findings: List[Tuple[str, str]] = []
+
+    # 1. Metadata covert channels (ANSI, invisible Unicode, prompt injection)
+    findings.extend(report_mod._scan_metadata(manifest))
+
+    # 2. Output checks if tool_outputs are present
+    if manifest.get("tool_outputs"):
+        findings.extend(report_mod._scan_outputs(manifest))
+
+    # 3. Rug-pull detection if manifest hash & identifier present
+    rug = report_mod._rugpull_check(manifest)
+    if rug:
+        findings.append(rug)
+
+    # 4. Schema, permission, resource, and hygiene inspections
+    findings.extend(lint_schema_and_permissions(manifest))
+
+    return findings
+
+
+def load_manifest_target(target: Optional[str]) -> Tuple[Dict[str, Any], str]:
+    """Load and normalize target into an MCP manifest dict and canonical label."""
+    if not target or target == "-":
+        content = sys.stdin.read()
+        data = json.loads(content)
+        label = "stdin"
+    else:
+        p = Path(target)
+        if p.is_dir():
+            manifest_file = p / "manifest.json"
+            if not manifest_file.exists():
+                raise FileNotFoundError(f"Directory {target} contains no manifest.json")
+            data = json.loads(manifest_file.read_text(encoding="utf-8"))
+            label = str(manifest_file)
+        elif p.is_file():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            label = str(p)
+        else:
+            raise FileNotFoundError(f"Target manifest file or directory not found: {target}")
+
+    # Normalize tools array or dict
+    if isinstance(data, list):
+        manifest = {"tools": data, "resources": [], "prompts": []}
+    elif isinstance(data, dict):
+        manifest = dict(data)
+        if "tools" not in manifest:
+            manifest["tools"] = []
+        if "resources" not in manifest:
+            manifest["resources"] = []
+        if "prompts" not in manifest:
+            manifest["prompts"] = []
+    else:
+        raise ValueError("Invalid manifest JSON format: expected list or object")
+
+    if "manifest_sha256" not in manifest and manifest.get("tools"):
+        manifest["manifest_sha256"] = hashlib.sha256(
+            json.dumps(manifest["tools"], sort_keys=True).encode()
+        ).hexdigest()
+
+    return manifest, label
+
+
+def print_lint_summary(manifest: Dict[str, Any], label: str, findings: List[Tuple[str, str]], show_scorecard: bool = False):
+    """Print human-readable text output for lint results."""
+    tools = manifest.get("tools", [])
+    resources = manifest.get("resources", [])
+    prompts = manifest.get("prompts", [])
+
+    print(f"\n=== MCP STATIC MANIFEST LINT ===")
+    print(f"  Target:       {label}")
+    print(f"  Surface:      {len(tools)} tool(s), {len(resources)} resource(s), {len(prompts)} prompt(s)")
+    if tools:
+        print(f"  Tools:        {', '.join(t.get('name', 'unnamed') for t in tools[:8])}" +
+              (f" ... (+{len(tools) - 8} more)" if len(tools) > 8 else ""))
+    print("  " + "-" * 56)
+
+    if not findings:
+        print("  ✓ No security deviations or schema violations detected.")
+    else:
+        for sev, msg in sorted(findings, key=lambda x: x[0]):
+            icon = "[!]" if sev == "HIGH" else "[i]"
+            print(f"  {icon} {sev:4} {msg}")
+
+    print()
+
+    if show_scorecard:
+        card = scorecard_mod.compute_scorecard(manifest, {}, findings)
+        scorecard_mod.print_scorecard(card)
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="mcp-behave lint",
+        description="Offline static security scanner and schema linter for MCP manifests and tool definitions.",
+    )
+    parser.add_argument(
+        "target", nargs="?", default="-",
+        help="Path to manifest.json, tools.json, output directory, or '-' for stdin (default: stdin).",
+    )
+    parser.add_argument(
+        "--config", default=None,
+        help="Path to custom .mcpbehaverc.json configuration file.",
+    )
+    parser.add_argument(
+        "--json", action="store_true",
+        help="Emit lint report as JSON on stdout.",
+    )
+    parser.add_argument(
+        "--sarif", action="store_true",
+        help="Emit lint report as OASIS SARIF v2.1.0 on stdout for GitHub Code Scanning.",
+    )
+    parser.add_argument(
+        "--scorecard", action="store_true",
+        help="Print an objective 0-100 CSA Security Selection Scorecard and letter grade.",
+    )
+    parser.add_argument(
+        "--fail-on", choices=("never", "info", "high"), default=None,
+        help="Exit non-zero when finding at or above threshold is produced (default from config or 'high').",
+    )
+
+    args = parser.parse_args(argv)
+
+    try:
+        manifest, label = load_manifest_target(args.target)
+    except Exception as exc:
+        print(f"mcp-behave lint: error loading target: {exc}", file=sys.stderr)
+        return 1
+
+    # Load configuration
+    cfg = config_mod.load_config(args.config, start_path=args.target if args.target != "-" else None)
+    fail_on = args.fail_on or cfg.get("fail_on", "high")
+
+    raw_findings = lint_manifest(manifest)
+    findings = config_mod.filter_findings(raw_findings, cfg)
+
+    # Compute scorecard
+    card = scorecard_mod.compute_scorecard(manifest, {}, findings)
+
+    if args.sarif:
+        report_data = {
+            "server_cmd": [label],
+            "manifest_sha256": manifest.get("manifest_sha256"),
+            "syscalls_available": False,
+            "declared": {
+                "tools": [t.get("name") for t in manifest.get("tools", [])],
+                "resources": [r.get("uri") for r in manifest.get("resources", [])],
+                "prompts": [p.get("name") for p in manifest.get("prompts", [])],
+            },
+            "observed": {},
+            "findings": [{"severity": s, "message": m} for s, m in findings],
+            "scorecard": card,
+            "stats": {},
+        }
+        sarif_doc = sarif_mod.to_sarif(report_data, artifact_override=label)
+        print(json.dumps(sarif_doc, indent=2))
+    elif args.json:
+        out_dict = {
+            "target": label,
+            "manifest_sha256": manifest.get("manifest_sha256"),
+            "declared": {
+                "tools": [t.get("name") for t in manifest.get("tools", [])],
+                "resources": [r.get("uri") for r in manifest.get("resources", [])],
+                "prompts": [p.get("name") for p in manifest.get("prompts", [])],
+            },
+            "findings": [{"severity": s, "message": m} for s, m in findings],
+            "scorecard": card,
+        }
+        print(json.dumps(out_dict, indent=2))
+    else:
+        print_lint_summary(manifest, label, findings, show_scorecard=args.scorecard)
+
+    sev_rank = {"INFO": 1, "HIGH": 2}
+    if fail_on == "never":
+        return 0
+    threshold = sev_rank.get(fail_on.upper(), 2)
+    return 3 if any(sev_rank.get(s, 0) >= threshold for s, _ in findings) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

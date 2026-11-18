@@ -48,6 +48,22 @@ def compute_scorecard(manifest: Dict[str, Any], profile: Dict[str, Any], finding
                 metadata_deductions.append((-10, "Prompt injection directive in tool metadata"))
         elif "external image" in m:
             output_deductions.append((-15, "External Markdown/HTML image link in tool output (client-side HTTP GET exfiltration)"))
+        elif "readonlyhint" in m:
+            integrity_deductions.append((-10, "Mutating tool advertises readOnlyHint: true (auto-approval bypass risk)"))
+        elif "destructive action" in m or "confirmation or scoping" in m:
+            integrity_deductions.append((-10, "Destructive tool lacks confirmation or scope parameter"))
+        elif "path traversal" in m:
+            integrity_deductions.append((-10, "Tool argument accepts unconstrained filesystem path (traversal risk)"))
+        elif "ssrf" in m:
+            integrity_deductions.append((-5, "Tool argument accepts unconstrained external URL (SSRF risk)"))
+        elif "schema default/examples" in m or "schema default" in m:
+            metadata_deductions.append((-15, "Secret or sensitive credential in tool schema defaults/examples"))
+        elif "surfaces sensitive system path" in m:
+            integrity_deductions.append((-10, "Resource surfaces confidential credentials or system files"))
+        elif "duplicate tool name" in m:
+            integrity_deductions.append((-10, "Duplicate tool names enable tool shadowing"))
+        elif "cross-tool chaining" in m:
+            metadata_deductions.append((-5, "Description directs cross-tool chaining"))
 
     # Calculate category scores (floor at 0)
     runtime_score = max(0, runtime_max + sum(pts for pts, _ in runtime_deductions))

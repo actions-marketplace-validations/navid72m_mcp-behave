@@ -119,7 +119,7 @@ def _rugpull_check(manifest: dict) -> tuple[str, str] | None:
     Returns a finding tuple if changed, None otherwise. Updates the store either way."""
     cmd = manifest.get("server_cmd") or []
     current = manifest.get("manifest_sha256")
-    if not current:
+    if not current or not cmd:
         return None
     state = _state_dir()
     state.mkdir(parents=True, exist_ok=True)
@@ -250,7 +250,7 @@ def _scan_outputs(manifest: dict) -> list[tuple[str, str]]:
     return findings
 
 
-def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True) -> list:
+def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, config: dict | None = None) -> list:
     """Returns list of (severity, message) tuples. Pure function -- no I/O
     except optional reverse-DNS lookups."""
     descs = _all_descriptions(manifest)
@@ -281,6 +281,17 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True) -> l
     # CSA TTP: Tool output safety & markdown exfiltration scanning
     findings.extend(_scan_outputs(manifest))
 
+    # Static schema, permission, resource, and hygiene inspections
+    try:
+        from . import lint as lint_mod
+        findings.extend(lint_mod.lint_schema_and_permissions(manifest))
+    except Exception:
+        pass
+
+    if config:
+        from . import config as config_mod
+        findings = config_mod.filter_findings(findings, config)
+
     return findings
 
 
@@ -288,10 +299,10 @@ def _tool_names(manifest: dict) -> str:
     return ", ".join(t["name"] for t in manifest.get("tools", [])) or "(none)"
 
 
-def report(out_dir, *, resolve_dns: bool = True, show_scorecard: bool = False) -> list:
+def report(out_dir, *, resolve_dns: bool = True, show_scorecard: bool = False, config: dict | None = None) -> list:
     """Text reporter. Prints a human-readable summary; returns findings."""
     manifest, profile = load(out_dir)
-    findings = build_findings(manifest, profile, resolve_dns=resolve_dns)
+    findings = build_findings(manifest, profile, resolve_dns=resolve_dns, config=config)
     descs = _all_descriptions(manifest)
     claims_local = any(w in descs for w in ("local", "offline", "no network"))
     syscalls_available = manifest.get("syscalls_available", True)
@@ -321,11 +332,11 @@ def report(out_dir, *, resolve_dns: bool = True, show_scorecard: bool = False) -
     return findings
 
 
-def report_json(out_dir, *, resolve_dns: bool = True) -> dict:
+def report_json(out_dir, *, resolve_dns: bool = True, config: dict | None = None) -> dict:
     """JSON reporter. Returns a serializable dict for CI/CD consumption."""
     from . import scorecard as scorecard_mod
     manifest, profile = load(out_dir)
-    findings = build_findings(manifest, profile, resolve_dns=resolve_dns)
+    findings = build_findings(manifest, profile, resolve_dns=resolve_dns, config=config)
     scorecard = scorecard_mod.compute_scorecard(manifest, profile, findings)
     return {
         "server_cmd": manifest.get("server_cmd"),
@@ -343,10 +354,10 @@ def report_json(out_dir, *, resolve_dns: bool = True) -> dict:
     }
 
 
-def report_sarif(out_dir, *, resolve_dns: bool = True) -> dict:
+def report_sarif(out_dir, *, resolve_dns: bool = True, config: dict | None = None) -> dict:
     """SARIF reporter. Returns an OASIS SARIF v2.1.0 dict for GitHub Code Scanning."""
     from . import sarif as sarif_mod
-    json_data = report_json(out_dir, resolve_dns=resolve_dns)
+    json_data = report_json(out_dir, resolve_dns=resolve_dns, config=config)
     return sarif_mod.to_sarif(json_data)
 
 

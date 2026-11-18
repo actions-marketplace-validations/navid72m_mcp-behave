@@ -58,6 +58,7 @@ def _build_parser():
                     "Observes server runtime behavior (files, network, subprocesses) "
                     "and compares what it DECLARED against what it actually DID.\n\n"
                     "Subcommands:\n"
+                    "  `mcp-behave lint` statically audits a manifest.json or tools file without execution\n"
                     "  `mcp-behave scan-configs` scans local AI client configs (Claude Desktop, Cursor, etc.)\n"
                     "  `mcp-behave audit-configs` scans and runs behavioral audits on all configured servers\n"
                     "  `mcp-behave inspect` displays correlated live JSON-RPC traffic and OS syscall stream\n"
@@ -65,6 +66,10 @@ def _build_parser():
                     "  `mcp-behave push` uploads an audit result to an mcp-behave dashboard",
     )
     p.add_argument("--version", action="version", version=f"mcp-behave {__version__}")
+    p.add_argument(
+        "--config", default=None,
+        help="Path to custom .mcpbehaverc.json configuration file.",
+    )
     p.add_argument(
         "--out-dir", default=os.environ.get("OUT_DIR", "/tmp/mcp_behave_out"),
         help="Where to write manifest.json and trace.log (default: %(default)s).",
@@ -134,7 +139,7 @@ def _exit_code(findings: list, fail_on: str) -> int:
     return 3 if any(SEV_RANK.get(s, 0) >= threshold for s, _ in findings) else 0
 
 
-SUBCOMMANDS = {"push", "serve", "scan-configs", "audit-configs", "inspect"}
+SUBCOMMANDS = {"push", "serve", "scan-configs", "audit-configs", "inspect", "lint"}
 
 
 def main(argv=None):
@@ -163,6 +168,9 @@ def main(argv=None):
         elif sub == "inspect":
             from . import inspect as inspect_mod
             return inspect_mod.main(rest)
+        elif sub == "lint":
+            from . import lint as lint_mod
+            return lint_mod.main(rest)
 
     parser = _build_parser()
     args = parser.parse_args(raw_argv)
@@ -234,20 +242,24 @@ def main(argv=None):
         else:
             return 1
 
+    from . import config as config_mod
+    cfg = config_mod.load_config(args.config)
+    fail_on = args.fail_on if ("--fail-on" in raw_argv) else (cfg.get("fail_on") or args.fail_on)
+
     if args.sarif:
-        result = report_mod.report_sarif(args.out_dir, resolve_dns=not args.no_dns)
+        result = report_mod.report_sarif(args.out_dir, resolve_dns=not args.no_dns, config=cfg)
         print(json.dumps(result, indent=2))
-        raw_json = report_mod.report_json(args.out_dir, resolve_dns=not args.no_dns)
+        raw_json = report_mod.report_json(args.out_dir, resolve_dns=not args.no_dns, config=cfg)
         findings = [(f["severity"], f["message"]) for f in raw_json["findings"]]
     elif args.json:
-        result = report_mod.report_json(args.out_dir, resolve_dns=not args.no_dns)
+        result = report_mod.report_json(args.out_dir, resolve_dns=not args.no_dns, config=cfg)
         print(json.dumps(result, indent=2))
         findings = [(f["severity"], f["message"]) for f in result["findings"]]
     else:
         print("=== STEP 2: declared-vs-observed diff ===")
-        findings = report_mod.report(args.out_dir, resolve_dns=not args.no_dns, show_scorecard=args.scorecard)
+        findings = report_mod.report(args.out_dir, resolve_dns=not args.no_dns, show_scorecard=args.scorecard, config=cfg)
 
-    return _exit_code(findings, args.fail_on)
+    return _exit_code(findings, fail_on)
 
 
 if __name__ == "__main__":
