@@ -22,6 +22,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "ignore": [],
     "timeout": 15.0,
     "no_dns": False,
+    "allowed_commands": [],
 }
 
 
@@ -67,6 +68,8 @@ def load_config(config_path: Optional[os.PathLike | str] = None, start_path: Opt
             merged["fail_on"] = data["failOn"]
         if "noDns" in data and "no_dns" not in data:
             merged["no_dns"] = data["noDns"]
+        if "allowedCommands" in data and "allowed_commands" not in data:
+            merged["allowed_commands"] = data["allowedCommands"]
 
     merged["_config_path"] = str(path)
     return merged

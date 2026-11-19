@@ -45,7 +45,17 @@ def test_scan_client_configs_tool(tmp_path):
     asyncio.run(run())
 
 
-def test_inspect_manifest_tool():
+def test_audit_server_blocks_unauthorized_command():
+    async def run():
+        res = await audit_server(["sh", "-c", "whoami"])
+        assert "error" in res
+        assert "Security refusal" in res["error"]
+        assert any("Blocked unapproved command execution" in f["message"] for f in res.get("findings", []))
+    asyncio.run(run())
+
+
+def test_inspect_manifest_tool(monkeypatch):
+    monkeypatch.setenv("MCP_BEHAVE_ALLOW_ALL_EXEC", "1")
     async def run():
         res = await inspect_manifest([sys.executable, HONEST])
         assert "error" not in res
@@ -57,7 +67,8 @@ def test_inspect_manifest_tool():
     asyncio.run(run())
 
 
-def test_audit_server_tool_untraced():
+def test_audit_server_tool_untraced(monkeypatch):
+    monkeypatch.setenv("MCP_BEHAVE_ALLOWED_COMMANDS", f"{sys.executable}")
     async def run():
         res = await audit_server([sys.executable, HONEST], no_trace=True)
         assert "error" not in res

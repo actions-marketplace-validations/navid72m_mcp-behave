@@ -3,7 +3,7 @@ prompts) with synthesized inputs, and record both the server's self-declared
 manifest and the raw syscall trace of what it actually did.
 
 No judgements here -- that's report.py."""
-import asyncio, hashlib, json, os, platform, shutil, sys
+import asyncio, hashlib, json, os, platform, re, shutil, sys, tempfile
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -19,11 +19,82 @@ def set_out_dir(path: str):
     MANIFEST = os.path.join(OUT_DIR, "manifest.json")
 
 
-# openat: file reads. connect: outbound network. execve: subprocesses.
-# (sendto was traced before but never parsed -- removed to keep the log lean.)
-SYSCALLS   = "openat,connect,execve"
+# Syscalls to capture:
+# - open, openat, creat: filesystem reads, modifications, and overwrites
+# - connect, sendto, sendmsg, sendmmsg: TCP/UDP network connections, DNS, AF_UNIX
+# - execve, execveat: subprocess invocations and system commands
+SYSCALLS = "open,openat,creat,connect,sendto,sendmsg,sendmmsg,execve,execveat"
 # Per-call timeout. A hanging tool used to hang the whole probe.
 DEFAULT_CALL_TIMEOUT = float(os.environ.get("MCP_BEHAVE_CALL_TIMEOUT", "15"))
+
+
+SENSITIVE_ENV_PREFIXES = (
+    "AWS_", "GITHUB_", "GH_", "NPM_", "PYPI_", "SLACK_", "OPENAI_",
+    "ANTHROPIC_", "GEMINI_", "AZURE_", "GOOGLE_", "CLOUDFLARE_",
+    "SSH_", "GNUPG",
+)
+SENSITIVE_ENV_PATTERN = re.compile(
+    r"(?i)(?:api[_-]?key|access[_-]?token|auth[_-]?token|secret|password|passwd|private[_-]?key|credential)"
+)
+
+
+def _build_isolated_env(env_overlay: dict, unsafe_host: bool = False) -> tuple[dict, str | None]:
+    """Build an isolated execution environment for the target server.
+
+    Unless unsafe_host=True:
+    1. Creates a temporary canary directory as $HOME, seeded with dummy canary files
+       (.ssh/id_rsa, .aws/credentials, .env, .netrc) so credential probes trip detection
+       without exposing the user's host files.
+    2. Scrubs sensitive environment variables (API keys, cloud tokens, secrets).
+    3. Sets $HOME, $USERPROFILE, $XDG_CONFIG_HOME, $XDG_DATA_HOME to the canary directory.
+
+    Returns (env_dict, canary_dir_path_or_none).
+    """
+    if unsafe_host or os.environ.get("MCP_BEHAVE_UNSAFE_HOST") == "1":
+        print("[probe] WARNING: Running with --unsafe-host. Target subprocess inherits "
+              "host $HOME and credentials without sandbox redirection!", file=sys.stderr)
+        return {**os.environ, **env_overlay}, None
+
+    canary_dir = tempfile.mkdtemp(prefix="mcp_behave_canary_home_")
+
+    try:
+        # Seed canary targets
+        ssh_dir = os.path.join(canary_dir, ".ssh")
+        os.makedirs(ssh_dir, exist_ok=True)
+        with open(os.path.join(ssh_dir, "id_rsa"), "w") as f:
+            f.write("-----BEGIN OPENSSH PRIVATE KEY-----\nCANARY_DUMMY_KEY_FOR_PROBING\n-----END OPENSSH PRIVATE KEY-----\n")
+
+        aws_dir = os.path.join(canary_dir, ".aws")
+        os.makedirs(aws_dir, exist_ok=True)
+        with open(os.path.join(aws_dir, "credentials"), "w") as f:
+            f.write("[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n")
+
+        with open(os.path.join(canary_dir, ".env"), "w") as f:
+            f.write("CANARY_PROBE_SECRET=dummy_value_for_probing\n")
+
+        with open(os.path.join(canary_dir, ".netrc"), "w") as f:
+            f.write("machine test.local login canary password canarypass\n")
+
+        # Scrub sensitive host environment variables
+        cleaned_env = {}
+        for k, v in os.environ.items():
+            k_upper = k.upper()
+            if any(k_upper.startswith(pfx) for pfx in SENSITIVE_ENV_PREFIXES):
+                continue
+            if SENSITIVE_ENV_PATTERN.search(k):
+                continue
+            cleaned_env[k] = v
+
+        cleaned_env["HOME"] = canary_dir
+        cleaned_env["USERPROFILE"] = canary_dir
+        cleaned_env["XDG_CONFIG_HOME"] = os.path.join(canary_dir, ".config")
+        cleaned_env["XDG_DATA_HOME"] = os.path.join(canary_dir, ".local", "share")
+        cleaned_env.update(env_overlay)
+
+        return cleaned_env, canary_dir
+    except Exception as exc:
+        shutil.rmtree(canary_dir, ignore_errors=True)
+        raise exc
 
 
 def _tracer_cache_dir() -> str:
@@ -510,9 +581,10 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
 
 async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
               tracer: str | None = None, out_dir: str | None = None,
-              fuzz: bool = False, rounds: int = 1):
+              fuzz: bool = False, rounds: int = 1, unsafe_host: bool = False):
     """Stdio transport: wrap the server in the platform's syscall tracer
-    (an injected dylib on macOS, LD_PRELOAD or strace on Linux) and connect via stdio."""
+    (an injected dylib on macOS, LD_PRELOAD or strace on Linux) and connect via stdio.
+    By default runs in an isolated canary environment to protect host files and credentials."""
     target_out_dir = out_dir or OUT_DIR
     target_trace_file = os.path.join(target_out_dir, "trace.log")
     target_manifest_file = os.path.join(target_out_dir, "manifest.json")
@@ -530,24 +602,37 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
     # before any interesting syscall fires.
     open(target_trace_file, "w").close()
 
-    if syscalls_available:
-        params = StdioServerParameters(command=trace_cmd[0], args=trace_cmd[1:],
-                                       env={**os.environ, **env_overlay})
-    else:
-        print(f"[probe] running server untraced on {platform.system()} "
-              "(manifest analysis only)",
-              file=sys.stderr)
-        params = StdioServerParameters(command=server_cmd[0], args=server_cmd[1:],
-                                       env={**os.environ})
+    cleaned_env, canary_dir = _build_isolated_env(env_overlay if syscalls_available else {}, unsafe_host=unsafe_host)
 
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            tools_meta, resources_meta, prompts_meta, stats, tool_outputs = await _exercise(
-                session, call_timeout, fuzz=fuzz, trace_file=target_trace_file, rounds=rounds)
-    _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
-                    tool_outputs=tool_outputs,
-                    transport="stdio", syscalls_available=syscalls_available,
-                    manifest_file=target_manifest_file, trace_file=target_trace_file)
+    try:
+        if syscalls_available:
+            params = StdioServerParameters(command=trace_cmd[0], args=trace_cmd[1:],
+                                           env=cleaned_env)
+        else:
+            print(f"[probe] running server untraced on {platform.system()} "
+                  "(manifest analysis only)",
+                  file=sys.stderr)
+            params = StdioServerParameters(command=server_cmd[0], args=server_cmd[1:],
+                                           env=cleaned_env)
+
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                tools_meta, resources_meta, prompts_meta, stats, tool_outputs = await _exercise(
+                    session, call_timeout, fuzz=fuzz, trace_file=target_trace_file, rounds=rounds)
+
+        stats["rounds"] = rounds
+        stats["tracer"] = tracer_name or ("stdio" if syscalls_available else "none")
+
+        _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
+                        tool_outputs=tool_outputs,
+                        transport="stdio", syscalls_available=syscalls_available,
+                        manifest_file=target_manifest_file, trace_file=target_trace_file)
+    finally:
+        if canary_dir and os.path.exists(canary_dir):
+            try:
+                shutil.rmtree(canary_dir, ignore_errors=True)
+            except OSError:
+                pass
 
 
 async def run_remote(url: str, *, transport: str,
@@ -585,6 +670,8 @@ async def run_remote(url: str, *, transport: str,
         async with ClientSession(read, write) as session:
             tools_meta, resources_meta, prompts_meta, stats, tool_outputs = await _exercise(
                 session, call_timeout, fuzz=fuzz, trace_file=target_trace_file, rounds=rounds)
+    stats["rounds"] = rounds
+    stats["tracer"] = "remote"
     _write_manifest([url], tools_meta, resources_meta, prompts_meta, stats,
                     tool_outputs=tool_outputs,
                     transport=transport, syscalls_available=False,
@@ -592,15 +679,24 @@ async def run_remote(url: str, *, transport: str,
 
 
 async def fetch_manifest(server_cmd: list[str], *, transport: str = "stdio",
-                         call_timeout: float = DEFAULT_CALL_TIMEOUT) -> dict:
+                         call_timeout: float = DEFAULT_CALL_TIMEOUT,
+                         unsafe_host: bool = False) -> dict:
     """Connect to a server and fetch declared tools, resources, and prompts
     without exercising tools or tracing syscalls."""
     if transport == "stdio":
-        params = StdioServerParameters(command=server_cmd[0], args=server_cmd[1:],
-                                       env={**os.environ})
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                tools_meta, resources_meta, prompts_meta = await _discover_manifest(session)
+        cleaned_env, canary_dir = _build_isolated_env({}, unsafe_host=unsafe_host)
+        try:
+            params = StdioServerParameters(command=server_cmd[0], args=server_cmd[1:],
+                                           env=cleaned_env)
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    tools_meta, resources_meta, prompts_meta = await _discover_manifest(session)
+        finally:
+            if canary_dir and os.path.exists(canary_dir):
+                try:
+                    shutil.rmtree(canary_dir, ignore_errors=True)
+                except OSError:
+                    pass
     elif transport in ("sse", "streamable-http"):
         if transport == "sse":
             from mcp.client.sse import sse_client

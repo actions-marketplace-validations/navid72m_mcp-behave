@@ -444,6 +444,10 @@ def main(argv=None, default_audit=False) -> int:
         help="Run runtime behavioral audits on each discovered server.",
     )
     parser.add_argument(
+        "--unsafe-host", action="store_true",
+        help="Acknowledge security risk and permit running runtime audits of configured servers on the local host.",
+    )
+    parser.add_argument(
         "--json", action="store_true",
         help="Emit results as JSON on stdout.",
     )
@@ -473,6 +477,13 @@ def main(argv=None, default_audit=False) -> int:
     scan_data = scan_all_configs(custom_paths=args.configs)
     audit_data = None
     if args.audit and scan_data.get("servers"):
+        if not args.unsafe_host and os.environ.get("MCP_BEHAVE_UNSAFE_HOST") != "1":
+            print(
+                "[config-scanner] Refusing to execute configured servers directly on the host without sandboxing.\n"
+                "[config-scanner] Pass '--unsafe-host' to acknowledge risk and allow direct host execution.",
+                file=sys.stderr,
+            )
+            return 2
         audit_data = asyncio.run(audit_configured_servers(
             scan_data["servers"],
             timeout=args.timeout,

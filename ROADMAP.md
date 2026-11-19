@@ -1,6 +1,6 @@
 # mcp-behave: Roadmap & Strategy
 
-Current state (**v0.3.5**): Native libc interposition (`DYLD_INSERT_LIBRARIES` on macOS, `LD_PRELOAD` on Linux, with `strace` fallback), hardened symlink resolution, long-path truncation defense, AF_UNIX domain socket & container runtime control interposition (`docker.sock`, `containerd.sock`, `podman.sock`), UDP & `sendmsg`/`sendmmsg` capture, read vs write file distinction, expanded sensitive secret targets (`.gnupg`, `.npmrc`, `.pypirc`, `.git-credentials`, cloud & browser profiles), tool-scoped local claims, multi-round probing (`--probe-rounds`), client config scanning (Claude Desktop, Cursor, Continue), full MCP-audit catalog (MCP001–MCP062), SARIF v2.1.0 reporting, and official MCP Registry, PyPI, and npm distribution.
+Current state (**v0.4.0**): Canary `$HOME` host isolation, sensitive credential environment scrubbing, explicit `--unsafe-host` gate, hardened MCP `serve` mode with command allowlists, Behavioral Regression Lockfile (`mcp-behave init` & `mcp-behave check`), Audit Confidence scoring across CLI/JSON/SARIF, expanded strace syscall set and parser, Native libc interposition (`DYLD_INSERT_LIBRARIES` on macOS, `LD_PRELOAD` on Linux), hardened symlink resolution, long-path truncation defense, AF_UNIX domain socket & container runtime control interposition (`docker.sock`, `containerd.sock`, `podman.sock`), UDP & `sendmsg`/`sendmmsg` capture, read vs write file distinction, expanded sensitive secret targets, tool-scoped local claims, multi-round probing (`--probe-rounds`), client config scanning (Claude Desktop, Cursor, Continue), full MCP-audit catalog (MCP001–MCP062), SARIF v2.1.0 reporting, and official MCP Registry, PyPI, and npm distribution.
 
 ---
 
@@ -61,15 +61,15 @@ The core differentiator for `mcp-behave` is **"declared vs observed behavior, tr
 
 ---
 
-### Phase 0: Credibility, Hygiene & Isolation Foundation (v0.3.6 – v0.4.0)
+### Phase 0: Credibility, Hygiene & Isolation Foundation (v0.4.0)
 
 The goal is ensuring zero host contamination and complete transparency across all default audit runs.
 
-- [ ] **Canary `$HOME` Redirection on Host** — natively redirect `$HOME` and config roots to a temporary disposable directory by default so local credentials cannot be touched.
-- [ ] **`--unsafe-host` Requirement** — require explicit `--unsafe-host` confirmation when invoking `audit-configs` or running audits outside isolated sandboxes.
-- [ ] **Hardened `serve` Mode** — guard `audit_server` against arbitrary execution via command allowlists or pre-approved server definitions in `.mcpbehaverc.json`.
-- [ ] **Scorecard Transparency** — rebrand scorecards explicitly as "mcp-behave score", publish category weightings openly, and eliminate stray rule references.
-- [ ] **Security Policy & Guidelines** — publish `SECURITY.md` with responsible disclosure instructions and `CONTRIBUTING.md`.
+- [x] **Canary `$HOME` Redirection on Host** — natively redirect `$HOME` and config roots to a temporary disposable directory by default so local credentials cannot be touched.
+- [x] **`--unsafe-host` Requirement** — require explicit `--unsafe-host` confirmation when invoking `audit-configs` or running audits outside isolated sandboxes.
+- [x] **Hardened `serve` Mode** — guard `audit_server` against arbitrary execution via command allowlists or pre-approved server definitions in `.mcpbehaverc.json`.
+- [x] **Scorecard Transparency** — rebrand scorecards explicitly as "mcp-behave score", publish category weightings openly, and eliminate stray rule references.
+- [x] **Security Policy & Guidelines** — publish `SECURITY.md` with responsible disclosure instructions and `CONTRIBUTING.md`.
 
 **Exit Criterion:** Demo servers (`honest_server`, `leaky_server`, `poisoned_server`) produce predictable, clean, and zero-false-positive results across CI on macOS and Linux.
 
@@ -79,6 +79,7 @@ The goal is ensuring zero host contamination and complete transparency across al
 
 The goal is resilient runtime observation that withstands hostile or evasive server code.
 
+- [x] **Expanded `strace` Syscall Coverage & Parser** — hooks `open`, `openat`, `creat`, `connect`, `sendto`, `sendmsg`, `sendmmsg`, `execve`, `execveat`, parsing AF_UNIX sockets and file write distinctions to achieve parity with native libc interposition.
 - [ ] **Sandbox-First Execution** — default to containerized audits (Docker or Podman) on all platforms. On Linux systems without container daemons, automatically fall back to unprivileged `bubblewrap` with user namespaces.
 - [ ] **Linux eBPF Backend** — kernel-level syscall tracing via eBPF/kprobes to reliably observe statically linked binaries (Go, musl Rust), inline raw syscalls (`SYS_connect`, `SYS_openat`), and child processes spawned with scrubbed environments (`env -i`).
 - [ ] **Namespace-Level Network Capture** — place audited servers in an isolated network namespace behind a logging proxy and controlled DNS resolver to log DNS exfiltration, UDP egress, and connection reuse.
@@ -101,14 +102,15 @@ The goal is resilient runtime observation that withstands hostile or evasive ser
 
 The goal is exercising servers the way real clients do and quantifying inspection thoroughness.
 
-- [ ] **Schema-Aware Argument Synthesis** — infer semantic types from JSON schemas to generate realistic paths, URLs, entity IDs, and enum combinations instead of obvious static canaries.
-- [ ] **Multi-Round Probing with Environmental Permutations** — vary invocation ordering, repeat parameter sets, randomize environment noise, and simulate clock skew to trip delayed triggers.
-- [ ] **Optional Context-Aware Exploration** — optional LLM-driven test case generation (bring-your-own-key) for servers requiring complex conversational state or structured payload sequences.
-- [ ] **Audit Confidence Score** — report concrete verification depth:
+- [x] **Audit Confidence Score** — report concrete verification depth across CLI, JSON, and SARIF:
   - Percentage of declared tools successfully exercised
   - Failure/exception rate per tool
   - Number of probe rounds completed
-  - Inspection backend fidelity (eBPF vs Container vs Libc)
+  - Inspection backend fidelity (eBPF vs Container vs Libc vs Untraced)
+  - Actionable verification caveats
+- [ ] **Schema-Aware Argument Synthesis** — infer semantic types from JSON schemas to generate realistic paths, URLs, entity IDs, and enum combinations instead of obvious static canaries.
+- [ ] **Multi-Round Probing with Environmental Permutations** — vary invocation ordering, repeat parameter sets, randomize environment noise, and simulate clock skew to trip delayed triggers.
+- [ ] **Optional Context-Aware Exploration** — optional LLM-driven test case generation (bring-your-own-key) for servers requiring complex conversational state or structured payload sequences.
 - [ ] **Property-Based Fuzzing** — integrate Hypothesis property testing (`hypothesis-jsonschema`) with `--fuzz` for automated edge-case fuzzing.
 
 ---
@@ -117,12 +119,12 @@ The goal is exercising servers the way real clients do and quantifying inspectio
 
 The goal is seamless integration into developer CI/CD pipelines as the standard behavioral gate.
 
-- [ ] **Behavior Lockfile (`mcp-behave.lock`)** — `mcp-behave init` analyzes the server and produces a committed, human-readable lockfile capturing:
+- [x] **Behavior Lockfile (`mcp-behave.lock`)** — `mcp-behave init` analyzes the server and produces a committed, human-readable lockfile capturing:
   - Contacted network endpoints (hosts, ports, protocols)
   - Accessed sensitive filesystem paths (read vs write)
   - Spawned child binaries and arguments
   - Tool manifest cryptographic hashes
-- [ ] **Behavioral Diffing (`mcp-behave check`)** — CI command that fails *only* on undeclared behavioral regressions (e.g., "`format_note` now connects to `telemetry.example.com:443` (not in lockfile)"), while accepting previously recorded baseline behavior.
+- [x] **Behavioral Diffing (`mcp-behave check`)** — CI command that fails *only* on undeclared behavioral regressions (e.g., "`format_note` now connects to `telemetry.example.com:443` (not in lockfile)"), while accepting previously recorded baseline behavior.
 - [ ] **Official GitHub Action (`navid72m/mcp-behave-action@v1`)**:
   - Automatically posts pull request comments illustrating behavioral diffs
   - Uploads SARIF v2.1.0 results to GitHub Code Scanning

@@ -78,6 +78,24 @@ npm install -g mcp-behave
 - **Linux**: Works natively without `strace` or `SYS_PTRACE` using an `LD_PRELOAD` shared library. Built automatically on first use with `cc` (e.g. `gcc`). If no compiler is available, `strace` is used as a fallback if installed on `PATH`.
 - **Untraced mode**: Run on any platform with `--no-trace` for manifest inspection and rug-pull checks without any runtime tracer.
 
+## Behavioral Regression Testing (`mcp-behave.lock`)
+
+Just like dependency lockfiles pin package versions, `mcp-behave.lock` pins **runtime behavior**:
+- Which remote hosts and ports your server contacts
+- Which filesystem paths it touches and writes to
+- Which child binaries and subprocesses it spawns
+- The cryptographic hash of its declared capability manifest
+
+```bash
+# 1. Establish a behavioral baseline for your server:
+mcp-behave init python -m my_server
+
+# 2. Check for regressions in CI:
+mcp-behave check python -m my_server
+```
+
+`mcp-behave check` fails with exit code `3` *only* when new, undeclared runtime behavior is observed (e.g. unexpected telemetry or unauthorized file writes), while accepting previously recorded baseline behavior.
+
 ## Use
 
 ```bash
@@ -86,10 +104,16 @@ mcp-behave python -m mcp_server_fetch
 mcp-behave npx -y @modelcontextprotocol/server-filesystem /tmp
 mcp-behave uvx mcp-server-git
 
+# Establish behavioral lockfile baseline:
+mcp-behave init python -m mcp_server_fetch
+
+# Run CI behavioral regression check:
+mcp-behave check python -m mcp_server_fetch
+
 # Run untraced (manifest & rug-pull analysis only, no tracer needed):
 mcp-behave --no-trace python -m mcp_server_fetch
 
-# Machine-readable output for CI:
+# Machine-readable output for CI (includes Audit Confidence score):
 mcp-behave --json --fail-on high python -m mcp_server_fetch
 
 # OASIS SARIF v2.1.0 output for GitHub Code Scanning:
@@ -120,12 +144,14 @@ Exit codes: `0` clean, `3` findings at or above `--fail-on` threshold,
 
 ### Useful flags
 
+- `--unsafe-host` — disable temporary canary `$HOME` redirection and run directly against the host environment.
 - `--no-trace` — skip syscall tracing and run manifest analysis only.
 - `--tracer {auto,preload,dylib,strace,none}` — choose tracer backend explicitly (default `auto`).
-- `--scorecard` — print an objective 0–100 CSA Security Selection Scorecard with letter grade (`A+` to `F`).
+- `--probe-rounds N` — execute multiple probing rounds with varied synthesized inputs (default 1).
+- `--scorecard` — print an objective 0–100 mcp-behave score with letter grade (`A+` to `F`).
 - `--fuzz` — run adversarial input fuzzing against tool schemas (boundary mutations, path traversal, injection vectors).
 - `--config PATH` — path to custom `.mcpbehaverc.json` configuration file.
-- `--json` — emit findings as JSON on stdout.
+- `--json` — emit findings and audit confidence as JSON on stdout.
 - `--sarif` — emit findings as OASIS SARIF v2.1.0 on stdout (for GitHub Code Scanning / CI).
 - `--fail-on {never,info,high}` — severity that triggers exit code 3 (default `high`).
 - `--no-dns` — skip reverse-DNS lookups (faster, offline-safe).

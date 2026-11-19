@@ -58,6 +58,8 @@ def _build_parser():
                     "Observes server runtime behavior (files, network, subprocesses) "
                     "and compares what it DECLARED against what it actually DID.\n\n"
                     "Subcommands:\n"
+                    "  `mcp-behave init` generates a committed baseline behavior lockfile (mcp-behave.lock)\n"
+                    "  `mcp-behave check` diffs live server behavior against mcp-behave.lock in CI\n"
                     "  `mcp-behave lint` statically audits a manifest.json or tools file without execution\n"
                     "  `mcp-behave scan-configs` scans local AI client configs (Claude Desktop, Cursor, etc.)\n"
                     "  `mcp-behave audit-configs` scans and runs behavioral audits on all configured servers\n"
@@ -114,6 +116,10 @@ def _build_parser():
              "'dylib' uses macOS DYLD interposition, 'strace' uses strace, 'none' runs untraced.",
     )
     p.add_argument(
+        "--unsafe-host", action="store_true",
+        help="Disable temporary canary $HOME redirection and run against the real host environment.",
+    )
+    p.add_argument(
         "--timeout", type=float, default=probe_mod.DEFAULT_CALL_TIMEOUT,
         help="Seconds to wait per tool/resource/prompt call "
              "(default: %(default)s).",
@@ -143,7 +149,7 @@ def _exit_code(findings: list, fail_on: str) -> int:
     return 3 if any(SEV_RANK.get(s, 0) >= threshold for s, _ in findings) else 0
 
 
-SUBCOMMANDS = {"push", "serve", "scan-configs", "audit-configs", "inspect", "lint"}
+SUBCOMMANDS = {"init", "check", "push", "serve", "scan-configs", "audit-configs", "inspect", "lint"}
 
 
 def main(argv=None):
@@ -160,7 +166,13 @@ def main(argv=None):
     if raw_argv and raw_argv[0] in SUBCOMMANDS:
         sub = raw_argv[0]
         rest = raw_argv[1:]
-        if sub == "push":
+        if sub == "init":
+            from . import lockfile as lockfile_mod
+            return lockfile_mod.main_init(rest)
+        elif sub == "check":
+            from . import lockfile as lockfile_mod
+            return lockfile_mod.main_check(rest)
+        elif sub == "push":
             from . import push as push_mod
             return push_mod.main(rest)
         elif sub == "serve":
@@ -208,7 +220,8 @@ def main(argv=None):
         coro = probe_mod.run(args.server_command, out_dir=args.out_dir,
                              call_timeout=args.timeout,
                              tracer=tracer_choice, fuzz=args.fuzz,
-                             rounds=args.probe_rounds)
+                             rounds=args.probe_rounds,
+                             unsafe_host=args.unsafe_host)
     else:
         if len(args.server_command) != 1:
             parser.error(f"--transport {args.transport} expects exactly one URL argument")

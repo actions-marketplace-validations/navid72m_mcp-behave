@@ -78,6 +78,6 @@ def test_print_scorecard_runs_cleanly(capsys):
     }
     scorecard.print_scorecard(card)
     captured = capsys.readouterr()
-    assert "MCP SECURITY SELECTION SCORECARD" in captured.out
+    assert "MCP SECURITY SCORECARD" in captured.out
     assert "Overall Score:   90 / 100" in captured.out
     assert "[ A ]" in captured.out

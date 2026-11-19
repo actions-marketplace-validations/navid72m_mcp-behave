@@ -360,6 +360,99 @@ def _tool_names(manifest: dict) -> str:
     return ", ".join(t["name"] for t in manifest.get("tools", [])) or "(none)"
 
 
+def compute_audit_confidence(manifest: dict, profile: dict | None = None) -> dict:
+    """Compute an objective audit confidence assessment.
+
+    Quantifies verification depth:
+    - Proportion of declared tools actually exercised
+    - Success rate of tool calls (calls without timeouts/exceptions)
+    - Probing rounds executed
+    - Syscall tracer fidelity and backend
+    - Explicit caveats explaining what was NOT verified.
+    """
+    stats = manifest.get("_stats") or {}
+    tool_stats = stats.get("tools") or {}
+    declared_tools = manifest.get("tools") or []
+    num_declared = len(declared_tools)
+
+    called_calls = tool_stats.get("called", 0)
+    ok_calls = tool_stats.get("ok", 0)
+    failed_calls = max(0, called_calls - ok_calls)
+    rounds = stats.get("rounds", 1)
+    tracer = stats.get("tracer") or ("stdio" if manifest.get("syscalls_available") else "none")
+    syscalls_available = manifest.get("syscalls_available", False)
+
+    # Coverage calculations
+    if num_declared == 0:
+        tool_coverage_pct = 100.0
+        exercised_unique = 0
+    else:
+        exercised_unique = num_declared if (called_calls >= num_declared) else min(num_declared, called_calls)
+        tool_coverage_pct = min(100.0, (exercised_unique / num_declared) * 100.0)
+
+    call_success_pct = 100.0 if called_calls == 0 else (ok_calls / called_calls) * 100.0
+
+    # Tracer fidelity
+    if not syscalls_available:
+        tracer_fidelity = "LOW"
+        tracer_desc = "untraced / manifest analysis only"
+    elif tracer in ("dylib", "macos-dylib"):
+        tracer_fidelity = "MEDIUM-HIGH"
+        tracer_desc = "macOS DYLD library interposition"
+    elif tracer in ("preload", "linux-preload"):
+        tracer_fidelity = "MEDIUM-HIGH"
+        tracer_desc = "Linux LD_PRELOAD library interposition"
+    elif tracer == "strace":
+        tracer_fidelity = "MEDIUM"
+        tracer_desc = "Linux strace ptrace filtering"
+    else:
+        tracer_fidelity = "MEDIUM"
+        tracer_desc = f"stdio tracer ({tracer})"
+
+    caveats = []
+    if not syscalls_available:
+        caveats.append("Syscall tracing disabled or unavailable; runtime behavior was not observed.")
+    else:
+        if tracer in ("dylib", "preload", "macos-dylib", "linux-preload"):
+            caveats.append("Libc interposition cannot intercept statically linked binaries (Go, musl Rust) or raw direct kernel syscalls.")
+        if rounds <= 1:
+            caveats.append("Single-round probing: time-delayed triggers or stateful execution paths may remain unexercised (use --probe-rounds 3).")
+
+    if failed_calls > 0:
+        caveats.append(f"{failed_calls} tool call(s) failed or timed out during probing.")
+
+    if num_declared == 0:
+        caveats.append("No tools declared in server manifest.")
+    elif exercised_unique < num_declared:
+        caveats.append(f"{num_declared - exercised_unique} declared tool(s) were never exercised.")
+
+    # Confidence score determination
+    if not syscalls_available or num_declared == 0:
+        score = "LOW"
+    elif tool_coverage_pct >= 90.0 and call_success_pct >= 80.0 and rounds >= 2:
+        score = "HIGH"
+    elif tool_coverage_pct >= 75.0 and call_success_pct >= 50.0:
+        score = "MEDIUM"
+    else:
+        score = "LOW"
+
+    return {
+        "score": score,
+        "tools_declared": num_declared,
+        "tools_exercised": exercised_unique,
+        "tools_coverage_pct": round(tool_coverage_pct, 1),
+        "calls_total": called_calls,
+        "calls_ok": ok_calls,
+        "calls_failed": failed_calls,
+        "call_success_rate_pct": round(call_success_pct, 1),
+        "probe_rounds": rounds,
+        "tracer_backend": tracer,
+        "tracer_fidelity": tracer_fidelity,
+        "tracer_description": tracer_desc,
+        "caveats": caveats,
+    }
+
+
 def report(out_dir, *, resolve_dns: bool = True, show_scorecard: bool = False, config: dict | None = None) -> list:
     """Text reporter. Prints a human-readable summary; returns findings."""
     manifest, profile = load(out_dir)
@@ -369,6 +462,17 @@ def report(out_dir, *, resolve_dns: bool = True, show_scorecard: bool = False, c
     all_tools_claim_local = bool(tools) and all(_claims_local_operation(t.get("description", "")) for t in tools)
     claims_local = _claims_local_operation(server_instructions) or all_tools_claim_local
     syscalls_available = manifest.get("syscalls_available", True)
+
+    confidence = compute_audit_confidence(manifest, profile)
+    print(f"\n  === AUDIT CONFIDENCE: {confidence['score']} ===")
+    print(f"  • Tool Coverage:  {confidence['tools_exercised']}/{confidence['tools_declared']} tools exercised ({confidence['tools_coverage_pct']}%)")
+    print(f"  • Call Success:   {confidence['calls_ok']}/{confidence['calls_total']} calls succeeded ({confidence['call_success_rate_pct']}%)")
+    print(f"  • Probing Depth:  {confidence['probe_rounds']} round(s)")
+    print(f"  • Tracer Backend: {confidence['tracer_description']} [{confidence['tracer_fidelity']}]")
+    if confidence["caveats"]:
+        print("  • Verification Caveats:")
+        for c in confidence["caveats"]:
+            print(f"      - {c}")
 
     print(f"\n  target tools: {_tool_names(manifest)}")
     print(f"  resources:    {len(manifest.get('resources', []))}, "
@@ -401,10 +505,12 @@ def report_json(out_dir, *, resolve_dns: bool = True, config: dict | None = None
     manifest, profile = load(out_dir)
     findings = build_findings(manifest, profile, resolve_dns=resolve_dns, config=config, persist_rugpull=True)
     scorecard = scorecard_mod.compute_scorecard(manifest, profile, findings)
+    confidence = compute_audit_confidence(manifest, profile)
     return {
         "server_cmd": manifest.get("server_cmd"),
         "manifest_sha256": manifest.get("manifest_sha256"),
         "syscalls_available": manifest.get("syscalls_available", True),
+        "audit_confidence": confidence,
         "declared": {
             "tools": [t["name"] for t in manifest.get("tools", [])],
             "resources": [r["uri"] for r in manifest.get("resources", [])],

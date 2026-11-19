@@ -151,7 +151,7 @@ def print_scorecard(card: Dict[str, Any]):
     status_str = "PASSED" if passed else "FAILED / NEEDS REVIEW"
 
     print("\n" + "=" * 60)
-    print("  MCP SECURITY SELECTION SCORECARD (CSA Standard)")
+    print("  MCP SECURITY SCORECARD (mcp-behave score)")
     print("=" * 60)
     print(f"  Overall Score:  {score:3d} / 100")
     print(f"  Security Grade: [ {grade} ]  ({status_str})")

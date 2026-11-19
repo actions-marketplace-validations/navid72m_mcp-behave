@@ -7,14 +7,16 @@ import re
 import sys
 from pathlib import Path
 
-# Matches strace's `openat(AT_FDCWD, "path"` AND dtruss's `open("path"` /
-# `openat(0xff..., "path"`. The fd/dirfd arg before the path is optional.
-OPENAT = re.compile(r'\bopen(?:at)?\((?:[^,)]+,\s*)?"([^"]+)"')
-# matches both: sin_addr=inet_addr("1.2.3.4")  and  sin6_addr=inet_pton(AF_INET6, "::1", ...)
-CONNECT = re.compile(r'connect\(\d+,\s*\{sa_family=AF_INET6?,\s*'
-                     r'sin6?_port=htons\((\d+)\),\s*sin6?_addr=inet_'
-                     r'(?:addr|pton)\((?:[^,]+,\s*)?"([^"]+)"')
-EXECVE = re.compile(r'\bexecve\("([^"]+)"')
+# Regexes for strace / dtruss output
+STRACE_OPEN = re.compile(r'\b(?:openat|open|creat)\((?:[^,)]+,\s*)?"([^"]+)"(?:,\s*([A-Za-z0-9_|]+))?')
+STRACE_NET = re.compile(
+    r'(?:connect|sendto)\(\d+,\s*(?:[^,]+,\s*\d+,\s*\d+,\s*)?\{sa_family=AF_INET6?,\s*'
+    r'sin6?_port=htons\((\d+)\),\s*sin6?_addr=inet_(?:addr|pton)\((?:[^,]+,\s*)?"([^"]+)"'
+)
+STRACE_UNIX = re.compile(
+    r'(?:connect|sendto)\(\d+,\s*(?:[^,]+,\s*\d+,\s*\d+,\s*)?\{sa_family=AF_UNIX,\s*sun_path=(?:@"([^"]+)"|"([^"]+)")'
+)
+STRACE_EXEC = re.compile(r'\b(?:execve|execveat)\((?:[^,)]+,\s*)?"([^"]+)"')
 
 
 def _clean_path(p: str) -> str:
@@ -299,17 +301,26 @@ def analyze(path: str) -> dict:
 
     with open(path, errors="replace") as f:
         for line in f:
-            if (m := OPENAT.search(line)):
+            if (m := STRACE_OPEN.search(line)):
                 p = os.path.normpath(_clean_path(m.group(1)))
                 if len(p) > 1024:
                     truncated_paths.add(p)
+                flags = m.group(2) or ""
+                is_write = "creat(" in line or any(w in flags for w in ("O_WRONLY", "O_RDWR", "O_CREAT"))
                 if interesting_file(p):
                     files_opened.add(p)
+                    if is_write:
+                        files_written.add(p)
                 else:
                     filtered_files += 1
-            if (m := CONNECT.search(line)) and interesting_net(m.group(2)):
+            if (m := STRACE_NET.search(line)) and interesting_net(m.group(2)):
                 nets.add(f"{m.group(2)}:{m.group(1)}")
-            if (m := EXECVE.search(line)):
+            if (m := STRACE_UNIX.search(line)):
+                u_path = m.group(1) or m.group(2)
+                if u_path:
+                    prefix = "@" if m.group(1) else ""
+                    unix_sockets.add(f"{prefix}{os.path.normpath(_clean_path(u_path))}")
+            if (m := STRACE_EXEC.search(line)):
                 execs.add(os.path.normpath(_clean_path(m.group(1))))
 
     return {

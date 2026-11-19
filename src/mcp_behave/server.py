@@ -21,6 +21,45 @@ from . import __version__
 from . import probe as probe_mod
 from . import report as report_mod
 
+_ALLOW_ALL_EXEC = False
+
+
+def set_allow_all_exec(val: bool = True):
+    global _ALLOW_ALL_EXEC
+    _ALLOW_ALL_EXEC = val
+
+
+def _get_allowed_commands() -> list[str]:
+    env_cmds = os.environ.get("MCP_BEHAVE_ALLOWED_COMMANDS")
+    if env_cmds:
+        return [c.strip() for c in env_cmds.replace(":", ",").split(",") if c.strip()]
+    from . import config as config_mod
+    cfg = config_mod.load_config()
+    return cfg.get("allowed_commands", [])
+
+
+def _is_command_allowed(cmd: list[str]) -> bool:
+    if _ALLOW_ALL_EXEC or os.environ.get("MCP_BEHAVE_ALLOW_ALL_EXEC") in ("1", "true", "yes"):
+        return True
+    allowed_list = _get_allowed_commands()
+    if not allowed_list:
+        return False
+    cmd_str = " ".join(cmd).strip()
+    cmd_base = os.path.basename(cmd[0]) if cmd else ""
+    for pattern in allowed_list:
+        pattern = pattern.strip()
+        if not pattern:
+            continue
+        if pattern == "*":
+            return True
+        if cmd_str == pattern or cmd == shlex.split(pattern):
+            return True
+        if cmd_str.startswith(pattern):
+            return True
+        if cmd_base == pattern or (cmd and cmd[0] == pattern):
+            return True
+    return False
+
 mcp = FastMCP(
     "mcp-behave",
     instructions=(
@@ -64,6 +103,26 @@ async def audit_server(
 
     if not cmd:
         return {"error": "command must not be empty", "findings": []}
+
+    if transport == "stdio" and not _is_command_allowed(cmd):
+        cmd_repr = " ".join(cmd)
+        return {
+            "error": (
+                "Security refusal: arbitrary command execution in MCP serve mode is blocked by default. "
+                f"Command '{cmd_repr}' is not in allowed_commands. "
+                "Add it to 'allowed_commands' in .mcpbehaverc.json or launch mcp-behave serve with --allow-all-exec."
+            ),
+            "server_cmd": cmd,
+            "findings": [
+                {
+                    "severity": "HIGH",
+                    "message": (
+                        f"Blocked unapproved command execution: {cmd_repr}. "
+                        "Configure 'allowed_commands' in .mcpbehaverc.json or run serve with --allow-all-exec."
+                    ),
+                }
+            ],
+        }
 
     with tempfile.TemporaryDirectory(prefix="mcp_behave_") as tmpdir:
         tracer_choice = "none" if no_trace else tracer
@@ -123,6 +182,17 @@ async def inspect_manifest(
 
     if not cmd:
         return {"error": "command must not be empty"}
+
+    if transport == "stdio" and not _is_command_allowed(cmd):
+        cmd_repr = " ".join(cmd)
+        return {
+            "error": (
+                "Security refusal: arbitrary command execution in MCP serve mode is blocked by default. "
+                f"Command '{cmd_repr}' is not in allowed_commands. "
+                "Add it to 'allowed_commands' in .mcpbehaverc.json or launch mcp-behave serve with --allow-all-exec."
+            ),
+            "server_cmd": cmd,
+        }
 
     try:
         manifest = await probe_mod.fetch_manifest(cmd, transport=transport, call_timeout=timeout)
@@ -192,7 +262,14 @@ def main(argv=None):
         default="stdio",
         help="MCP transport to run (default: %(default)s).",
     )
+    parser.add_argument(
+        "--allow-all-exec",
+        action="store_true",
+        help="Allow connected agents to audit arbitrary commands (disables command allowlist restriction).",
+    )
     args = parser.parse_args(argv)
+    if args.allow_all_exec:
+        set_allow_all_exec(True)
     mcp.run(transport=args.transport)
 
 
