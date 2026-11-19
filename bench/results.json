@@ -1,37 +1,168 @@
 {
-  "benchmark_suite": "mcp-behave Corpus Benchmark (SC-Inject, MCPSecBench, DVMCP, Postmark, Deadbugz)",
-  "timestamp": "2026-11-19 06:42:34 UTC",
+  "benchmark_suite": "mcp-behave Twin-Server & SafeMCP Benchmark Suite",
+  "timestamp": "2026-11-19 07:45:41 UTC",
   "probe_rounds": 3,
   "metrics": {
     "mcp_behave_dynamic": {
-      "total": 11,
-      "tp": 6,
+      "total": 17,
+      "tp": 9,
       "fp": 0,
-      "tn": 4,
+      "tn": 7,
       "fn": 1,
       "precision": 1.0,
-      "recall": 0.8571,
-      "f1": 0.9231,
+      "recall": 0.9,
+      "f1": 0.9474,
       "fpr": 0.0
     },
     "static_baseline": {
-      "total": 11,
-      "tp": 5,
+      "total": 17,
+      "tp": 8,
       "fp": 0,
-      "tn": 4,
+      "tn": 7,
       "fn": 2,
       "precision": 1.0,
-      "recall": 0.7143,
-      "f1": 0.8333,
+      "recall": 0.8,
+      "f1": 0.8889,
       "fpr": 0.0
+    },
+    "pair_separation": {
+      "total_pairs": 7,
+      "cleanly_separated": 6,
+      "separation_rate_pct": 85.7
     }
   },
+  "safe_mcp_threat_matrix": {
+    "MCP-T1001": {
+      "name": "Sensitive File Snooping (SSH/AWS/.env)",
+      "total": 2,
+      "caught": 2,
+      "rate_pct": 100.0
+    },
+    "MCP-T1002": {
+      "name": "Undeclared Socket Egress / C2 Beaconing",
+      "total": 3,
+      "caught": 3,
+      "rate_pct": 100.0
+    },
+    "MCP-T1003": {
+      "name": "Cloud Metadata / SSRF Probe (IMDS)",
+      "total": 1,
+      "caught": 1,
+      "rate_pct": 100.0
+    },
+    "MCP-T1004": {
+      "name": "Unauthorized Process Spawning (RCE)",
+      "total": 2,
+      "caught": 2,
+      "rate_pct": 100.0
+    },
+    "MCP-T1005": {
+      "name": "Behavioral Rug-Pull / Surface Mutation",
+      "total": 1,
+      "caught": 1,
+      "rate_pct": 100.0
+    },
+    "MCP-T1006": {
+      "name": "Multi-Turn Delayed Activation Evasion",
+      "total": 1,
+      "caught": 1,
+      "rate_pct": 100.0
+    },
+    "MCP-T1007": {
+      "name": "Container Runtime Socket Access (docker.sock)",
+      "total": 1,
+      "caught": 1,
+      "rate_pct": 100.0
+    },
+    "MCP-T1008": {
+      "name": "In-Band Payload Tampering & Secret Smuggling",
+      "total": 1,
+      "caught": 0,
+      "rate_pct": 0.0
+    }
+  },
+  "twin_pairs": [
+    {
+      "pair_id": "pair_calculator",
+      "benign_id": "ref_calculator",
+      "benign_clean": true,
+      "poisoned_ids": [
+        "sc_inject_egress"
+      ],
+      "all_poisoned_caught": true,
+      "separated": true
+    },
+    {
+      "pair_id": "pair_email",
+      "benign_id": "ref_email",
+      "benign_clean": true,
+      "poisoned_ids": [
+        "postmark_inband_bcc"
+      ],
+      "all_poisoned_caught": false,
+      "separated": false
+    },
+    {
+      "pair_id": "pair_fetch",
+      "benign_id": "ref_fetch",
+      "benign_clean": true,
+      "poisoned_ids": [
+        "fetch_poisoned"
+      ],
+      "all_poisoned_caught": true,
+      "separated": true
+    },
+    {
+      "pair_id": "pair_filesystem",
+      "benign_id": "ref_filesystem",
+      "benign_clean": true,
+      "poisoned_ids": [
+        "sc_inject_credential"
+      ],
+      "all_poisoned_caught": true,
+      "separated": true
+    },
+    {
+      "pair_id": "pair_git",
+      "benign_id": "ref_git",
+      "benign_clean": true,
+      "poisoned_ids": [
+        "dvmcp_command_exec",
+        "git_poisoned"
+      ],
+      "all_poisoned_caught": true,
+      "separated": true
+    },
+    {
+      "pair_id": "pair_sqlite",
+      "benign_id": "ref_sqlite",
+      "benign_clean": true,
+      "poisoned_ids": [
+        "sqlite_poisoned"
+      ],
+      "all_poisoned_caught": true,
+      "separated": true
+    },
+    {
+      "pair_id": "pair_stateful",
+      "benign_id": "ref_stateful",
+      "benign_clean": true,
+      "poisoned_ids": [
+        "mcpsec_rug_pull"
+      ],
+      "all_poisoned_caught": true,
+      "separated": true
+    }
+  ],
   "cases": [
     {
       "id": "ref_calculator",
       "name": "Reference Pure Computation Server",
+      "pair_id": "pair_calculator",
+      "variant": "benign",
       "category": "benign_compute",
       "source": "Standard Reference MCP Tool",
+      "threat_ids": [],
       "is_malicious": false,
       "notes": "Purely local compute with zero network, filesystem, or process side-effects.",
       "mcp_behave": {
@@ -40,7 +171,36 @@
         "total_count": 1,
         "findings": [
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
-        ]
+        ],
+        "duration_seconds": 0.581,
+        "trace_bytes": 162969
+      },
+      "static_baseline": {
+        "detected": false,
+        "findings": []
+      }
+    },
+    {
+      "id": "ref_email",
+      "name": "Reference Email Dispatcher Server",
+      "pair_id": "pair_email",
+      "variant": "benign",
+      "category": "benign_email",
+      "source": "Standard Reference MCP Architecture",
+      "threat_ids": [],
+      "is_malicious": false,
+      "notes": "Legitimate email dispatch adhering to declared inputs.",
+      "mcp_behave": {
+        "detected": false,
+        "high_count": 0,
+        "total_count": 3,
+        "findings": [
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+          "INFO: tool 'send_email' argument 'subject' is a free-form string with no enum, pattern, format, or maxLength constraint",
+          "INFO: tool 'send_email' argument 'body' is a free-form string with no enum, pattern, format, or maxLength constraint"
+        ],
+        "duration_seconds": 0.462,
+        "trace_bytes": 162970
       },
       "static_baseline": {
         "detected": false,
@@ -50,8 +210,11 @@
     {
       "id": "ref_fetch",
       "name": "Reference Network Fetcher",
+      "pair_id": "pair_fetch",
+      "variant": "benign",
       "category": "benign_network",
       "source": "Model Context Protocol Official Samples",
+      "threat_ids": [],
       "is_malicious": false,
       "notes": "Legitimate network operations explicitly declared in tool capability schemas.",
       "mcp_behave": {
@@ -61,7 +224,9 @@
         "findings": [
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
           "INFO: tool 'fetch_web_page' argument 'url' accepts caller-controlled URL without host allowlist or pattern constraints -- SSRF risk"
-        ]
+        ],
+        "duration_seconds": 0.451,
+        "trace_bytes": 162994
       },
       "static_baseline": {
         "detected": false,
@@ -71,8 +236,11 @@
     {
       "id": "ref_filesystem",
       "name": "Reference Filesystem Server",
+      "pair_id": "pair_filesystem",
+      "variant": "benign",
       "category": "benign_filesystem",
       "source": "Model Context Protocol Official Samples",
+      "threat_ids": [],
       "is_malicious": false,
       "notes": "Authorized local filesystem operations adhering to declared workspace bounds.",
       "mcp_behave": {
@@ -82,7 +250,9 @@
         "findings": [
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
           "INFO: tool 'read_project_file' argument 'path' accepts unconstrained filesystem path without pattern or enum validation -- path traversal risk"
-        ]
+        ],
+        "duration_seconds": 0.433,
+        "trace_bytes": 163017
       },
       "static_baseline": {
         "detected": false,
@@ -92,8 +262,11 @@
     {
       "id": "ref_git",
       "name": "Reference Git Repository Inspector",
+      "pair_id": "pair_git",
+      "variant": "benign",
       "category": "benign_git",
       "source": "Model Context Protocol Official Samples",
+      "threat_ids": [],
       "is_malicious": false,
       "notes": "Safe local repository metadata queries without private key access.",
       "mcp_behave": {
@@ -103,7 +276,62 @@
         "findings": [
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
           "INFO: tool 'get_git_log' declares 1 properties but no required list -- every argument is optional"
-        ]
+        ],
+        "duration_seconds": 0.435,
+        "trace_bytes": 162974
+      },
+      "static_baseline": {
+        "detected": false,
+        "findings": []
+      }
+    },
+    {
+      "id": "ref_sqlite",
+      "name": "Reference Local SQLite Database Server",
+      "pair_id": "pair_sqlite",
+      "variant": "benign",
+      "category": "benign_database",
+      "source": "Standard Reference MCP Architecture",
+      "threat_ids": [],
+      "is_malicious": false,
+      "notes": "Purely local in-memory SQLite operations with zero network egress.",
+      "mcp_behave": {
+        "detected": false,
+        "high_count": 0,
+        "total_count": 1,
+        "findings": [
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
+        ],
+        "duration_seconds": 0.456,
+        "trace_bytes": 163219
+      },
+      "static_baseline": {
+        "detected": false,
+        "findings": []
+      }
+    },
+    {
+      "id": "ref_stateful",
+      "name": "Reference Stateful Session Server",
+      "pair_id": "pair_stateful",
+      "variant": "benign",
+      "category": "benign_stateful",
+      "source": "Standard Reference MCP Architecture",
+      "threat_ids": [],
+      "is_malicious": false,
+      "notes": "Stateful session memory with deterministic manifest across repeated invocations.",
+      "mcp_behave": {
+        "detected": false,
+        "high_count": 0,
+        "total_count": 4,
+        "findings": [
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+          "INFO: tool 'store_note' argument 'key' is a free-form string with no enum, pattern, format, or maxLength constraint",
+          "INFO: tool 'store_note' argument 'content' is a free-form string with no enum, pattern, format, or maxLength constraint",
+          "INFO: tool 'retrieve_note' argument 'key' is a free-form string with no enum, pattern, format, or maxLength constraint"
+        ],
+        "duration_seconds": 0.448,
+        "trace_bytes": 163129
       },
       "static_baseline": {
         "detected": false,
@@ -113,8 +341,15 @@
     {
       "id": "deadbugz_delayed",
       "name": "Deadbugz: Multi-Call Delayed Evasion",
+      "pair_id": "pair_delayed",
+      "variant": "poisoned",
       "category": "delayed_evasion",
       "source": "Pillar Security Deadbugz Campaign",
+      "threat_ids": [
+        "MCP-T1006",
+        "MCP-T1001",
+        "MCP-T1002"
+      ],
       "is_malicious": true,
       "notes": "Benign on calls 1-2; triggers attack on call 3. Evades 1-round probes.",
       "mcp_behave": {
@@ -123,11 +358,13 @@
         "total_count": 5,
         "findings": [
           "INFO: network egress to 93.184.216.34:80",
-          "HIGH: read a sensitive path: /private/var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home__yr8cm13/.aws/credentials",
-          "HIGH: read a sensitive path: /var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home__yr8cm13/.aws/credentials",
+          "HIGH: read a sensitive path: /private/var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_8_h9ntpj/.aws/credentials",
+          "HIGH: read a sensitive path: /var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_8_h9ntpj/.aws/credentials",
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
           "INFO: tool 'compute_metrics' argument 'data' is a free-form string with no enum, pattern, format, or maxLength constraint"
-        ]
+        ],
+        "duration_seconds": 0.72,
+        "trace_bytes": 163345
       },
       "static_baseline": {
         "detected": true,
@@ -139,19 +376,88 @@
     {
       "id": "dvmcp_command_exec",
       "name": "DVMCP: Subprocess / Shell Execution",
+      "pair_id": "pair_git",
+      "variant": "poisoned",
       "category": "command_exec",
       "source": "harishsg993010/damn-vulnerable-MCP-server",
+      "threat_ids": [
+        "MCP-T1004"
+      ],
       "is_malicious": true,
       "notes": "Spawns /bin/sh child process during tool execution.",
+      "mcp_behave": {
+        "detected": true,
+        "high_count": 2,
+        "total_count": 3,
+        "findings": [
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+          "HIGH: spawned shell/command subprocess: /bin/sh -- command execution risk",
+          "HIGH: tool 'verify_image_format' argument 'filename' accepts unconstrained filesystem path without pattern or enum validation -- path traversal risk"
+        ],
+        "duration_seconds": 0.476,
+        "trace_bytes": 163096
+      },
+      "static_baseline": {
+        "detected": true,
+        "findings": [
+          "STATIC: subprocess call detected"
+        ]
+      }
+    },
+    {
+      "id": "fetch_poisoned",
+      "name": "Poisoned Web Fetcher (IMDS / Cloud SSRF)",
+      "pair_id": "pair_fetch",
+      "variant": "poisoned",
+      "category": "cloud_ssrf",
+      "source": "MCP-SafetyBench & Cloud Threat Model",
+      "threat_ids": [
+        "MCP-T1003"
+      ],
+      "is_malicious": true,
+      "notes": "Queries AWS/GCP instance metadata endpoint at 169.254.169.254.",
+      "mcp_behave": {
+        "detected": true,
+        "high_count": 1,
+        "total_count": 3,
+        "findings": [
+          "HIGH: network egress to 169.254.169.254:80 -- cloud instance metadata endpoint probed (IMDS / SSRF risk)",
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+          "INFO: tool 'fetch_web_page' argument 'url' accepts caller-controlled URL without host allowlist or pattern constraints -- SSRF risk"
+        ],
+        "duration_seconds": 1.365,
+        "trace_bytes": 163065
+      },
+      "static_baseline": {
+        "detected": true,
+        "findings": [
+          "STATIC: hardcoded IMDS metadata IP"
+        ]
+      }
+    },
+    {
+      "id": "git_poisoned",
+      "name": "Poisoned Git Inspector (Subprocess Execution)",
+      "pair_id": "pair_git",
+      "variant": "poisoned",
+      "category": "command_exec",
+      "source": "MCP-SafetyBench & Subprocess Exploits",
+      "threat_ids": [
+        "MCP-T1004"
+      ],
+      "is_malicious": true,
+      "notes": "Spawns /bin/sh during git log inspection.",
       "mcp_behave": {
         "detected": true,
         "high_count": 1,
         "total_count": 3,
         "findings": [
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
-          "INFO: spawned subprocess: /bin/sh",
-          "HIGH: tool 'verify_image_format' argument 'filename' accepts unconstrained filesystem path without pattern or enum validation -- path traversal risk"
-        ]
+          "HIGH: spawned shell/command subprocess: /bin/sh -- command execution risk",
+          "INFO: tool 'get_git_log' declares 1 properties but no required list -- every argument is optional"
+        ],
+        "duration_seconds": 0.479,
+        "trace_bytes": 163042
       },
       "static_baseline": {
         "detected": true,
@@ -163,8 +469,13 @@
     {
       "id": "mcpsec_rug_pull",
       "name": "MCPSecBench: Behavioral Rug-Pull / Surface Mutation",
+      "pair_id": "pair_stateful",
+      "variant": "poisoned",
       "category": "rug_pull",
       "source": "MCPSecBench (arXiv:2508.13220)",
+      "threat_ids": [
+        "MCP-T1005"
+      ],
       "is_malicious": true,
       "notes": "Mutates tool manifest schema and requirements across subsequent runs.",
       "mcp_behave": {
@@ -176,7 +487,9 @@
           "HIGH: declared surface changed since last run (was 035ba25c3caf, now 7e50f8e71b2e) -- possible rug-pull",
           "INFO: tool 'summarize' argument 'text' is a free-form string with no enum, pattern, format, or maxLength constraint",
           "INFO: tool 'summarize' argument 'admin_token' is a free-form string with no enum, pattern, format, or maxLength constraint"
-        ]
+        ],
+        "duration_seconds": 0.868,
+        "trace_bytes": 162885
       },
       "static_baseline": {
         "detected": false,
@@ -186,8 +499,13 @@
     {
       "id": "postmark_inband_bcc",
       "name": "postmark-mcp v1.0.16: In-Band API Exfiltration",
+      "pair_id": "pair_email",
+      "variant": "poisoned",
       "category": "inband_exfiltration",
       "source": "SC Media Supply Chain Advisory",
+      "threat_ids": [
+        "MCP-T1008"
+      ],
       "is_malicious": true,
       "notes": "Legitimate API egress endpoint; payload tampering injects secret BCC. Highlights IP:port egress blind spot.",
       "mcp_behave": {
@@ -198,7 +516,9 @@
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
           "INFO: tool 'send_email' argument 'subject' is a free-form string with no enum, pattern, format, or maxLength constraint",
           "INFO: tool 'send_email' argument 'body' is a free-form string with no enum, pattern, format, or maxLength constraint"
-        ]
+        ],
+        "duration_seconds": 0.449,
+        "trace_bytes": 162983
       },
       "static_baseline": {
         "detected": false,
@@ -208,8 +528,13 @@
     {
       "id": "sc_inject_credential",
       "name": "SC-Inject: Injected SSH Key Access",
+      "pair_id": "pair_filesystem",
+      "variant": "poisoned",
       "category": "credential_theft",
       "source": "ShieldNet / SC-Inject-Bench (arXiv:2604.04426)",
+      "threat_ids": [
+        "MCP-T1001"
+      ],
       "is_malicious": true,
       "notes": "Benign local formatting manifest; injected code probes ~/.ssh/id_rsa.",
       "mcp_behave": {
@@ -217,10 +542,12 @@
         "high_count": 2,
         "total_count": 3,
         "findings": [
-          "HIGH: read a sensitive path: /private/var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_1f9ufo6m/.ssh/id_rsa",
-          "HIGH: read a sensitive path: /var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_1f9ufo6m/.ssh/id_rsa",
+          "HIGH: read a sensitive path: /private/var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_o4kkyv7x/.ssh/id_rsa",
+          "HIGH: read a sensitive path: /var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_o4kkyv7x/.ssh/id_rsa",
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
-        ]
+        ],
+        "duration_seconds": 0.471,
+        "trace_bytes": 163917
       },
       "static_baseline": {
         "detected": true,
@@ -232,8 +559,13 @@
     {
       "id": "sc_inject_egress",
       "name": "SC-Inject: Injected Outbound Socket Beacon",
+      "pair_id": "pair_calculator",
+      "variant": "poisoned",
       "category": "network_egress",
       "source": "ShieldNet / SC-Inject-Bench (arXiv:2604.04426) & MCPSecBench (arXiv:2508.13220)",
+      "threat_ids": [
+        "MCP-T1002"
+      ],
       "is_malicious": true,
       "notes": "Offline sentiment analyzer makes unauthorized TCP socket connection.",
       "mcp_behave": {
@@ -243,7 +575,39 @@
         "findings": [
           "HIGH: network egress to 93.184.216.34:80 -- but a description claims local/offline operation",
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
+        ],
+        "duration_seconds": 0.751,
+        "trace_bytes": 163079
+      },
+      "static_baseline": {
+        "detected": true,
+        "findings": [
+          "STATIC: hardcoded IP socket connect"
         ]
+      }
+    },
+    {
+      "id": "sqlite_poisoned",
+      "name": "Poisoned SQLite Database Exfiltration Server",
+      "pair_id": "pair_sqlite",
+      "variant": "poisoned",
+      "category": "database_exfiltration",
+      "source": "MCP-SafetyBench & SC-Inject-Bench Paired Variant",
+      "threat_ids": [
+        "MCP-T1002"
+      ],
+      "is_malicious": true,
+      "notes": "Claims local database query but opens outbound TCP socket to 93.184.216.34:80.",
+      "mcp_behave": {
+        "detected": true,
+        "high_count": 1,
+        "total_count": 2,
+        "findings": [
+          "HIGH: network egress to 93.184.216.34:80 -- but a description claims local/offline operation",
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
+        ],
+        "duration_seconds": 1.037,
+        "trace_bytes": 163284
       },
       "static_baseline": {
         "detected": true,
@@ -255,8 +619,13 @@
     {
       "id": "unix_socket_escape",
       "name": "MCPSecBench: Docker Control Socket Access",
+      "pair_id": "pair_container",
+      "variant": "poisoned",
       "category": "socket_escape",
       "source": "MCPSecBench (arXiv:2508.13220)",
+      "threat_ids": [
+        "MCP-T1007"
+      ],
       "is_malicious": true,
       "notes": "Probes /var/run/docker.sock to command host daemon.",
       "mcp_behave": {
@@ -268,7 +637,9 @@
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
           "HIGH: tool 'check_system_health' appears to execute arbitrary commands or code (matched 'system') -- arbitrary execution risk",
           "INFO: tool 'check_system_health' argument 'component' is a free-form string with no enum, pattern, format, or maxLength constraint"
-        ]
+        ],
+        "duration_seconds": 0.444,
+        "trace_bytes": 163105
       },
       "static_baseline": {
         "detected": true,

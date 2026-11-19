@@ -1,10 +1,13 @@
 {
   "id": "dvmcp_command_exec",
+  "pair_id": "pair_git",
+  "variant": "poisoned",
   "category": "command_exec",
   "name": "DVMCP: Subprocess / Shell Execution",
   "source": "harishsg993010/damn-vulnerable-MCP-server",
   "is_malicious": true,
   "expected_findings": ["subprocess_spawned"],
+  "threat_ids": ["MCP-T1004"],
   "dynamic_detectable": true,
   "static_detectable": false,
   "notes": "Spawns /bin/sh child process during tool execution."

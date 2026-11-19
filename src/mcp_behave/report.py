@@ -416,11 +416,14 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
         # 1. Server-level instructions claim local/offline, OR
         # 2. All declared tools claim local/offline, OR
         # 3. The specific tool that initiated the connection claims local/offline.
+        is_cloud_metadata = ipport.startswith("169.254.")
         tool_claims_local = tool_local_claims.get(origin_tool, False) if origin_tool else False
-        is_violating_local = server_claims_local or all_tools_claim_local or tool_claims_local
+        is_violating_local = server_claims_local or all_tools_claim_local or tool_claims_local or is_cloud_metadata
 
         sev = "HIGH" if is_violating_local else "INFO"
-        if is_violating_local:
+        if is_cloud_metadata:
+            note = " -- cloud instance metadata endpoint probed (IMDS / SSRF risk)"
+        elif is_violating_local:
             if origin_tool and tool_claims_local and not (server_claims_local or all_tools_claim_local):
                 note = f" -- but tool '{origin_tool}' claims local/offline operation"
             else:
@@ -446,7 +449,12 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
             findings.append(("INFO", f"connected to unix domain socket: {unix_sock}"))
 
     for proc in profile.get("subprocesses", []):
-        findings.append(("INFO", f"spawned subprocess: {proc}"))
+        proc_str = str(proc)
+        proc_lower = proc_str.lower()
+        if any(proc_lower.endswith(sh) or proc_lower == sh.lstrip("/") for sh in ("/sh", "/bash", "/zsh", "/dash", "cmd.exe", "powershell", "powershell.exe", "/curl", "/wget", "/nc")):
+            findings.append(("HIGH", f"spawned shell/command subprocess: {proc} -- command execution risk"))
+        else:
+            findings.append(("INFO", f"spawned subprocess: {proc}"))
 
     rug = _rugpull_check(manifest, persist=persist_rugpull)
     if rug:

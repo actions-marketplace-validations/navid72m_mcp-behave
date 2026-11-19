@@ -1,10 +1,13 @@
 {
   "id": "deadbugz_delayed",
+  "pair_id": "pair_delayed",
+  "variant": "poisoned",
   "category": "delayed_evasion",
   "name": "Deadbugz: Multi-Call Delayed Evasion",
   "source": "Pillar Security Deadbugz Campaign",
   "is_malicious": true,
   "expected_findings": ["network_egress", "sensitive_path_read"],
+  "threat_ids": ["MCP-T1006", "MCP-T1001", "MCP-T1002"],
   "dynamic_detectable": true,
   "static_detectable": false,
   "requires_rounds": 3,

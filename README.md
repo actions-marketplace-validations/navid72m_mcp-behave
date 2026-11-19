@@ -531,18 +531,20 @@ mcp-behave python targets/poisoned_server.py
 
 ---
 
-### 1. [Runtime Server Code Corpus Benchmark](BENCHMARK.md) (SC-Inject, MCPSecBench, DVMCP, Deadbugz)
+### 1. [Twin-Server Behavioral Benchmark](BENCHMARK.md) (SafeMCP & ATT&CK Corpus)
 
-Unlike prompt-oriented benchmarks (e.g., MCPTox, MCP-AttackBench) that test LLM decision-making, this benchmark suite tests **malicious server code** where tools present innocent manifests while executing unauthorized runtime actions:
+Unlike prompt-oriented benchmarks (e.g., MCPTox, MCP-AttackBench) that test LLM decision-making, this benchmark suite tests **malicious server runtime code** using paired benign baselines vs backdoored "poisoned" twins across 7 core functional domains (17 runnable stdio servers):
 
 | Metric | Static AST / Regex Scanner | `mcp-behave` (1 Round) | `mcp-behave` (3 Rounds) |
 | :--- | :---: | :---: | :---: |
 | **Precision** | **100.0%** | **100.0%** | **100.0%** |
-| **Recall (Detection Rate)** | 71.4% (5/7) | 71.4% (5/7) | **85.7% (6/7)** |
-| **F1 Score** | 0.8333 | 0.8333 | **0.9231** |
-| **False Positive Rate (FPR)** | **0.0% (0/4)** | **0.0% (0/4)** | **0.0% (0/4)** |
-| **Delayed Evasion Detection** | ⚠️ Heuristic only | ❌ Missed (0%) | ✅ **Detected (100%)** |
-| **Behavioral Rug-Pull** | ❌ Missed (0%) | ✅ **Detected (100%)** | ✅ **Detected (100%)** |
+| **Recall (Detection Rate)** | 80.0% (8/10) | 80.0% (8/10) | **90.0% (9/10)** |
+| **F1 Score** | 0.8889 | 0.8889 | **0.9474** |
+| **False Positive Rate (FPR)** | **0.0% (0/7)** | **0.0% (0/7)** | **0.0% (0/7)** |
+| **Twin Pair Separation Accuracy** | 71.4% (5/7) | 71.4% (5/7) | **85.7% (6/7)** |
+| **Delayed Evasion Detection (`deadbugz`)** | ⚠️ Heuristic only | ❌ Missed (0%) | ✅ **Detected (100%)** |
+| **Cloud IMDS SSRF (`169.254.169.254`)** | ❌ Missed (0%) | ✅ **Detected (100%)** | ✅ **Detected (100%)** |
+| **Behavioral Rug-Pull (`mcpsec`)** | ❌ Missed (0%) | ✅ **Detected (100%)** | ✅ **Detected (100%)** |
 | **Host Environment Protection** | N/A (Offline) | ✅ **Zero (Canary Sandboxed)** | ✅ **Zero (Canary Sandboxed)** |
 
 *Run locally with `python3 bench/run.py --rounds 3` or inspect the corpus in `bench/corpus/`.*

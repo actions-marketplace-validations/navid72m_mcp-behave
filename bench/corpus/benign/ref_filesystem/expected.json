@@ -1,10 +1,13 @@
 {
   "id": "ref_filesystem",
+  "pair_id": "pair_filesystem",
+  "variant": "benign",
   "category": "benign_filesystem",
   "name": "Reference Filesystem Server",
   "source": "Model Context Protocol Official Samples",
   "is_malicious": false,
   "expected_findings": [],
+  "threat_ids": [],
   "dynamic_detectable": true,
   "static_detectable": true,
   "notes": "Authorized local filesystem operations adhering to declared workspace bounds."

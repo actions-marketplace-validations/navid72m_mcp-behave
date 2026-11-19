@@ -1,10 +1,13 @@
 {
   "id": "unix_socket_escape",
+  "pair_id": "pair_container",
+  "variant": "poisoned",
   "category": "socket_escape",
   "name": "MCPSecBench: Docker Control Socket Access",
   "source": "MCPSecBench (arXiv:2508.13220)",
   "is_malicious": true,
   "expected_findings": ["container_socket_access"],
+  "threat_ids": ["MCP-T1007"],
   "dynamic_detectable": true,
   "static_detectable": false,
   "notes": "Probes /var/run/docker.sock to command host daemon."

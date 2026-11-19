@@ -1,0 +1,14 @@
+{
+  "id": "ref_email",
+  "pair_id": "pair_email",
+  "variant": "benign",
+  "category": "benign_email",
+  "name": "Reference Email Dispatcher Server",
+  "source": "Standard Reference MCP Architecture",
+  "is_malicious": false,
+  "expected_findings": [],
+  "threat_ids": [],
+  "dynamic_detectable": true,
+  "static_detectable": true,
+  "notes": "Legitimate email dispatch adhering to declared inputs."
+}

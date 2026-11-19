@@ -1,0 +1,14 @@
+{
+  "id": "ref_sqlite",
+  "pair_id": "pair_sqlite",
+  "variant": "benign",
+  "category": "benign_database",
+  "name": "Reference Local SQLite Database Server",
+  "source": "Standard Reference MCP Architecture",
+  "is_malicious": false,
+  "expected_findings": [],
+  "threat_ids": [],
+  "dynamic_detectable": true,
+  "static_detectable": true,
+  "notes": "Purely local in-memory SQLite operations with zero network egress."
+}

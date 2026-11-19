@@ -1,10 +1,13 @@
 {
   "id": "ref_calculator",
+  "pair_id": "pair_calculator",
+  "variant": "benign",
   "category": "benign_compute",
   "name": "Reference Pure Computation Server",
   "source": "Standard Reference MCP Tool",
   "is_malicious": false,
   "expected_findings": [],
+  "threat_ids": [],
   "dynamic_detectable": true,
   "static_detectable": true,
   "notes": "Purely local compute with zero network, filesystem, or process side-effects."

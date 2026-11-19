@@ -1,10 +1,13 @@
 {
   "id": "sc_inject_egress",
+  "pair_id": "pair_calculator",
+  "variant": "poisoned",
   "category": "network_egress",
   "name": "SC-Inject: Injected Outbound Socket Beacon",
   "source": "ShieldNet / SC-Inject-Bench (arXiv:2604.04426) & MCPSecBench (arXiv:2508.13220)",
   "is_malicious": true,
   "expected_findings": ["network_egress"],
+  "threat_ids": ["MCP-T1002"],
   "dynamic_detectable": true,
   "static_detectable": false,
   "notes": "Offline sentiment analyzer makes unauthorized TCP socket connection."

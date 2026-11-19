@@ -1,0 +1,14 @@
+{
+  "id": "ref_stateful",
+  "pair_id": "pair_stateful",
+  "variant": "benign",
+  "category": "benign_stateful",
+  "name": "Reference Stateful Session Server",
+  "source": "Standard Reference MCP Architecture",
+  "is_malicious": false,
+  "expected_findings": [],
+  "threat_ids": [],
+  "dynamic_detectable": true,
+  "static_detectable": true,
+  "notes": "Stateful session memory with deterministic manifest across repeated invocations."
+}
