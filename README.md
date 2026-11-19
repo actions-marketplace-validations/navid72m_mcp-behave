@@ -515,6 +515,32 @@ mcp-behave python targets/poisoned_server.py
   [i] INFO spawned subprocess: /path/to/python
 ```
 
+## Security Benchmarks
+
+`mcp-behave` is continuously benchmarked against public, independent MCP security evaluation suites:
+
+### 1. [MCP-GuardBench](https://github.com/Manishmaurya89/mcp-guardbench) (Deterministic Runtime & Policy Suite)
+Evaluates detection and verified execution prevention across 12 test cases spanning 11 deliberately vulnerable server fixtures (tool poisoning, multilingual injection, secret flows, unapproved actions, rug pulls, and response bombs):
+
+| Adapter | Detection Rate | Prevention Rate | False-Positive Rate | Evidence Completeness |
+| :--- | :---: | :---: | :---: | :---: |
+| **`mcp-behave`** | **100.0%** (9/9) | **100.0%** (9/9) | **0.0%** (0/3) | **100.0%** |
+| `reference-runtime` | 77.8% (7/9) | 88.9% (8/9) | 0.0% (0/3) | 93.3% |
+| `reference-static` | 44.4% (4/9) | 0.0% (0/9) | 0.0% (0/3) | 53.3% |
+| `no-defense-baseline` | 0.0% (0/9) | 0.0% (0/9) | 0.0% (0/3) | 6.7% |
+
+*See full details in the [MCP-GuardBench Report](docs/benchmarks/guardbench_report.md).*
+
+### 2. [Pluto MCP Visibility Benchmark](https://github.com/plutosecurity/pluto-mcp-visibility-bench) (OWASP MCP Top 10 Suite)
+Evaluates behavioral observation across 60 servers (41 malicious, 19 benign controls) across 8 OWASP MCP Top 10 categories:
+
+- **Recall**: **75.6%** (31/41 malicious servers identified)
+- **Precision**: **100.0%** (zero false accusations)
+- **False-Positive Rate**: **0.0%** across all 19 benign control servers
+- **F1 Score**: **86.1%** (+41.3% over baseline)
+
+*See full details in the [Pluto Visibility Benchmark Report](docs/benchmarks/pluto_visibility_bench.md).*
+
 ## Docker (works on macOS / Windows hosts)
 
 ```bash

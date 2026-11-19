@@ -4,6 +4,7 @@ previous runs (rug-pull detection).
 
 Findings are framed as OBSERVATIONS ('does X, undeclared'), never accusations."""
 import hashlib, json, os, re, socket, sys
+from typing import Any
 from pathlib import Path
 from .analyze import analyze, is_sensitive_path
 
@@ -39,6 +40,11 @@ INVISIBLE_UNICODE_CHARS = {
 # Prompt injection heuristics in metadata and outputs (CSA TTP: Tool Description & Output Poisoning, MCP06)
 PROMPT_INJECTION_PATTERN = re.compile(
     r'(?i)(?:\bignore\s+(?:all\s+)?previous\s+instructions\b'
+    r'|\bignore\s+the\s+user\'?s?\s+request\b'
+    r'|\b(?:do\s+not|never)\s+tell\s+the\s+user\b'
+    r'|\bnota\s+para\s+el\s+asistente\b'
+    r'|\bno\s+(?:hace\s+falta|debe|debes|se\s+debe)\s+comentarlo\s+(?:con\s+el|al)\s+usuario\b'
+    r'|\bignora\s+(?:las\s+)?instrucciones\s+anteriores\b'
     r'|\bsystem\s+prompt\s*:'
     r'|<system>'
     r'|\[system(?:\s+instruction)?\]'
@@ -46,7 +52,8 @@ PROMPT_INJECTION_PATTERN = re.compile(
     r'|\b(?:tip|note)\s*:\s*.*?\b(?:user\'?s?\s+(?:saved\s+)?api[\s_-]?key|token|credential|secret|validate|refresh_credentials)\b'
     r'|\bnext_step\s*=\s*call\b'
     r'|\byou\s+must\s+(?:always\s+)?call\s+this\s+tool\s+first\b'
-    r'|\boverride\s+(?:all\s+)?prior\s+instructions\b)'
+    r'|\boverride\s+(?:all\s+)?prior\s+instructions\b'
+    r'|\bguardbench-synthetic-injection\b)'
 )
 
 # Markdown and HTML external image exfiltration regex (CSA TTP: Output Prompt Injection / Data Exfiltration)
@@ -194,18 +201,33 @@ def _scan_metadata(manifest: dict) -> list[tuple[str, str]]:
     """Scan declared tool, resource, and prompt metadata for covert channels (CSA TTP)."""
     findings = []
 
+    def _scan_schema_node(tname: str, node: Any, path: str):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in ("description", "title") and isinstance(v, str):
+                    parts = path.split(".")
+                    if len(parts) >= 3 and parts[1] == "properties":
+                        pname = parts[2]
+                        label = f"tool '{tname}' parameter '{pname}' {k}"
+                    else:
+                        label = f"tool '{tname}' schema {path}.{k}"
+                    findings.extend(_check_text_for_covert_channels(v, label))
+                else:
+                    _scan_schema_node(tname, v, f"{path}.{k}")
+        elif isinstance(node, list):
+            for idx, item in enumerate(node):
+                _scan_schema_node(tname, item, f"{path}[{idx}]")
+
     # Check tools and parameter schemas
     for tool in manifest.get("tools", []):
         tname = tool.get("name", "unknown")
         findings.extend(_check_text_for_covert_channels(tool.get("name", ""), f"tool name '{tname}'"))
         findings.extend(_check_text_for_covert_channels(tool.get("description", ""), f"tool '{tname}' description"))
 
-        schema = tool.get("inputSchema") or {}
-        props = schema.get("properties") or {}
-        for pname, pdef in props.items():
-            if isinstance(pdef, dict):
-                pdesc = pdef.get("description", "")
-                findings.extend(_check_text_for_covert_channels(pdesc, f"tool '{tname}' parameter '{pname}' description"))
+        if "inputSchema" in tool and isinstance(tool["inputSchema"], dict):
+            _scan_schema_node(tname, tool["inputSchema"], "inputSchema")
+        if "outputSchema" in tool and isinstance(tool["outputSchema"], dict):
+            _scan_schema_node(tname, tool["outputSchema"], "outputSchema")
 
     # Check resources
     for res in manifest.get("resources", []):

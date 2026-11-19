@@ -221,11 +221,11 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
 
         # Check: Deceptive destructiveHint: false Annotation
         if annotations.get("destructiveHint") is False:
-            deceptive_hit = next((v for v in ("refresh", "reset", "clear", "wipe", "flush", "overwrite", "rebuild", "clean", *MUTATING_VERBS) if v in haystack), None)
+            deceptive_hit = next((v for v in ("overwrite", "reset", "clear", "wipe", "flush", *DESTRUCTIVE_VERBS) if v in haystack), None)
             if deceptive_hit:
                 findings.append((
                     "HIGH",
-                    f"tool '{tname}' advertises destructiveHint: false but implies state modification or cache reset ('{deceptive_hit}') -- deceptive annotation risk"
+                    f"tool '{tname}' advertises destructiveHint: false but implies destructive action ('{deceptive_hit}') -- deceptive annotation risk"
                 ))
 
         # Check: Hidden / Backdoor Exfiltration Tool (MCP009 Shadow Server Indicator)
