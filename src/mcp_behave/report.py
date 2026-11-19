@@ -268,7 +268,7 @@ def _scan_outputs(manifest: dict) -> list[tuple[str, str]]:
             ))
 
         # 3. Context over-sharing (MCP10: Context Injection & Over-Sharing)
-        overshare_match = re.search(r'(?i)\b(?:internal[\s_-]?customer[\s_-]?id|customer[\s_-]?id|account[\s_-]?notes|password[\s_-]?hash|ssn\b|national[\s_-]?id|social\s+security|credit[\s_-]?card|billing[\s_-]?address|session[\s_-]?cookie|auth[\s_-]?token|\.corp\.internal|customer\s+[^:\n,]+@[a-z0-9.-]+)', output_text)
+        overshare_match = re.search(r'(?i)\b(?:internal[\s_-]?customer[\s_-]?id|customer[\s_-]?id|account[\s_-]?notes|password[\s_-]?hash|ssn\b|national[\s_-]?id|social\s+security|credit[\s_-]?card|billing[\s_-]?address|session[\s_-]?cookie|auth[\s_-]?token|\.corp\.internal|customer\s+[^:\n,]+@[a-z0-9.-]+|related\s+order|different[\s_-]?user|other[\s_-]?customer|owned\s+by\s+[a-z0-9._%+-]+@[a-z0-9.-]+|[a-z0-9.-]+\.internal(?:\.[a-z0-9.-]+)?|internal[\s_-]?(?:host|node|build|server|cluster|infra))', output_text)
         if overshare_match:
             t_desc = ""
             for t in manifest.get("tools", []):
@@ -345,13 +345,22 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
                 ))
 
         if destructive is False:
-            dest_words = ("delete", "destroy", "wipe", "truncate", "drop", "purge", "overwrite")
+            dest_words = ("delete", "destroy", "wipe", "truncate", "drop", "purge", "overwrite", "refresh", "reset", "clear", "flush", "clean", "modify", "update")
             hit = next((w for w in dest_words if re.search(rf'\b{w}\b', t_desc)), None)
             if hit:
                 findings.append((
                     "HIGH",
-                    f"deceptive annotation (MCP02): tool '{tname}' advertises destructiveHint: false but implies destructive action ('{hit}')"
+                    f"deceptive annotation (MCP02): tool '{tname}' advertises destructiveHint: false but implies destructive action or state reset ('{hit}')"
                 ))
+
+        # Detect shadow/backdoor exfiltration tools (MCP09)
+        is_backdoor_name = tname.startswith("_") and any(k in tname.lower() for k in ("dump", "exfil", "log", "buffer", "secret", "leak", "query", "backdoor"))
+        is_backdoor_desc = any(k in t_desc for k in ("dump every", "dump all", "exfil buffer", "internal: dump", "exfiltration"))
+        if is_backdoor_name or is_backdoor_desc:
+            findings.append((
+                "HIGH",
+                f"shadow backdoor (MCP09): tool '{tname}' exposes private or exfiltration endpoint"
+            ))
 
         if (read_only is True or idempotent is True) and tname in tool_history:
             calls = tool_history[tname]

@@ -322,6 +322,12 @@ def synth_args(schema: dict | None, round_idx: int = 0) -> dict:
         ("secret", ["mcp-probe-secret-8877", "mcp-probe-secret-6655"]),
         ("key", ["mcp-probe-key-12345", "mcp-probe-key-67890"]),
         ("password", ["mcp-probe-pass-4321", "mcp-probe-pass-8765"]),
+        ("account", ["acct-1"]),
+        ("acct", ["acct-1"]),
+        ("user", ["user-1"]),
+        ("sku", ["widget-1"]),
+        ("product", ["widget-1"]),
+        ("widget", ["widget-1"]),
         ("host", ["example.com", "example.org"]),
         ("query", ["system status overview", "service health check", "operational metrics"]),
         ("search", ["system status overview", "service health check", "operational metrics"]),
@@ -516,10 +522,14 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
         if rounds > 1:
             print(f"[probe] --- probe round {round_idx + 1}/{rounds} ---")
         for t in tools_meta:
+            tname = t.get("name", "")
+            # Skip re-registering setup/init tools in subsequent rounds so downstream state accumulation can be observed
+            if round_idx > 0 and len(tools_meta) > 1 and tname.startswith(("register_", "init_")):
+                continue
             ann = t.get("annotations") or {}
-            # If tool claims to be idempotent or read-only, repeat round 0 arguments in round 1
+            # If tool claims to be idempotent or read-only, repeat round 0 arguments across all rounds
             # to verify idempotency and detect hidden state mutation
-            r_idx = 0 if (round_idx == 1 and (ann.get("idempotentHint") or ann.get("readOnlyHint"))) else round_idx
+            r_idx = 0 if (ann.get("idempotentHint") or ann.get("readOnlyHint")) else round_idx
             args = synth_args(t.get("inputSchema"), round_idx=r_idx)
             print(f"[probe] calling tool {t['name']}({json.dumps(args)})")
             stats["tools"]["called"] += 1
@@ -533,6 +543,15 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
                 if text:
                     tool_outputs[t["name"]] = text
                     tool_history.setdefault(t["name"], []).append({"args": args, "output": text, "round": round_idx})
+
+                # In round 0, call mutating/collection tools a second time to populate multiple test entries
+                if round_idx == 0 and tname.startswith(("add_", "insert_", "append_")):
+                    args2 = synth_args(t.get("inputSchema"), round_idx=1)
+                    stats["tools"]["called"] += 1
+                    ok2, _ = await _call_with_timeout(
+                        session.call_tool(t["name"], args2), f"tool {t['name']} (seed)", call_timeout)
+                    if ok2:
+                        stats["tools"]["ok"] += 1
 
             if fuzz and round_idx == 0:
                 fuzz_arg_sets = synth_fuzz_args(t.get("inputSchema"))

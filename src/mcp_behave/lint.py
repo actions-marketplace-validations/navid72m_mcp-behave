@@ -212,12 +212,30 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
             has_confirm = any(
                 any(c in pname.lower() for c in CONFIRM_HINTS)
                 for pname in props.keys()
-            )
+            ) or bool(annotations.get("destructiveHint"))
             if not has_confirm:
                 findings.append((
                     "HIGH",
                     f"destructive tool '{tname}' implies destructive action ('{destructive_hit}') but declares no confirmation or scoping parameter"
                 ))
+
+        # Check: Deceptive destructiveHint: false Annotation
+        if annotations.get("destructiveHint") is False:
+            deceptive_hit = next((v for v in ("refresh", "reset", "clear", "wipe", "flush", "overwrite", "rebuild", "clean", *MUTATING_VERBS) if v in haystack), None)
+            if deceptive_hit:
+                findings.append((
+                    "HIGH",
+                    f"tool '{tname}' advertises destructiveHint: false but implies state modification or cache reset ('{deceptive_hit}') -- deceptive annotation risk"
+                ))
+
+        # Check: Hidden / Backdoor Exfiltration Tool (MCP009 Shadow Server Indicator)
+        is_backdoor_name = tname.startswith("_") and any(k in tname.lower() for k in ("dump", "exfil", "log", "buffer", "secret", "leak", "backdoor", "query"))
+        is_backdoor_desc = any(k in tdesc.lower() for k in ("dump every", "dump all", "exfil buffer", "internal: dump", "exfiltration"))
+        if is_backdoor_name or is_backdoor_desc:
+            findings.append((
+                "HIGH",
+                f"suspicious backdoor or shadow exfiltration tool detected: '{tname}' -- unauthorized data leakage risk"
+            ))
 
         # Check: Mutating Tool with Unscoped Input (MCP003)
         write_hit = next((v for v in WRITE_VERBS if v in haystack), None)
