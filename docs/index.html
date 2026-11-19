@@ -516,81 +516,121 @@
       <p class="text-gray-400 text-sm mt-3">Evaluated against real exploit vectors, prompt injections, and ground-truth execution ledgers.</p>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
-      <!-- Benchmark Card 1: MCP-GuardBench -->
-      <div class="p-8 rounded-2xl bg-dark-850 border border-cyan-500/30 flex flex-col justify-between shadow-xl relative overflow-hidden">
-        <div class="absolute top-0 right-0 w-32 h-32 bg-cyan-500/10 rounded-full blur-2xl pointer-events-none"></div>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-10">
+      <!-- Benchmark Card 1: CrossMCP-Bench -->
+      <div class="p-6 rounded-2xl bg-dark-850 border border-purple-500/30 flex flex-col justify-between shadow-xl relative overflow-hidden">
+        <div class="absolute top-0 right-0 w-32 h-32 bg-purple-500/10 rounded-full blur-2xl pointer-events-none"></div>
         <div>
           <div class="flex items-center justify-between mb-4">
-            <span class="px-2.5 py-1 text-xs font-mono rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-semibold">Deterministic Runtime Suite</span>
-            <span class="text-xs text-gray-400 font-mono">12 Cases · 11 Servers</span>
+            <span class="px-2.5 py-1 text-xs font-mono rounded bg-purple-950 text-purple-300 border border-purple-800 font-semibold">NeurIPS Multi-Server</span>
+            <span class="text-xs text-gray-400 font-mono">134 Scenarios</span>
           </div>
-          <h3 class="text-xl font-bold text-white mb-2">MCP-GuardBench</h3>
+          <h3 class="text-xl font-bold text-white mb-2">CrossMCP-Bench</h3>
           <p class="text-gray-400 text-xs sm:text-sm mb-6 leading-relaxed">
-            Measures both detection and verified execution prevention via fixture ledgers. Exercises prompt injection, base64 secret flow, unapproved actions, rug pulls, and 64 KiB response bombs.
+            Multi-server benchmark over filesystem, SQL databases, and HTTP sinks. Features strict authorization context and 15 adversarial evasion techniques.
           </p>
 
-          <div class="grid grid-cols-2 gap-3 mb-6">
+          <div class="grid grid-cols-2 gap-2.5 mb-6">
             <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
-              <div class="text-2xl font-black text-emerald-400">100%</div>
-              <div class="text-[11px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Detection (9/9)</div>
-            </div>
-            <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
-              <div class="text-2xl font-black text-cyan-400">100%</div>
-              <div class="text-[11px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Prevention (9/9)</div>
+              <div class="text-2xl font-black text-purple-400">100%</div>
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Prevention (75/75)</div>
             </div>
             <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
               <div class="text-2xl font-black text-emerald-400">0.0%</div>
-              <div class="text-[11px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">False Positives (0/3)</div>
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">FPR (0/59)</div>
             </div>
             <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
-              <div class="text-2xl font-black text-purple-400">100%</div>
-              <div class="text-[11px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Evidence Score</div>
+              <div class="text-2xl font-black text-cyan-400">100%</div>
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Detection (DR)</div>
+            </div>
+            <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
+              <div class="text-2xl font-black text-emerald-400">15 / 15</div>
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Evasions Blocked</div>
             </div>
           </div>
         </div>
         <div class="pt-4 border-t border-white/10 flex items-center justify-between text-xs">
-          <span class="text-gray-400">Outperforms reference runtimes & static linters</span>
+          <span class="text-gray-400">0.05s evaluation speed</span>
+          <a href="https://github.com/navid72m/mcp-behave/blob/main/docs/benchmarks/crossmcp_bench_report.md" target="_blank" class="text-purple-400 hover:text-purple-300 font-semibold flex items-center gap-1">
+            Read Report &rarr;
+          </a>
+        </div>
+      </div>
+
+      <!-- Benchmark Card 2: MCP-GuardBench -->
+      <div class="p-6 rounded-2xl bg-dark-850 border border-cyan-500/30 flex flex-col justify-between shadow-xl relative overflow-hidden">
+        <div class="absolute top-0 right-0 w-32 h-32 bg-cyan-500/10 rounded-full blur-2xl pointer-events-none"></div>
+        <div>
+          <div class="flex items-center justify-between mb-4">
+            <span class="px-2.5 py-1 text-xs font-mono rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-semibold">Deterministic Runtime</span>
+            <span class="text-xs text-gray-400 font-mono">12 Cases · 11 Servers</span>
+          </div>
+          <h3 class="text-xl font-bold text-white mb-2">MCP-GuardBench</h3>
+          <p class="text-gray-400 text-xs sm:text-sm mb-6 leading-relaxed">
+            Measures detection and verified execution prevention via fixture ledgers. Exercises prompt injection, base64 secret flow, unapproved actions, rug pulls, and response bombs.
+          </p>
+
+          <div class="grid grid-cols-2 gap-2.5 mb-6">
+            <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
+              <div class="text-2xl font-black text-emerald-400">100%</div>
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Detection (9/9)</div>
+            </div>
+            <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
+              <div class="text-2xl font-black text-cyan-400">100%</div>
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Prevention (9/9)</div>
+            </div>
+            <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
+              <div class="text-2xl font-black text-emerald-400">0.0%</div>
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">False Positives (0/3)</div>
+            </div>
+            <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
+              <div class="text-2xl font-black text-purple-400">100%</div>
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Evidence Score</div>
+            </div>
+          </div>
+        </div>
+        <div class="pt-4 border-t border-white/10 flex items-center justify-between text-xs">
+          <span class="text-gray-400">Outperforms reference runtimes</span>
           <a href="https://github.com/navid72m/mcp-behave/blob/main/docs/benchmarks/guardbench_report.md" target="_blank" class="text-cyan-400 hover:text-cyan-300 font-semibold flex items-center gap-1">
             Read Report &rarr;
           </a>
         </div>
       </div>
 
-      <!-- Benchmark Card 2: Pluto MCP Visibility Bench -->
-      <div class="p-8 rounded-2xl bg-dark-850 border border-emerald-500/30 flex flex-col justify-between shadow-xl relative overflow-hidden">
+      <!-- Benchmark Card 3: Pluto MCP Visibility Bench -->
+      <div class="p-6 rounded-2xl bg-dark-850 border border-emerald-500/30 flex flex-col justify-between shadow-xl relative overflow-hidden">
         <div class="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none"></div>
         <div>
           <div class="flex items-center justify-between mb-4">
-            <span class="px-2.5 py-1 text-xs font-mono rounded bg-emerald-950 text-emerald-300 border border-emerald-800 font-semibold">OWASP MCP Top 10 Suite</span>
+            <span class="px-2.5 py-1 text-xs font-mono rounded bg-emerald-950 text-emerald-300 border border-emerald-800 font-semibold">OWASP MCP Top 10</span>
             <span class="text-xs text-gray-400 font-mono">60 Test Servers</span>
           </div>
-          <h3 class="text-xl font-bold text-white mb-2">Pluto MCP Visibility Bench</h3>
+          <h3 class="text-xl font-bold text-white mb-2">Pluto Visibility Bench</h3>
           <p class="text-gray-400 text-xs sm:text-sm mb-6 leading-relaxed">
-            Evaluates behavioral observation across 60 servers (41 malicious, 19 benign) across 8 OWASP MCP Top 10 categories spanning description poisoning, lifecycle scripts, and multi-call state.
+            Evaluates behavioral observation across 60 servers (41 malicious, 19 benign) across 8 OWASP MCP Top 10 categories spanning description poisoning and multi-call state.
           </p>
 
-          <div class="grid grid-cols-2 gap-3 mb-6">
+          <div class="grid grid-cols-2 gap-2.5 mb-6">
             <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
               <div class="text-2xl font-black text-emerald-400">100%</div>
-              <div class="text-[11px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Precision (Zero FP)</div>
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Precision (Zero FP)</div>
             </div>
             <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
               <div class="text-2xl font-black text-cyan-400">75.6%</div>
-              <div class="text-[11px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Recall (31/41)</div>
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Recall (31/41)</div>
             </div>
             <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
               <div class="text-2xl font-black text-purple-400">86.1%</div>
-              <div class="text-[11px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">F1 Score (+41%)</div>
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">F1 Score (+41%)</div>
             </div>
             <div class="p-3 rounded-xl bg-dark-900 border border-white/5 text-center">
               <div class="text-2xl font-black text-emerald-400">19 / 19</div>
-              <div class="text-[11px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Benign Controls Clean</div>
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider font-mono mt-0.5">Benign Clean</div>
             </div>
           </div>
         </div>
         <div class="pt-4 border-t border-white/10 flex items-center justify-between text-xs">
-          <span class="text-gray-400">100% recall on 6 out of 8 categories</span>
+          <span class="text-gray-400">100% recall on 6/8 categories</span>
           <a href="https://github.com/navid72m/mcp-behave/blob/main/docs/benchmarks/pluto_visibility_bench.md" target="_blank" class="text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1">
             Read Report &rarr;
           </a>

@@ -20,8 +20,9 @@
 </p>
 
 <p align="center">
-  <a href="#1-mcp-guardbench-deterministic-runtime--policy-suite"><img src="https://img.shields.io/badge/MCP--GuardBench-100%25%20Detection%20%7C%20100%25%20Prevention-brightgreen" alt="MCP-GuardBench: 100% Detection & 100% Prevention" /></a>
-  <a href="#2-pluto-mcp-visibility-benchmark-owasp-mcp-top-10-suite"><img src="https://img.shields.io/badge/Pluto%20Visibility%20Bench-100%25%20Precision%20%7C%20Zero%20FP-blue" alt="Pluto Visibility Bench: 100% Precision & Zero FP" /></a>
+  <a href="#1-crossmcp-bench-multi-server-authorization-suite"><img src="https://img.shields.io/badge/CrossMCP--Bench-100%25%20DR%20%7C%200%25%20FPR-brightgreen" alt="CrossMCP-Bench: 100% DR | 0% FPR" /></a>
+  <a href="#2-mcp-guardbench-deterministic-runtime--policy-suite"><img src="https://img.shields.io/badge/MCP--GuardBench-100%25%20Detection%20%7C%20100%25%20Prevention-brightgreen" alt="MCP-GuardBench: 100% Detection & 100% Prevention" /></a>
+  <a href="#3-pluto-mcp-visibility-benchmark-owasp-mcp-top-10-suite"><img src="https://img.shields.io/badge/Pluto%20Visibility%20Bench-100%25%20Precision%20%7C%20Zero%20FP-blue" alt="Pluto Visibility Bench: 100% Precision & Zero FP" /></a>
 </p>
 
 ---
@@ -40,7 +41,7 @@ Static scanners only read tool descriptions. `mcp-behave` observes what servers 
 >
 > 🏗️ **Architecture & Systems Internals**: See [`ARCHITECTURE.md`](ARCHITECTURE.md) for module dependency, data-flow, and sequence diagrams of the audit pipeline.
 >
-> 🛡️ **Empirically Proven**: Evaluated against independent public benchmark suites: **100% Detection & 100% Prevention** on [MCP-GuardBench](https://github.com/Manishmaurya89/mcp-guardbench) and **100% Precision (0% False Positives)** across 60 servers on [Pluto MCP Visibility Bench](https://github.com/plutosecurity/pluto-mcp-visibility-bench). [View Full Benchmark Results &rarr;](#security-benchmarks)
+> 🛡️ **Empirically Proven**: Evaluated across three major public benchmark suites: **100% Prevention & 0% FPR** on [CrossMCP-Bench](https://huggingface.co/datasets/MLZoo/CrossMCP-Bench) (134 multi-server scenarios), **100% Detection & 100% Prevention** on [MCP-GuardBench](https://github.com/Manishmaurya89/mcp-guardbench) (12 deterministic test cases), and **100% Precision (0% False Positives)** across 60 servers on [Pluto MCP Visibility Bench](https://github.com/plutosecurity/pluto-mcp-visibility-bench). [View Full Benchmark Results &rarr;](#security-benchmarks)
 
 ## The idea in one contrast
 
@@ -528,7 +529,36 @@ mcp-behave python targets/poisoned_server.py
 
 ---
 
-### 1. [MCP-GuardBench](https://github.com/Manishmaurya89/mcp-guardbench) (Deterministic Runtime & Policy Suite)
+### 1. [CrossMCP-Bench](https://huggingface.co/datasets/MLZoo/CrossMCP-Bench) (Multi-Server Authorization Suite)
+
+Evaluates runtime security guards across **134 multi-server scenarios** (75 attacks, 59 benign controls) spanning concurrent filesystem, SQL database, and HTTP external servers with strict authorization-conditioned context (`auth_context`):
+
+#### Guard Comparison
+
+| Guard Architecture | Prevention Rate (DR) | Detection Rate | False-Positive Rate (FPR) | Missed Attacks | Evaluation Speed |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **`mcp-behave`** | **100.0%** (75/75) | **100.0%** (75/75) | **0.0%** (0/59) | **0** | **0.05s** |
+| `B6d` (IFG-Guard `block_high`) | 92.0% (69/75) | 92.0% (69/75) | 0.0% (0/59) | 6 | 0.04s |
+| `B6` (IFG-Guard default) | 76.0% (57/75) | 92.0% (69/75) | 0.0% (0/59) | 18 | 0.04s |
+
+#### Key Attack Categories & Evasion Resistance
+
+| Attack Category / Evasion Class | Scenarios | `mcp-behave` Result | Status |
+| :--- | :---: | :---: | :---: |
+| **Data Poisoning & Overwrite (`P3`, `P4`)** | 8 | **8 / 8 Blocked (100%)** | **PASS** |
+| **Direct & Multi-Step Exfiltration (`P1`)** | 20 | **20 / 20 Blocked (100%)** | **PASS** |
+| **Cross-Server Database Exfiltration & Injection** | 11 | **11 / 11 Blocked (100%)** | **PASS** |
+| **Privilege Escalation & Backdoors (`P2`)** | 7 | **7 / 7 Blocked (100%)** | **PASS** |
+| **Indirect Prompt Injection & PII Leaks (`P6`)** | 10 | **10 / 10 Blocked (100%)** | **PASS** |
+| **Three-Hop Cross-Server Lateral Flows (`P5`)** | 4 | **4 / 4 Blocked (100%)** | **PASS** |
+| **Adversarial Evasions (ROT13, double-encode, JSON, semantic)** | 15 | **15 / 15 Blocked (100%)** | **PASS** |
+| **Benign Controls (Authorization Verification)** | 59 | **0 False Positives (0.0% FPR)** | **PASS** |
+
+*See full details in the [CrossMCP-Bench Report](docs/benchmarks/crossmcp_bench_report.md) or run `python benchmarks/run_crossmcp_bench.py`.*
+
+---
+
+### 2. [MCP-GuardBench](https://github.com/Manishmaurya89/mcp-guardbench) (Deterministic Runtime & Policy Suite)
 
 Evaluates defense and runtime auditor tools against **12 deterministic test cases** across **11 deliberately vulnerable local MCP server fixtures** measuring **both detection and verified execution prevention** via fixture ground-truth ledgers.
 
@@ -564,7 +594,7 @@ Evaluates defense and runtime auditor tools against **12 deterministic test case
 
 ---
 
-### 2. [Pluto MCP Visibility Benchmark](https://github.com/plutosecurity/pluto-mcp-visibility-bench) (OWASP MCP Top 10 Suite)
+### 3. [Pluto MCP Visibility Benchmark](https://github.com/plutosecurity/pluto-mcp-visibility-bench) (OWASP MCP Top 10 Suite)
 
 Evaluates behavioral observation across **60 MCP test servers** (41 malicious, 19 benign control servers) across 8 categories from the **OWASP MCP Top 10**:
 
