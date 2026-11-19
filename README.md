@@ -20,9 +20,11 @@
 </p>
 
 <p align="center">
-  <a href="#1-crossmcp-bench-multi-server-authorization-suite"><img src="https://img.shields.io/badge/CrossMCP--Bench-100%25%20DR%20%7C%200%25%20FPR-brightgreen" alt="CrossMCP-Bench: 100% DR | 0% FPR" /></a>
-  <a href="#2-mcp-guardbench-deterministic-runtime--policy-suite"><img src="https://img.shields.io/badge/MCP--GuardBench-100%25%20Detection%20%7C%20100%25%20Prevention-brightgreen" alt="MCP-GuardBench: 100% Detection & 100% Prevention" /></a>
-  <a href="#3-pluto-mcp-visibility-benchmark-owasp-mcp-top-10-suite"><img src="https://img.shields.io/badge/Pluto%20Visibility%20Bench-100%25%20Precision%20%7C%20Zero%20FP-blue" alt="Pluto Visibility Bench: 100% Precision & Zero FP" /></a>
+  <a href="#1-twin-server-behavioral-benchmark-safemcp--attck-corpus"><img src="https://img.shields.io/badge/SafeMCP%20Corpus-90%25%20DR%20%7C%200%25%20FPR-brightgreen" alt="SafeMCP Corpus: 90% DR | 0% FPR" /></a>
+  <a href="#2-crossmcp-bench-multi-server-authorization-suite"><img src="https://img.shields.io/badge/CrossMCP--Bench-100%25%20DR%20%7C%200%25%20FPR-brightgreen" alt="CrossMCP-Bench: 100% DR | 0% FPR" /></a>
+  <a href="#3-mcp-guardbench-deterministic-runtime--policy-suite"><img src="https://img.shields.io/badge/MCP--GuardBench-100%25%20Detection%20%7C%20100%25%20Prevention-brightgreen" alt="MCP-GuardBench: 100% Detection & 100% Prevention" /></a>
+  <a href="#4-pluto-mcp-visibility-benchmark-owasp-mcp-top-10-suite"><img src="https://img.shields.io/badge/Pluto%20Visibility%20Bench-100%25%20Precision%20%7C%20Zero%20FP-blue" alt="Pluto Visibility Bench: 100% Precision & Zero FP" /></a>
+  <a href="#5-official-reference-servers-adversarial-audit-modelcontextprotocolservers"><img src="https://img.shields.io/badge/Official%20Ref%20Servers-7%20Audited%20%7C%2015%2F15%20Validated-cyan" alt="Official Ref Servers" /></a>
 </p>
 
 ---
@@ -41,7 +43,7 @@ Static scanners only read tool descriptions. `mcp-behave` observes what servers 
 >
 > 🏗️ **Architecture & Systems Internals**: See [`ARCHITECTURE.md`](ARCHITECTURE.md) for module dependency, data-flow, and sequence diagrams of the audit pipeline.
 >
-> 🛡️ **Empirically Proven**: Evaluated across three major public benchmark suites: **100% Prevention & 0% FPR** on [CrossMCP-Bench](https://huggingface.co/datasets/MLZoo/CrossMCP-Bench) (134 multi-server scenarios), **100% Detection & 100% Prevention** on [MCP-GuardBench](https://github.com/Manishmaurya89/mcp-guardbench) (12 deterministic test cases), and **100% Precision (0% False Positives)** across 60 servers on [Pluto MCP Visibility Bench](https://github.com/plutosecurity/pluto-mcp-visibility-bench). [View Full Benchmark Results &rarr;](#security-benchmarks)
+> 🛡️ **Empirically Proven**: Evaluated across major public benchmark suites: **90% Recall & 0% FPR** on the [Twin-Server SafeMCP Corpus](BENCHMARK.md) (17 servers), **100% Prevention & 0% FPR** on [CrossMCP-Bench](https://huggingface.co/datasets/MLZoo/CrossMCP-Bench) (134 multi-server scenarios), **100% Detection & Prevention** on [MCP-GuardBench](https://github.com/Manishmaurya89/mcp-guardbench), **100% Precision** on [Pluto MCP Visibility Bench](https://github.com/plutosecurity/pluto-mcp-visibility-bench), and tested against **7 official reference MCP servers** (`modelcontextprotocol/servers`) across an automated 15-test adversarial validation campaign. [View Full Benchmark Results &rarr;](#security-benchmarks)
 
 ## The idea in one contrast
 
@@ -649,6 +651,50 @@ Evaluates behavioral observation across **60 MCP test servers** (41 malicious, 1
 | **Overall** | **41** | **19** | **31** | **0** | **10** | **19** | **75.6%** | **100.0%** |
 
 *See full details in the [Pluto Visibility Benchmark Report](docs/benchmarks/pluto_visibility_bench.md) or run `python benchmarks/run_pluto_bench.py`.*
+
+---
+
+### 5. [Official Reference Servers Adversarial Audit](docs/benchmarks/official_servers_audit.md) (`modelcontextprotocol/servers`)
+
+Empirical audit of the 7 official reference MCP servers from [`modelcontextprotocol/servers`](https://github.com/modelcontextprotocol/servers) across a three-tier evidence model: **Observed Fact** (telemetry), **Potential Weakness** (schema lint), and **Reproduced Vulnerability** (live adversarial validation).
+
+#### Scorecard & Runtime Telemetry
+
+Audited with exact release packages, 100% capability coverage, and runtime macOS dylib interposition inside isolated canary environments:
+
+| MCP Server | Package & Exact Version | Discovered / Invoked / Passed | Observed Egress | Files Written | Subprocesses | Score & Grade | Exploitability Status |
+| :--- | :--- | :-: | :-: | :-: | :-: | :-: | :--- |
+| **Memory** | `@modelcontextprotocol/server-memory@2.2.1` | 9 / 9 / 9 (100%) | None | 8 (`*.tmp`) | 0 | **93 (A)** | **Verified Secure**: Atomic JSONL writes, zero network. |
+| **Sequential** | `@modelcontextprotocol/server-sequential-thinking@2.2.0` | 1 / 1 / 1 (100%) | None | 1 | 0 | **85 (B)** | **Verified Secure**: Conversational state only. |
+| **Time** | `mcp-server-time@2026.11.18` | 3 / 3 / 3 (100%) | None | 0 | 1 (`python3`) | **81 (B)** | **Verified Secure**: Zero network, pure in-memory compute. |
+| **Fetch** | `mcp-server-fetch@2026.11.18` | 1 / 1 / 1 (100%) | `104.20.23.154:443` | 0 | 1 (`python3`) | **80 (B)** | **Verified Secure**: Multi-layered SSRF & rebinding guards. |
+| **Filesystem** | `@modelcontextprotocol/server-filesystem@2.4.0` | 14 / 14 / 14 (100%) | None | 1 | 0 | **75 (C)** | **Verified Confined**: Traversal & symlink escapes blocked. |
+| **Everything** | `@modelcontextprotocol/server-everything@2.3.1` | 13 / 13 / 13 (100%) | `185.199.110.133:443` | 1 | 0 | **65 (D)** | **Benign**: Sample assets; `trigger-long-running` has mutating verb. |
+| **Git** | `mcp-server-git@2026.11.18` | 14 / 14 / 14 (100%) | None | 1 | 20 (`git`) | **45 (F)** | **Confined with flag**: Subprocesses expected; unconfined if flag omitted. |
+
+*Arithmetic Mean Score: **74.8 / 100**.*
+
+#### 15-Test Adversarial Validation Suite (Summary)
+
+To differentiate between static schema warnings and live exploitable escapes, an automated adversarial test harness probed the boundary defenses of each server:
+
+| Target Domain | Adversarial Probe | Injected Attack Vector | Outcome | Runtime Security Reality |
+| :--- | :--- | :--- | :---: | :--- |
+| **Git** | Repo Boundary Escape | `git_status(repo_path="/tmp/unauthorized_repo")` | **BLOCKED** | Backend enforces strict repo confinement when `--repository` is set. |
+| **Git** | Symlink Traversal | Symlink pointing to external private repository | **BLOCKED** | Backend canonicalizes realpaths and rejects symlinks pointing outside. |
+| **Git** | PATH Substitution | Executable substitution with malicious `git` in `$PATH` | **EXPLOITABLE** | `GitPython` executes first `git` on `$PATH`. Defended by `mcp-behave` canary env scrubbing. |
+| **Fetch** | Localhost Access | `fetch("http://127.0.0.1:PORT")` | **BLOCKED** | Host pre-resolution blocks loopback addresses before socket traffic. |
+| **Fetch** | Private RFC1918 Access| `fetch("http://10.0.0.1/")` | **BLOCKED** | Blocks private CIDR ranges before socket connection. |
+| **Fetch** | Cloud Metadata SSRF | `fetch("http://169.254.169.254/")` | **BLOCKED** | Link-local IMDS addresses blocked by default. |
+| **Fetch** | Redirect-to-Local | HTTP 302 redirect hopping to `127.0.0.1` | **BLOCKED** | `httpx` request event hooks intercept and vet every redirect hop. |
+| **Fetch** | DNS Rebinding | Rebinding domain resolving to public then private IP | **BLOCKED** | Employs `pin_direct_connections` for connect-time socket IP pinning. |
+| **Filesystem** | Symlink Escape | `read_file("symlink_to_etc_passwd")` | **BLOCKED** | Throws `Access denied - symlink target outside allowed directories`. |
+| **Filesystem** | Encoded Traversal | `read_file("%2e%2e/outside")` | **BLOCKED** | Treated as literal filename (`ENOENT`), preventing URL-encoded traversal. |
+| **Filesystem** | Path Normalization | `read_file("/sandbox/../outside")` | **BLOCKED** | Throws `Access denied - path outside allowed directories`. |
+| **Everything** | Annotation vs Mutation| Invoking `echo` and `get-structured-content` | **VERIFIED** | Pure in-memory operations with zero disk/network mutations. |
+| **Sequential** | State Mutation | Invoking `sequentialthinking` across turns | **VERIFIED** | Pure conversational heap state; 0 external or filesystem mutations. |
+
+*See full details in the [Official Reference Servers Audit Report](docs/benchmarks/official_servers_audit.md).*
 
 ## Docker (works on macOS / Windows hosts)
 

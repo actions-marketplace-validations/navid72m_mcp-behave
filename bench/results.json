@@ -1,6 +1,6 @@
 {
   "benchmark_suite": "mcp-behave Twin-Server & SafeMCP Benchmark Suite",
-  "timestamp": "2026-11-19 07:45:41 UTC",
+  "timestamp": "2026-11-19 08:38:20 UTC",
   "probe_rounds": 3,
   "metrics": {
     "mcp_behave_dynamic": {
@@ -172,7 +172,7 @@
         "findings": [
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
         ],
-        "duration_seconds": 0.581,
+        "duration_seconds": 0.467,
         "trace_bytes": 162969
       },
       "static_baseline": {
@@ -199,7 +199,7 @@
           "INFO: tool 'send_email' argument 'subject' is a free-form string with no enum, pattern, format, or maxLength constraint",
           "INFO: tool 'send_email' argument 'body' is a free-form string with no enum, pattern, format, or maxLength constraint"
         ],
-        "duration_seconds": 0.462,
+        "duration_seconds": 0.433,
         "trace_bytes": 162970
       },
       "static_baseline": {
@@ -225,7 +225,7 @@
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
           "INFO: tool 'fetch_web_page' argument 'url' accepts caller-controlled URL without host allowlist or pattern constraints -- SSRF risk"
         ],
-        "duration_seconds": 0.451,
+        "duration_seconds": 0.513,
         "trace_bytes": 162994
       },
       "static_baseline": {
@@ -251,7 +251,7 @@
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
           "INFO: tool 'read_project_file' argument 'path' accepts unconstrained filesystem path without pattern or enum validation -- path traversal risk"
         ],
-        "duration_seconds": 0.433,
+        "duration_seconds": 0.479,
         "trace_bytes": 163017
       },
       "static_baseline": {
@@ -277,7 +277,7 @@
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
           "INFO: tool 'get_git_log' declares 1 properties but no required list -- every argument is optional"
         ],
-        "duration_seconds": 0.435,
+        "duration_seconds": 0.476,
         "trace_bytes": 162974
       },
       "static_baseline": {
@@ -302,7 +302,7 @@
         "findings": [
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
         ],
-        "duration_seconds": 0.456,
+        "duration_seconds": 0.449,
         "trace_bytes": 163219
       },
       "static_baseline": {
@@ -330,7 +330,7 @@
           "INFO: tool 'store_note' argument 'content' is a free-form string with no enum, pattern, format, or maxLength constraint",
           "INFO: tool 'retrieve_note' argument 'key' is a free-form string with no enum, pattern, format, or maxLength constraint"
         ],
-        "duration_seconds": 0.448,
+        "duration_seconds": 0.565,
         "trace_bytes": 163129
       },
       "static_baseline": {
@@ -358,12 +358,12 @@
         "total_count": 5,
         "findings": [
           "INFO: network egress to 93.184.216.34:80",
-          "HIGH: read a sensitive path: /private/var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_8_h9ntpj/.aws/credentials",
-          "HIGH: read a sensitive path: /var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_8_h9ntpj/.aws/credentials",
+          "HIGH: read a sensitive path: /private/var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_htgz7z7i/.aws/credentials",
+          "HIGH: read a sensitive path: /var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_htgz7z7i/.aws/credentials",
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
           "INFO: tool 'compute_metrics' argument 'data' is a free-form string with no enum, pattern, format, or maxLength constraint"
         ],
-        "duration_seconds": 0.72,
+        "duration_seconds": 0.596,
         "trace_bytes": 163345
       },
       "static_baseline": {
@@ -394,7 +394,7 @@
           "HIGH: spawned shell/command subprocess: /bin/sh -- command execution risk",
           "HIGH: tool 'verify_image_format' argument 'filename' accepts unconstrained filesystem path without pattern or enum validation -- path traversal risk"
         ],
-        "duration_seconds": 0.476,
+        "duration_seconds": 0.474,
         "trace_bytes": 163096
       },
       "static_baseline": {
@@ -425,7 +425,7 @@
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
           "INFO: tool 'fetch_web_page' argument 'url' accepts caller-controlled URL without host allowlist or pattern constraints -- SSRF risk"
         ],
-        "duration_seconds": 1.365,
+        "duration_seconds": 1.351,
         "trace_bytes": 163065
       },
       "static_baseline": {
@@ -456,7 +456,7 @@
           "HIGH: spawned shell/command subprocess: /bin/sh -- command execution risk",
           "INFO: tool 'get_git_log' declares 1 properties but no required list -- every argument is optional"
         ],
-        "duration_seconds": 0.479,
+        "duration_seconds": 0.474,
         "trace_bytes": 163042
       },
       "static_baseline": {
@@ -488,7 +488,7 @@
           "INFO: tool 'summarize' argument 'text' is a free-form string with no enum, pattern, format, or maxLength constraint",
           "INFO: tool 'summarize' argument 'admin_token' is a free-form string with no enum, pattern, format, or maxLength constraint"
         ],
-        "duration_seconds": 0.868,
+        "duration_seconds": 0.846,
         "trace_bytes": 162885
       },
       "static_baseline": {
@@ -517,7 +517,7 @@
           "INFO: tool 'send_email' argument 'subject' is a free-form string with no enum, pattern, format, or maxLength constraint",
           "INFO: tool 'send_email' argument 'body' is a free-form string with no enum, pattern, format, or maxLength constraint"
         ],
-        "duration_seconds": 0.449,
+        "duration_seconds": 0.426,
         "trace_bytes": 162983
       },
       "static_baseline": {
@@ -542,11 +542,11 @@
         "high_count": 2,
         "total_count": 3,
         "findings": [
-          "HIGH: read a sensitive path: /private/var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_o4kkyv7x/.ssh/id_rsa",
-          "HIGH: read a sensitive path: /var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_o4kkyv7x/.ssh/id_rsa",
+          "HIGH: read a sensitive path: /private/var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_wa0qnohu/.ssh/id_rsa",
+          "HIGH: read a sensitive path: /var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_wa0qnohu/.ssh/id_rsa",
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
         ],
-        "duration_seconds": 0.471,
+        "duration_seconds": 0.451,
         "trace_bytes": 163917
       },
       "static_baseline": {
@@ -576,7 +576,7 @@
           "HIGH: network egress to 93.184.216.34:80 -- but a description claims local/offline operation",
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
         ],
-        "duration_seconds": 0.751,
+        "duration_seconds": 0.929,
         "trace_bytes": 163079
       },
       "static_baseline": {
@@ -606,7 +606,7 @@
           "HIGH: network egress to 93.184.216.34:80 -- but a description claims local/offline operation",
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
         ],
-        "duration_seconds": 1.037,
+        "duration_seconds": 1.165,
         "trace_bytes": 163284
       },
       "static_baseline": {
@@ -630,15 +630,14 @@
       "notes": "Probes /var/run/docker.sock to command host daemon.",
       "mcp_behave": {
         "detected": true,
-        "high_count": 2,
-        "total_count": 4,
+        "high_count": 1,
+        "total_count": 3,
         "findings": [
           "HIGH: connected to container runtime control socket: /var/run/docker.sock",
           "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
-          "HIGH: tool 'check_system_health' appears to execute arbitrary commands or code (matched 'system') -- arbitrary execution risk",
           "INFO: tool 'check_system_health' argument 'component' is a free-form string with no enum, pattern, format, or maxLength constraint"
         ],
-        "duration_seconds": 0.444,
+        "duration_seconds": 0.426,
         "trace_bytes": 163105
       },
       "static_baseline": {
