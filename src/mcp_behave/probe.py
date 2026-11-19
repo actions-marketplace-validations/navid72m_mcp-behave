@@ -358,12 +358,16 @@ def synth_args(schema: dict | None, round_idx: int = 0) -> dict:
         fmt = spec.get("format")
         if fmt in FORMAT_VALUES:
             return _pick(FORMAT_VALUES[fmt], round_idx)
-        if spec.get("type", "string") == "string":
+        t_type = spec.get("type", "string")
+        if isinstance(t_type, list):
+            non_null = [t for t in t_type if t != "null"]
+            t_type = non_null[0] if non_null else (t_type[0] if t_type else "string")
+        if t_type == "string":
             k = key.lower()
             for needle, val_list in KEYNAME_HINTS:
                 if needle in k:
                     return _pick(val_list, round_idx)
-        val = _pick(TYPE_DEFAULTS.get(spec.get("type", "string"), ["valid-input"]), round_idx)
+        val = _pick(TYPE_DEFAULTS.get(t_type, ["valid-input"]), round_idx)
         if isinstance(val, (int, float)) and "minimum" in spec and val < spec["minimum"]:
             val = spec["minimum"]
         return val
@@ -403,6 +407,9 @@ def synth_fuzz_args(schema: dict | None) -> list[dict]:
             if not isinstance(spec, dict):
                 continue
             t = spec.get("type", "string")
+            if isinstance(t, list):
+                non_null = [item for item in t if item != "null"]
+                t = non_null[0] if non_null else (t[0] if t else "string")
             if t == "string":
                 if not spec.get("enum"):
                     variant[key] = str_payload
