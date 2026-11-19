@@ -9,7 +9,9 @@ body:
         ### Thanks for helping improve `mcp-behave`! 🛡️
         Whether you are testing reference servers, developing internal MCP tools, or auditing multi-server AI agent environments, your feedback directly shapes our detection engine and roadmap.
 
-        *Prefer a web form?* You can also use our [Interactive Web Survey](https://navid72m.github.io/mcp-behave/survey.html).
+        *Prefer to submit privately or via web?*
+        - Use our [Interactive Web Survey](https://navid72m.github.io/mcp-behave/survey.html) (includes one-click private email submission).
+        - Or email privately to [navid72m@gmail.com](mailto:navid72m@gmail.com?subject=[mcp-behave]+Private+Feedback).
 
   - type: dropdown
     id: role

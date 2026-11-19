@@ -737,8 +737,9 @@ CI tests across Ubuntu and macOS; see `.github/workflows/ci.yml`.
 We want to hear from you! Whether you are building MCP servers, auditing enterprise tools, or evaluating AI agent runtime safety, your real-world feedback directly guides `mcp-behave`'s detection engine and roadmap.
 
 - 📝 **[Take the 2-Minute Survey (GitHub Issue Form)](https://github.com/navid72m/mcp-behave/issues/new?template=feedback.yml)** — structured form right inside GitHub with zero third-party accounts required.
-- 🌐 **[Take the Survey (Web Form)](https://navid72m.github.io/mcp-behave/survey.html)** — interactive browser form with one-click issue generation and markdown export.
-- 💡 **[Feature Requests & Ideas](https://github.com/navid72m/mcp-behave/issues)** — open an issue or report false positives.
+- 🌐 **[Take the Survey (Web Form)](https://navid72m.github.io/mcp-behave/survey.html)** — interactive browser form with private email submission or GitHub Issue generation.
+- ✉️ **[Send Private Feedback via Email](mailto:navid72m@gmail.com?subject=%5Bmcp-behave%5D+Private+Feedback)** — deliver comments straight to `navid72m@gmail.com` without public posting.
+- 💡 **[Feature Requests & Ideas](https://github.com/navid72m/mcp-behave/issues)** — open a public issue or report false positives.
 
 ## License
 
