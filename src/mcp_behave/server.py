@@ -4,6 +4,7 @@ Enables AI agents and MCP clients (Claude Desktop, Cursor, Glama sandbox, etc.)
 to audit and inspect MCP servers dynamically.
 """
 import argparse
+import fnmatch
 import os
 import shlex
 import sys
@@ -39,25 +40,32 @@ def _get_allowed_commands() -> list[str]:
 
 
 def _is_command_allowed(cmd: list[str]) -> bool:
+    """Check if cmd matches approved commands using exact matching or explicit glob wildcards."""
     if _ALLOW_ALL_EXEC or os.environ.get("MCP_BEHAVE_ALLOW_ALL_EXEC") in ("1", "true", "yes"):
         return True
     allowed_list = _get_allowed_commands()
     if not allowed_list:
         return False
     cmd_str = " ".join(cmd).strip()
-    cmd_base = os.path.basename(cmd[0]) if cmd else ""
     for pattern in allowed_list:
         pattern = pattern.strip()
         if not pattern:
             continue
         if pattern == "*":
             return True
-        if cmd_str == pattern or cmd == shlex.split(pattern):
+        # Exact token match
+        try:
+            if cmd == shlex.split(pattern):
+                return True
+        except ValueError:
+            pass
+        # Exact string match
+        if cmd_str == pattern:
             return True
-        if cmd_str.startswith(pattern):
-            return True
-        if cmd_base == pattern or (cmd and cmd[0] == pattern):
-            return True
+        # Glob wildcard match (e.g. "python targets/*" or "npx @modelcontextprotocol/server-*")
+        if any(ch in pattern for ch in ("*", "?", "[")):
+            if fnmatch.fnmatch(cmd_str, pattern):
+                return True
     return False
 
 mcp = FastMCP(

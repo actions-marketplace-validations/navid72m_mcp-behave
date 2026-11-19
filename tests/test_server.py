@@ -68,7 +68,7 @@ def test_inspect_manifest_tool(monkeypatch):
 
 
 def test_audit_server_tool_untraced(monkeypatch):
-    monkeypatch.setenv("MCP_BEHAVE_ALLOWED_COMMANDS", f"{sys.executable}")
+    monkeypatch.setenv("MCP_BEHAVE_ALLOWED_COMMANDS", f"{sys.executable} *")
     async def run():
         res = await audit_server([sys.executable, HONEST], no_trace=True)
         assert "error" not in res

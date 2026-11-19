@@ -83,16 +83,35 @@ def test_mcp_server_blocks_arbitrary_commands(monkeypatch):
 
 
 def test_mcp_server_allows_configured_commands(monkeypatch):
-    """Approved commands in allowed_commands should execute."""
-    monkeypatch.setenv("MCP_BEHAVE_ALLOWED_COMMANDS", f"{sys.executable}")
+    """Approved commands in allowed_commands should execute with exact or glob matching."""
+    # Wildcard match
+    monkeypatch.setenv("MCP_BEHAVE_ALLOWED_COMMANDS", f"{sys.executable} *")
     server.set_allow_all_exec(False)
 
-    async def run():
+    async def run_wildcard():
         res = await server.inspect_manifest([sys.executable, HONEST])
         assert "error" not in res
         assert "declared" in res
 
-    asyncio.run(run())
+    asyncio.run(run_wildcard())
+
+    # Exact match
+    monkeypatch.setenv("MCP_BEHAVE_ALLOWED_COMMANDS", f"{sys.executable} {HONEST}")
+    async def run_exact():
+        res = await server.inspect_manifest([sys.executable, HONEST])
+        assert "error" not in res
+        assert "declared" in res
+
+    asyncio.run(run_exact())
+
+    # Prefix without wildcard is rejected for security (preventing arbitrary arg execution)
+    monkeypatch.setenv("MCP_BEHAVE_ALLOWED_COMMANDS", f"{sys.executable}")
+    async def run_rejected_prefix():
+        res = await server.inspect_manifest([sys.executable, HONEST])
+        assert "error" in res
+        assert "Security refusal" in res["error"]
+
+    asyncio.run(run_rejected_prefix())
 
 
 def test_strace_parsing_parity(tmp_path):
