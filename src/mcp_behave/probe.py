@@ -555,13 +555,15 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
 def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
                     tool_outputs: dict | None = None,
                     *, transport: str, syscalls_available: bool,
-                    manifest_file: str | None = None, trace_file: str | None = None):
+                    manifest_file: str | None = None, trace_file: str | None = None,
+                    sandbox: str | None = None):
     m_file = manifest_file or MANIFEST
     t_file = trace_file or TRACE_FILE
     manifest = {
         "server_cmd": list(server_cmd) if server_cmd else None,
         "transport": transport,
         "syscalls_available": syscalls_available,
+        "sandbox": sandbox,
         "tools": tools_meta,
         "resources": resources_meta,
         "prompts": prompts_meta,
@@ -581,9 +583,12 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
 
 async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
               tracer: str | None = None, out_dir: str | None = None,
-              fuzz: bool = False, rounds: int = 1, unsafe_host: bool = False):
+              fuzz: bool = False, rounds: int = 1, unsafe_host: bool = False,
+              sandbox: str | None = None, sandbox_image: str | None = None,
+              sandbox_network: str = "none"):
     """Stdio transport: wrap the server in the platform's syscall tracer
-    (an injected dylib on macOS, LD_PRELOAD or strace on Linux) and connect via stdio.
+    (an injected dylib on macOS, LD_PRELOAD or strace on Linux) or container sandbox
+    (Docker/Podman) and connect via stdio.
     By default runs in an isolated canary environment to protect host files and credentials."""
     target_out_dir = out_dir or OUT_DIR
     target_trace_file = os.path.join(target_out_dir, "trace.log")
@@ -595,8 +600,16 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
         except OSError:
             pass
 
+    active_sandbox = None
+    if sandbox and sandbox != "none":
+        from . import sandbox as sandbox_mod
+        runtime = sandbox_mod.detect_container_runtime() if sandbox == "auto" else sandbox
+        if sandbox != "auto" and not runtime:
+            raise RuntimeError(f"Requested container sandbox '{sandbox}' but runtime is not available or responsive.")
+        active_sandbox = runtime
+
     trace_cmd, tracer_name, env_overlay = _tracer_setup(server_cmd, target_trace_file, tracer)
-    syscalls_available = bool(tracer_name)
+    syscalls_available = bool(tracer_name) and not active_sandbox
     # Truncate/create the trace file up front: native tracers open it
     # O_APPEND, and analyze() needs a readable file even if the server exits
     # before any interesting syscall fires.
@@ -605,7 +618,21 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
     cleaned_env, canary_dir = _build_isolated_env(env_overlay if syscalls_available else {}, unsafe_host=unsafe_host)
 
     try:
-        if syscalls_available:
+        if active_sandbox:
+            from . import sandbox as sandbox_mod
+            sandbox_cmd = sandbox_mod.build_sandbox_command(
+                server_cmd,
+                runtime=active_sandbox,
+                canary_dir=canary_dir,
+                network=sandbox_network,
+                image=sandbox_image,
+            )
+            print(f"[probe] running server inside container sandbox ({active_sandbox})", file=sys.stderr)
+            params = StdioServerParameters(command=sandbox_cmd[0], args=sandbox_cmd[1:],
+                                           env=cleaned_env)
+            syscalls_available = False
+            tracer_name = f"sandbox-{active_sandbox}"
+        elif syscalls_available:
             params = StdioServerParameters(command=trace_cmd[0], args=trace_cmd[1:],
                                            env=cleaned_env)
         else:
@@ -626,7 +653,8 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
         _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
                         tool_outputs=tool_outputs,
                         transport="stdio", syscalls_available=syscalls_available,
-                        manifest_file=target_manifest_file, trace_file=target_trace_file)
+                        manifest_file=target_manifest_file, trace_file=target_trace_file,
+                        sandbox=active_sandbox)
     finally:
         if canary_dir and os.path.exists(canary_dir):
             try:

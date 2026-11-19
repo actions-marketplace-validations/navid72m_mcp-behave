@@ -80,19 +80,18 @@ The goal is ensuring zero host contamination and complete transparency across al
 The goal is resilient runtime observation that withstands hostile or evasive server code.
 
 - [x] **Expanded `strace` Syscall Coverage & Parser** — hooks `open`, `openat`, `creat`, `connect`, `sendto`, `sendmsg`, `sendmmsg`, `execve`, `execveat`, parsing AF_UNIX sockets and file write distinctions to achieve parity with native libc interposition.
-- [ ] **Sandbox-First Execution** — default to containerized audits (Docker or Podman) on all platforms. On Linux systems without container daemons, automatically fall back to unprivileged `bubblewrap` with user namespaces.
+- [x] **Sandbox-First Execution (`--sandbox`)** — execute audited servers inside ephemeral, isolated containers (Docker or Podman) with dropped capabilities (`--cap-drop=ALL`), read-only workspace bind mounts, isolated network namespaces (`--network=none`), and canary `$HOME` redirection.
+- [x] **Published Evasion Suite (`targets/evasion/`)** — maintain dedicated regression targets for evasion techniques:
+  - `delayed_beacon.py` — delayed / 3rd invocation triggers (multi-round defense)
+  - `stripped_env.py` — child processes spawned with scrubbed `env={}` stripping preload variables
+  - `raw_syscall.py` — low-level direct syscall execution bypassing dynamic libc symbol hooks
+  - `time_bomb.py` — elapsed execution and sleeping exfiltration triggers
+- [x] **Detection Matrix Documentation** — publish an explicit evasion technique matrix (Technique × Backend → Caught / Missed) in [`docs/detection_matrix.md`](docs/detection_matrix.md).
 - [ ] **Linux eBPF Backend** — kernel-level syscall tracing via eBPF/kprobes to reliably observe statically linked binaries (Go, musl Rust), inline raw syscalls (`SYS_connect`, `SYS_openat`), and child processes spawned with scrubbed environments (`env -i`).
 - [ ] **Namespace-Level Network Capture** — place audited servers in an isolated network namespace behind a logging proxy and controlled DNS resolver to log DNS exfiltration, UDP egress, and connection reuse.
 - [ ] **Explicit Fast-Mode Labeling** — preserve `LD_PRELOAD` / `DYLD` libc interposition as an explicit fast mode, clearly labeled as best-effort in audit reports.
-- [ ] **Published Evasion Suite (`targets/evasion/`)** — maintain dedicated regression targets for evasion techniques:
-  - Raw syscall via ctypes/assembly
-  - `env -u LD_PRELOAD` / `env -i` stripped child processes
-  - SIP-protected system binaries (`/usr/bin/curl` on macOS)
-  - DNS-only covert exfiltration
-  - Delayed / N-th invocation triggers
-  - Canary string & sandbox fingerprinting
-  - Client-divergent dynamic manifests
-- [ ] **Detection Matrix Documentation** — publish an explicit evasion technique matrix (Technique × Backend → Caught / Missed) in documentation.
+
+**Exit Criterion:** The eBPF + network namespace backend detects $\ge 90\%$ of the evasion suite, with known architectural limitations transparently documented.
 
 **Exit Criterion:** The eBPF + network namespace backend detects $\ge 90\%$ of the evasion suite, with known architectural limitations transparently documented.
 
@@ -125,9 +124,10 @@ The goal is seamless integration into developer CI/CD pipelines as the standard 
   - Spawned child binaries and arguments
   - Tool manifest cryptographic hashes
 - [x] **Behavioral Diffing (`mcp-behave check`)** — CI command that fails *only* on undeclared behavioral regressions (e.g., "`format_note` now connects to `telemetry.example.com:443` (not in lockfile)"), while accepting previously recorded baseline behavior.
-- [ ] **Official GitHub Action (`navid72m/mcp-behave-action@v1`)**:
-  - Automatically posts pull request comments illustrating behavioral diffs
-  - Uploads SARIF v2.1.0 results to GitHub Code Scanning
+- [x] **Official GitHub Action (`action.yml`)**:
+  - Drops into `.github/workflows/` via `- uses: navid72m/mcp-behave@v0.4`
+  - Runs lockfile regression check (`mcp-behave check`) or audit (`mcp-behave audit`)
+  - Generates and uploads SARIF v2.1.0 reports directly to GitHub Code Scanning / Advanced Security.
   - Caches warm sandbox container images for rapid execution
 - [ ] **Pre-commit Hook & GitLab CI Template** — support alternative Git workflows and GitLab pipelines.
 - [ ] **Fine-Grained Policy-as-Code** — per-tool behavioral declarations in `.mcpbehaverc.json` (e.g. `fetch_url` permitted network egress; `format_note` restricted to zero egress).

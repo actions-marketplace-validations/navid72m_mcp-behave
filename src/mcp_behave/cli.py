@@ -120,6 +120,18 @@ def _build_parser():
         help="Disable temporary canary $HOME redirection and run against the real host environment.",
     )
     p.add_argument(
+        "--sandbox", choices=("auto", "docker", "podman", "none"), default="none",
+        help="Run target inside an ephemeral container sandbox (default: none). 'auto' detects docker or podman.",
+    )
+    p.add_argument(
+        "--sandbox-image", default=None,
+        help="Container image to use when running with --sandbox (default: python:3.12-slim or node:20-slim).",
+    )
+    p.add_argument(
+        "--sandbox-network", choices=("none", "bridge", "host"), default="none",
+        help="Network namespace isolation mode for --sandbox (default: none).",
+    )
+    p.add_argument(
         "--timeout", type=float, default=probe_mod.DEFAULT_CALL_TIMEOUT,
         help="Seconds to wait per tool/resource/prompt call "
              "(default: %(default)s).",
@@ -156,6 +168,9 @@ def main(argv=None):
     raw_argv = sys.argv[1:] if argv is None else list(argv)
     # Strip leading binary name if passed by container entrypoints/wrappers
     if raw_argv and raw_argv[0] in ("mcp-behave", "mcp_behave"):
+        raw_argv = raw_argv[1:]
+
+    if raw_argv and raw_argv[0] == "audit":
         raw_argv = raw_argv[1:]
 
     if not raw_argv:
@@ -209,19 +224,25 @@ def main(argv=None):
 
     tracer_choice = "none" if args.no_trace else args.tracer
     if args.transport == "stdio":
-        active_tracer = probe_mod.detect_tracer(tracer_choice)
-        tracer_label = {
-            "dylib": "macos-dylib",
-            "preload": "linux-preload",
-            "strace": "strace",
-        }.get(active_tracer, "untraced")
+        if args.sandbox and args.sandbox != "none":
+            tracer_label = f"sandbox ({args.sandbox})"
+        else:
+            active_tracer = probe_mod.detect_tracer(tracer_choice)
+            tracer_label = {
+                "dylib": "macos-dylib",
+                "preload": "linux-preload",
+                "strace": "strace",
+            }.get(active_tracer, "untraced")
         if not quiet:
             print(f"=== STEP 1: observe ({tracer_label}) ===")
         coro = probe_mod.run(args.server_command, out_dir=args.out_dir,
                              call_timeout=args.timeout,
                              tracer=tracer_choice, fuzz=args.fuzz,
                              rounds=args.probe_rounds,
-                             unsafe_host=args.unsafe_host)
+                             unsafe_host=args.unsafe_host,
+                             sandbox=args.sandbox,
+                             sandbox_image=args.sandbox_image,
+                             sandbox_network=args.sandbox_network)
     else:
         if len(args.server_command) != 1:
             parser.error(f"--transport {args.transport} expects exactly one URL argument")

@@ -96,6 +96,31 @@ mcp-behave check python -m my_server
 
 `mcp-behave check` fails with exit code `3` *only* when new, undeclared runtime behavior is observed (e.g. unexpected telemetry or unauthorized file writes), while accepting previously recorded baseline behavior.
 
+### Official GitHub Action
+
+Drop `mcp-behave` directly into your GitHub Actions workflow:
+
+```yaml
+name: Security Audit & Behavioral Gate
+
+on: [push, pull_request]
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run MCP-Behave Check
+        uses: navid72m/mcp-behave@v0.4.0
+        with:
+          command: "python -m my_server"
+          lockfile: "mcp-behave.lock"
+          sarif: "mcp-behave.sarif"
+```
+
+For full evasion analysis and backend comparison, see the [Observation & Evasion Detection Matrix](docs/detection_matrix.md).
+
 ## Use
 
 ```bash
@@ -109,6 +134,9 @@ mcp-behave init python -m mcp_server_fetch
 
 # Run CI behavioral regression check:
 mcp-behave check python -m mcp_server_fetch
+
+# Run audit inside an ephemeral container sandbox (Docker or Podman):
+mcp-behave --sandbox auto python -m mcp_server_fetch
 
 # Run untraced (manifest & rug-pull analysis only, no tracer needed):
 mcp-behave --no-trace python -m mcp_server_fetch
@@ -144,6 +172,9 @@ Exit codes: `0` clean, `3` findings at or above `--fail-on` threshold,
 
 ### Useful flags
 
+- `--sandbox {auto,docker,podman,none}` — execute target inside an ephemeral, locked-down container sandbox with `--cap-drop=ALL` and network isolation (default `none`).
+- `--sandbox-image IMAGE` — specify container image (default `python:3.12-slim` or `node:20-slim`).
+- `--sandbox-network {none,bridge,host}` — network namespace isolation for container sandbox (default `none`).
 - `--unsafe-host` — disable temporary canary `$HOME` redirection and run directly against the host environment.
 - `--no-trace` — skip syscall tracing and run manifest analysis only.
 - `--tracer {auto,preload,dylib,strace,none}` — choose tracer backend explicitly (default `auto`).

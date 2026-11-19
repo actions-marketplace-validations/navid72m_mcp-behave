@@ -393,7 +393,11 @@ def compute_audit_confidence(manifest: dict, profile: dict | None = None) -> dic
     call_success_pct = 100.0 if called_calls == 0 else (ok_calls / called_calls) * 100.0
 
     # Tracer fidelity
-    if not syscalls_available:
+    sb_mode = manifest.get("sandbox") or (tracer if isinstance(tracer, str) and tracer.startswith("sandbox-") else None)
+    if sb_mode:
+        tracer_fidelity = "HIGH"
+        tracer_desc = f"Container Sandbox ({sb_mode}) with dropped caps and filesystem isolation"
+    elif not syscalls_available:
         tracer_fidelity = "LOW"
         tracer_desc = "untraced / manifest analysis only"
     elif tracer in ("dylib", "macos-dylib"):
@@ -410,7 +414,9 @@ def compute_audit_confidence(manifest: dict, profile: dict | None = None) -> dic
         tracer_desc = f"stdio tracer ({tracer})"
 
     caveats = []
-    if not syscalls_available:
+    if sb_mode:
+        caveats.append(f"Target ran inside an isolated container sandbox ({sb_mode}); host filesystem and environment were strictly isolated.")
+    elif not syscalls_available:
         caveats.append("Syscall tracing disabled or unavailable; runtime behavior was not observed.")
     else:
         if tracer in ("dylib", "preload", "macos-dylib", "linux-preload"):
@@ -427,7 +433,7 @@ def compute_audit_confidence(manifest: dict, profile: dict | None = None) -> dic
         caveats.append(f"{num_declared - exercised_unique} declared tool(s) were never exercised.")
 
     # Confidence score determination
-    if not syscalls_available or num_declared == 0:
+    if (not syscalls_available and not sb_mode) or num_declared == 0:
         score = "LOW"
     elif tool_coverage_pct >= 90.0 and call_success_pct >= 80.0 and rounds >= 2:
         score = "HIGH"

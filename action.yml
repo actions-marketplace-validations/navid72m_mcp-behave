@@ -1,0 +1,72 @@
+name: 'MCP-Behave Security Audit & Regression Gate'
+description: 'Behavioral security auditing and lockfile regression gating for Model Context Protocol (MCP) servers'
+author: 'navid72m'
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  command:
+    description: 'Command to launch the MCP server under test (e.g. "python -m my_server" or "node dist/index.js")'
+    required: true
+  lockfile:
+    description: 'Path to mcp-behave.lock baseline. If exists, executes "mcp-behave check"; otherwise runs "mcp-behave audit".'
+    required: false
+    default: 'mcp-behave.lock'
+  version:
+    description: 'mcp-behave version to install from PyPI (default: >=0.4.0)'
+    required: false
+    default: '>=0.4.0'
+  rounds:
+    description: 'Number of probing rounds for behavioral exercising (default: 3)'
+    required: false
+    default: '3'
+  sarif:
+    description: 'Output path for SARIF report'
+    required: false
+    default: 'mcp-behave.sarif'
+  upload-sarif:
+    description: 'Whether to upload SARIF report to GitHub Advanced Security / Code Scanning'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install mcp-behave
+      shell: bash
+      run: |
+        pip install "mcp-behave${{ inputs.version }}"
+
+    - name: Run MCP-Behave Audit or Lockfile Check
+      shell: bash
+      run: |
+        if [ -f "${{ inputs.lockfile }}" ]; then
+          echo "::group::Running mcp-behave check against ${{ inputs.lockfile }}"
+          mcp-behave check --lockfile "${{ inputs.lockfile }}" --rounds "${{ inputs.rounds }}" ${{ inputs.command }}
+          echo "::endgroup::"
+        else
+          echo "::group::Running mcp-behave audit"
+          mcp-behave audit --rounds "${{ inputs.rounds }}" --sarif "${{ inputs.sarif }}" ${{ inputs.command }}
+          echo "::endgroup::"
+        fi
+
+    - name: Generate SARIF if lockfile check passed
+      if: always()
+      shell: bash
+      run: |
+        if [ ! -f "${{ inputs.sarif }}" ]; then
+          mcp-behave audit --rounds 1 --sarif "${{ inputs.sarif }}" ${{ inputs.command }} || true
+        fi
+
+    - name: Upload SARIF report to GitHub Code Scanning
+      if: ${{ inputs.upload-sarif == 'true' && hashFiles(inputs.sarif) != '' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif }}
+        category: 'mcp-behave'
