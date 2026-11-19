@@ -524,6 +524,9 @@ def compute_audit_confidence(manifest: dict, profile: dict | None = None) -> dic
     elif not syscalls_available:
         tracer_fidelity = "LOW"
         tracer_desc = "untraced / manifest analysis only"
+    elif tracer in ("ebpf", "linux-ebpf"):
+        tracer_fidelity = "HIGH"
+        tracer_desc = "Linux kernel eBPF tracepoints (CO-RE)"
     elif tracer in ("dylib", "macos-dylib"):
         tracer_fidelity = "MEDIUM-HIGH"
         tracer_desc = "macOS DYLD library interposition"

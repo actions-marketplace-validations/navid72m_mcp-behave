@@ -87,7 +87,8 @@ The goal is resilient runtime observation that withstands hostile or evasive ser
   - `raw_syscall.py` — low-level direct syscall execution bypassing dynamic libc symbol hooks
   - `time_bomb.py` — elapsed execution and sleeping exfiltration triggers
 - [x] **Detection Matrix Documentation** — publish an explicit evasion technique matrix (Technique × Backend → Caught / Missed) in [`docs/detection_matrix.md`](docs/detection_matrix.md).
-- [ ] **Linux eBPF Backend** — kernel-level syscall tracing via eBPF/kprobes to reliably observe statically linked binaries (Go, musl Rust), inline raw syscalls (`SYS_connect`, `SYS_openat`), and child processes spawned with scrubbed environments (`env -i`).
+- [x] **Experimental Linux eBPF Prototype & Normalized Event Architecture** — unified `BehavioralEvent` model (`events.py`), C CO-RE eBPF program (`mcp_behave.bpf.c`), Python loader & event decoder (`src/mcp_behave/ebpf/`), CLI option `--tracer ebpf`, and cross-platform test harness.
+- [ ] **Full In-Kernel Process Tree Filtering & Ringbuffer Poller** — package pre-compiled BPF object with CO-RE vmlinux.h for zero-dependency Linux deployment across x86_64 and aarch64.
 - [ ] **Namespace-Level Network Capture** — place audited servers in an isolated network namespace behind a logging proxy and controlled DNS resolver to log DNS exfiltration, UDP egress, and connection reuse.
 - [ ] **Explicit Fast-Mode Labeling** — preserve `LD_PRELOAD` / `DYLD` libc interposition as an explicit fast mode, clearly labeled as best-effort in audit reports.
 

@@ -192,6 +192,30 @@ def _is_native(sample: list[str]) -> bool:
     return False
 
 
+def _is_json_events(sample: list[str]) -> bool:
+    """Check if file contains normalized JSON event stream (e.g. from eBPF collector)."""
+    for line in sample:
+        s = line.strip()
+        if s.startswith('{"event":'):
+            return True
+    return False
+
+
+def _analyze_json_events(lines) -> dict:
+    from .events import BehavioralEvent, events_to_profile
+    events = []
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        try:
+            data = json.loads(s)
+            events.append(BehavioralEvent.from_dict(data))
+        except Exception:
+            continue
+    return events_to_profile(events, interesting_file, interesting_net)
+
+
 def _analyze_native(lines) -> dict:
     files_opened = set()
     files_written = set()
@@ -287,6 +311,9 @@ def _analyze_native(lines) -> dict:
 def analyze(path: str) -> dict:
     with open(path, errors="replace") as f:
         head = [f.readline() for _ in range(8)]
+        if _is_json_events(head):
+            f.seek(0)
+            return _analyze_json_events(f)
         if _is_native(head):
             f.seek(0)
             return _analyze_native(f)

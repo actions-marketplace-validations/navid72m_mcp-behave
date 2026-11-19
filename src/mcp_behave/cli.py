@@ -111,9 +111,9 @@ def _build_parser():
         help="Skip syscall tracing and perform manifest analysis only (no tracer/root needed).",
     )
     p.add_argument(
-        "--tracer", choices=("auto", "preload", "dylib", "strace", "none"), default="auto",
-        help="Syscall tracer backend (default: auto). 'preload' uses Linux LD_PRELOAD, "
-             "'dylib' uses macOS DYLD interposition, 'strace' uses strace, 'none' runs untraced.",
+        "--tracer", choices=("auto", "ebpf", "preload", "dylib", "strace", "none"), default="auto",
+        help="Syscall tracer backend (default: auto). 'ebpf' uses Linux kernel eBPF tracepoints (experimental), "
+             "'preload' uses Linux LD_PRELOAD, 'dylib' uses macOS DYLD interposition, 'strace' uses strace, 'none' runs untraced.",
     )
     p.add_argument(
         "--unsafe-host", action="store_true",
@@ -229,6 +229,7 @@ def main(argv=None):
         else:
             active_tracer = probe_mod.detect_tracer(tracer_choice)
             tracer_label = {
+                "ebpf": "linux-ebpf",
                 "dylib": "macos-dylib",
                 "preload": "linux-preload",
                 "strace": "strace",

@@ -240,6 +240,18 @@ def _tracer_setup(server_cmd: list[str], trace_file: str,
     if tracer_override in ("none", "untraced", "off"):
         return server_cmd, "", {}
 
+    if tracer_override == "ebpf":
+        from .ebpf import is_ebpf_supported
+        supported, reason = is_ebpf_supported()
+        if not supported and os.environ.get("MCP_BEHAVE_MOCK_EBPF") != "1":
+            print(f"[probe] WARNING: eBPF tracer unavailable: {reason}", file=sys.stderr)
+            print("[probe] Falling back to default system tracer (use --tracer auto).", file=sys.stderr)
+        else:
+            return server_cmd, "ebpf", {
+                "MCP_BEHAVE_TRACE_FILE": trace_file,
+                "MCP_BEHAVE_TRACER": "ebpf",
+            }
+
     if platform.system() == "Darwin":
         if tracer_override and tracer_override not in ("dylib", "native", "auto"):
             return server_cmd, "", {}

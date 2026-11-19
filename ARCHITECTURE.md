@@ -44,19 +44,24 @@ flowchart TB
         PROBE["probe.py<br/>Autonomous Probe & Synthesis Engine"]
         MAC_C["macos_tracer.c<br/>DYLD Interposer (libmcpbehave_trace.dylib)"]
         LIN_C["linux_tracer.c<br/>LD_PRELOAD Interposer (libmcpbehave_trace.so)"]
-        STRACE["strace<br/>(Linux Kernel Fallback)"]
+        STRACE["strace<br/>(Linux ptrace Fallback)"]
+        EBPF_C["mcp_behave.bpf.c<br/>(Linux Kernel eBPF CO-RE)"]
     end
 
-    subgraph Target["3. System Under Test (SUT)"]
+    subgraph EventsLayer["3. Normalized Event Layer"]
+        EVENTS["events.py<br/>Unified BehavioralEvent Stream"]
+    end
+
+    subgraph Target["4. System Under Test (SUT)"]
         SUT_PROC["MCP Target Server<br/>(stdio, sse, streamable-http)"]
     end
 
-    subgraph AnalyzeLayer["4. Analysis & Policy Layer"]
-        ANALYZE["analyze.py<br/>Noise Filtering & Trace Parser"]
+    subgraph AnalyzeLayer["5. Analysis & Policy Layer"]
+        ANALYZE["analyze.py<br/>Noise Filtering & Profile Reducer"]
         REPORT["report.py<br/>Policy Engine & Rug-Pull Detector"]
     end
 
-    subgraph OutputLayer["5. Telemetry & Consumption Layer"]
+    subgraph OutputLayer["6. Telemetry & Consumption Layer"]
         PUSH["push.py<br/>Dashboard Client"]
         STDOUT["Stdout / JSON Output"]
         MCP_CLIENT["AI Agent / MCP Client<br/>(Claude Desktop, Cursor)"]
