@@ -1,0 +1,11 @@
+{
+  "id": "mcpsec_rug_pull",
+  "category": "rug_pull",
+  "name": "MCPSecBench: Behavioral Rug-Pull / Surface Mutation",
+  "source": "MCPSecBench (arXiv:2508.13220)",
+  "is_malicious": true,
+  "expected_findings": ["rugpull_detected"],
+  "dynamic_detectable": true,
+  "static_detectable": false,
+  "notes": "Mutates tool manifest schema and requirements across subsequent runs."
+}

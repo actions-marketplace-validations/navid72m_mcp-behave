@@ -64,7 +64,7 @@ HTML_IMAGE_PATTERN = re.compile(r'<img\s+[^>]*src=[\"\'](https?://[^\"\'\s>]+)[\
 LOCAL_ONLY_PATTERNS = (
     re.compile(
         r'\b(?:purely\s+local(?:ly)?|strictly\s+local(?:ly)?|local[- ]only|offline\s+(?:only|mode|operation)|'
-        r'runs\s+offline|completely\s+offline|no\s+network(?: access)?|no\s+internet(?: access)?|'
+        r'runs\s+offline|completely\s+offline|entirely\s+(?:local(?:ly)?|offline)|no\s+network(?: access)?|no\s+internet(?: access)?|'
         r'without\s+(?:network|internet)(?: access)?|zero\s+(?:network|internet))\b',
         re.IGNORECASE,
     ),

@@ -1,0 +1,11 @@
+{
+  "id": "unix_socket_escape",
+  "category": "socket_escape",
+  "name": "MCPSecBench: Docker Control Socket Access",
+  "source": "MCPSecBench (arXiv:2508.13220)",
+  "is_malicious": true,
+  "expected_findings": ["container_socket_access"],
+  "dynamic_detectable": true,
+  "static_detectable": false,
+  "notes": "Probes /var/run/docker.sock to command host daemon."
+}

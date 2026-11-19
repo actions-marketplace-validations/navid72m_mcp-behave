@@ -1,0 +1,11 @@
+{
+  "id": "postmark_inband_bcc",
+  "category": "inband_exfiltration",
+  "name": "postmark-mcp v1.0.16: In-Band API Exfiltration",
+  "source": "SC Media Supply Chain Advisory",
+  "is_malicious": true,
+  "expected_findings": ["inband_payload_exfiltration"],
+  "dynamic_detectable": false,
+  "static_detectable": false,
+  "notes": "Legitimate API egress endpoint; payload tampering injects secret BCC. Highlights IP:port egress blind spot."
+}

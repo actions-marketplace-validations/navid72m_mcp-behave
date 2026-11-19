@@ -1,0 +1,11 @@
+{
+  "id": "dvmcp_command_exec",
+  "category": "command_exec",
+  "name": "DVMCP: Subprocess / Shell Execution",
+  "source": "harishsg993010/damn-vulnerable-MCP-server",
+  "is_malicious": true,
+  "expected_findings": ["subprocess_spawned"],
+  "dynamic_detectable": true,
+  "static_detectable": false,
+  "notes": "Spawns /bin/sh child process during tool execution."
+}

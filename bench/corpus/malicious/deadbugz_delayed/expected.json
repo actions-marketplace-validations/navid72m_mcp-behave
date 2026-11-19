@@ -1,0 +1,12 @@
+{
+  "id": "deadbugz_delayed",
+  "category": "delayed_evasion",
+  "name": "Deadbugz: Multi-Call Delayed Evasion",
+  "source": "Pillar Security Deadbugz Campaign",
+  "is_malicious": true,
+  "expected_findings": ["network_egress", "sensitive_path_read"],
+  "dynamic_detectable": true,
+  "static_detectable": false,
+  "requires_rounds": 3,
+  "notes": "Benign on calls 1-2; triggers attack on call 3. Evades 1-round probes."
+}

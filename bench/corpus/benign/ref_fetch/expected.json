@@ -1,0 +1,11 @@
+{
+  "id": "ref_fetch",
+  "category": "benign_network",
+  "name": "Reference Network Fetcher",
+  "source": "Model Context Protocol Official Samples",
+  "is_malicious": false,
+  "expected_findings": [],
+  "dynamic_detectable": true,
+  "static_detectable": true,
+  "notes": "Legitimate network operations explicitly declared in tool capability schemas."
+}

@@ -525,11 +525,31 @@ mcp-behave python targets/poisoned_server.py
 
 ## Security Benchmarks
 
-`mcp-behave` is continuously benchmarked against independent, peer-reviewed MCP security evaluation suites.
+`mcp-behave` is continuously benchmarked against independent, peer-reviewed MCP security evaluation suites, standard reference implementations, and real-world supply chain incidents.
+
+> 📊 **Complete Benchmark Report & Methodology**: Read [`BENCHMARK.md`](BENCHMARK.md) for detailed analysis of runtime tracing vs static analysis, multi-round evasion resistance, and transparent post-mortems of edge cases (such as in-band exfiltration in `postmark-mcp` and delayed evasion in `Deadbugz`).
 
 ---
 
-### 1. [CrossMCP-Bench](https://huggingface.co/datasets/MLZoo/CrossMCP-Bench) (Multi-Server Authorization Suite)
+### 1. [Runtime Server Code Corpus Benchmark](BENCHMARK.md) (SC-Inject, MCPSecBench, DVMCP, Deadbugz)
+
+Unlike prompt-oriented benchmarks (e.g., MCPTox, MCP-AttackBench) that test LLM decision-making, this benchmark suite tests **malicious server code** where tools present innocent manifests while executing unauthorized runtime actions:
+
+| Metric | Static AST / Regex Scanner | `mcp-behave` (1 Round) | `mcp-behave` (3 Rounds) |
+| :--- | :---: | :---: | :---: |
+| **Precision** | **100.0%** | **100.0%** | **100.0%** |
+| **Recall (Detection Rate)** | 71.4% (5/7) | 71.4% (5/7) | **85.7% (6/7)** |
+| **F1 Score** | 0.8333 | 0.8333 | **0.9231** |
+| **False Positive Rate (FPR)** | **0.0% (0/4)** | **0.0% (0/4)** | **0.0% (0/4)** |
+| **Delayed Evasion Detection** | ⚠️ Heuristic only | ❌ Missed (0%) | ✅ **Detected (100%)** |
+| **Behavioral Rug-Pull** | ❌ Missed (0%) | ✅ **Detected (100%)** | ✅ **Detected (100%)** |
+| **Host Environment Protection** | N/A (Offline) | ✅ **Zero (Canary Sandboxed)** | ✅ **Zero (Canary Sandboxed)** |
+
+*Run locally with `python3 bench/run.py --rounds 3` or inspect the corpus in `bench/corpus/`.*
+
+---
+
+### 2. [CrossMCP-Bench](https://huggingface.co/datasets/MLZoo/CrossMCP-Bench) (Multi-Server Authorization Suite)
 
 Evaluates runtime security guards across **134 multi-server scenarios** (75 attacks, 59 benign controls) spanning concurrent filesystem, SQL database, and HTTP external servers with strict authorization-conditioned context (`auth_context`):
 
@@ -558,7 +578,7 @@ Evaluates runtime security guards across **134 multi-server scenarios** (75 atta
 
 ---
 
-### 2. [MCP-GuardBench](https://github.com/Manishmaurya89/mcp-guardbench) (Deterministic Runtime & Policy Suite)
+### 3. [MCP-GuardBench](https://github.com/Manishmaurya89/mcp-guardbench) (Deterministic Runtime & Policy Suite)
 
 Evaluates defense and runtime auditor tools against **12 deterministic test cases** across **11 deliberately vulnerable local MCP server fixtures** measuring **both detection and verified execution prevention** via fixture ground-truth ledgers.
 
@@ -594,7 +614,7 @@ Evaluates defense and runtime auditor tools against **12 deterministic test case
 
 ---
 
-### 3. [Pluto MCP Visibility Benchmark](https://github.com/plutosecurity/pluto-mcp-visibility-bench) (OWASP MCP Top 10 Suite)
+### 4. [Pluto MCP Visibility Benchmark](https://github.com/plutosecurity/pluto-mcp-visibility-bench) (OWASP MCP Top 10 Suite)
 
 Evaluates behavioral observation across **60 MCP test servers** (41 malicious, 19 benign control servers) across 8 categories from the **OWASP MCP Top 10**:
 

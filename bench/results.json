@@ -1,0 +1,281 @@
+{
+  "benchmark_suite": "mcp-behave Corpus Benchmark (SC-Inject, MCPSecBench, DVMCP, Postmark, Deadbugz)",
+  "timestamp": "2026-11-19 06:42:34 UTC",
+  "probe_rounds": 3,
+  "metrics": {
+    "mcp_behave_dynamic": {
+      "total": 11,
+      "tp": 6,
+      "fp": 0,
+      "tn": 4,
+      "fn": 1,
+      "precision": 1.0,
+      "recall": 0.8571,
+      "f1": 0.9231,
+      "fpr": 0.0
+    },
+    "static_baseline": {
+      "total": 11,
+      "tp": 5,
+      "fp": 0,
+      "tn": 4,
+      "fn": 2,
+      "precision": 1.0,
+      "recall": 0.7143,
+      "f1": 0.8333,
+      "fpr": 0.0
+    }
+  },
+  "cases": [
+    {
+      "id": "ref_calculator",
+      "name": "Reference Pure Computation Server",
+      "category": "benign_compute",
+      "source": "Standard Reference MCP Tool",
+      "is_malicious": false,
+      "notes": "Purely local compute with zero network, filesystem, or process side-effects.",
+      "mcp_behave": {
+        "detected": false,
+        "high_count": 0,
+        "total_count": 1,
+        "findings": [
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
+        ]
+      },
+      "static_baseline": {
+        "detected": false,
+        "findings": []
+      }
+    },
+    {
+      "id": "ref_fetch",
+      "name": "Reference Network Fetcher",
+      "category": "benign_network",
+      "source": "Model Context Protocol Official Samples",
+      "is_malicious": false,
+      "notes": "Legitimate network operations explicitly declared in tool capability schemas.",
+      "mcp_behave": {
+        "detected": false,
+        "high_count": 0,
+        "total_count": 2,
+        "findings": [
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+          "INFO: tool 'fetch_web_page' argument 'url' accepts caller-controlled URL without host allowlist or pattern constraints -- SSRF risk"
+        ]
+      },
+      "static_baseline": {
+        "detected": false,
+        "findings": []
+      }
+    },
+    {
+      "id": "ref_filesystem",
+      "name": "Reference Filesystem Server",
+      "category": "benign_filesystem",
+      "source": "Model Context Protocol Official Samples",
+      "is_malicious": false,
+      "notes": "Authorized local filesystem operations adhering to declared workspace bounds.",
+      "mcp_behave": {
+        "detected": false,
+        "high_count": 0,
+        "total_count": 2,
+        "findings": [
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+          "INFO: tool 'read_project_file' argument 'path' accepts unconstrained filesystem path without pattern or enum validation -- path traversal risk"
+        ]
+      },
+      "static_baseline": {
+        "detected": false,
+        "findings": []
+      }
+    },
+    {
+      "id": "ref_git",
+      "name": "Reference Git Repository Inspector",
+      "category": "benign_git",
+      "source": "Model Context Protocol Official Samples",
+      "is_malicious": false,
+      "notes": "Safe local repository metadata queries without private key access.",
+      "mcp_behave": {
+        "detected": false,
+        "high_count": 0,
+        "total_count": 2,
+        "findings": [
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+          "INFO: tool 'get_git_log' declares 1 properties but no required list -- every argument is optional"
+        ]
+      },
+      "static_baseline": {
+        "detected": false,
+        "findings": []
+      }
+    },
+    {
+      "id": "deadbugz_delayed",
+      "name": "Deadbugz: Multi-Call Delayed Evasion",
+      "category": "delayed_evasion",
+      "source": "Pillar Security Deadbugz Campaign",
+      "is_malicious": true,
+      "notes": "Benign on calls 1-2; triggers attack on call 3. Evades 1-round probes.",
+      "mcp_behave": {
+        "detected": true,
+        "high_count": 2,
+        "total_count": 5,
+        "findings": [
+          "INFO: network egress to 93.184.216.34:80",
+          "HIGH: read a sensitive path: /private/var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home__yr8cm13/.aws/credentials",
+          "HIGH: read a sensitive path: /var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home__yr8cm13/.aws/credentials",
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+          "INFO: tool 'compute_metrics' argument 'data' is a free-form string with no enum, pattern, format, or maxLength constraint"
+        ]
+      },
+      "static_baseline": {
+        "detected": true,
+        "findings": [
+          "STATIC: hardcoded IP socket connect"
+        ]
+      }
+    },
+    {
+      "id": "dvmcp_command_exec",
+      "name": "DVMCP: Subprocess / Shell Execution",
+      "category": "command_exec",
+      "source": "harishsg993010/damn-vulnerable-MCP-server",
+      "is_malicious": true,
+      "notes": "Spawns /bin/sh child process during tool execution.",
+      "mcp_behave": {
+        "detected": true,
+        "high_count": 1,
+        "total_count": 3,
+        "findings": [
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+          "INFO: spawned subprocess: /bin/sh",
+          "HIGH: tool 'verify_image_format' argument 'filename' accepts unconstrained filesystem path without pattern or enum validation -- path traversal risk"
+        ]
+      },
+      "static_baseline": {
+        "detected": true,
+        "findings": [
+          "STATIC: subprocess call detected"
+        ]
+      }
+    },
+    {
+      "id": "mcpsec_rug_pull",
+      "name": "MCPSecBench: Behavioral Rug-Pull / Surface Mutation",
+      "category": "rug_pull",
+      "source": "MCPSecBench (arXiv:2508.13220)",
+      "is_malicious": true,
+      "notes": "Mutates tool manifest schema and requirements across subsequent runs.",
+      "mcp_behave": {
+        "detected": true,
+        "high_count": 1,
+        "total_count": 4,
+        "findings": [
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+          "HIGH: declared surface changed since last run (was 035ba25c3caf, now 7e50f8e71b2e) -- possible rug-pull",
+          "INFO: tool 'summarize' argument 'text' is a free-form string with no enum, pattern, format, or maxLength constraint",
+          "INFO: tool 'summarize' argument 'admin_token' is a free-form string with no enum, pattern, format, or maxLength constraint"
+        ]
+      },
+      "static_baseline": {
+        "detected": false,
+        "findings": []
+      }
+    },
+    {
+      "id": "postmark_inband_bcc",
+      "name": "postmark-mcp v1.0.16: In-Band API Exfiltration",
+      "category": "inband_exfiltration",
+      "source": "SC Media Supply Chain Advisory",
+      "is_malicious": true,
+      "notes": "Legitimate API egress endpoint; payload tampering injects secret BCC. Highlights IP:port egress blind spot.",
+      "mcp_behave": {
+        "detected": false,
+        "high_count": 0,
+        "total_count": 3,
+        "findings": [
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+          "INFO: tool 'send_email' argument 'subject' is a free-form string with no enum, pattern, format, or maxLength constraint",
+          "INFO: tool 'send_email' argument 'body' is a free-form string with no enum, pattern, format, or maxLength constraint"
+        ]
+      },
+      "static_baseline": {
+        "detected": false,
+        "findings": []
+      }
+    },
+    {
+      "id": "sc_inject_credential",
+      "name": "SC-Inject: Injected SSH Key Access",
+      "category": "credential_theft",
+      "source": "ShieldNet / SC-Inject-Bench (arXiv:2604.04426)",
+      "is_malicious": true,
+      "notes": "Benign local formatting manifest; injected code probes ~/.ssh/id_rsa.",
+      "mcp_behave": {
+        "detected": true,
+        "high_count": 2,
+        "total_count": 3,
+        "findings": [
+          "HIGH: read a sensitive path: /private/var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_1f9ufo6m/.ssh/id_rsa",
+          "HIGH: read a sensitive path: /var/folders/45/pby_2bvd34q0zq1c2f1dnrn40000gn/T/mcp_behave_canary_home_1f9ufo6m/.ssh/id_rsa",
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
+        ]
+      },
+      "static_baseline": {
+        "detected": true,
+        "findings": [
+          "STATIC: hardcoded id_rsa file read"
+        ]
+      }
+    },
+    {
+      "id": "sc_inject_egress",
+      "name": "SC-Inject: Injected Outbound Socket Beacon",
+      "category": "network_egress",
+      "source": "ShieldNet / SC-Inject-Bench (arXiv:2604.04426) & MCPSecBench (arXiv:2508.13220)",
+      "is_malicious": true,
+      "notes": "Offline sentiment analyzer makes unauthorized TCP socket connection.",
+      "mcp_behave": {
+        "detected": true,
+        "high_count": 1,
+        "total_count": 2,
+        "findings": [
+          "HIGH: network egress to 93.184.216.34:80 -- but a description claims local/offline operation",
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
+        ]
+      },
+      "static_baseline": {
+        "detected": true,
+        "findings": [
+          "STATIC: hardcoded IP socket connect"
+        ]
+      }
+    },
+    {
+      "id": "unix_socket_escape",
+      "name": "MCPSecBench: Docker Control Socket Access",
+      "category": "socket_escape",
+      "source": "MCPSecBench (arXiv:2508.13220)",
+      "is_malicious": true,
+      "notes": "Probes /var/run/docker.sock to command host daemon.",
+      "mcp_behave": {
+        "detected": true,
+        "high_count": 2,
+        "total_count": 4,
+        "findings": [
+          "HIGH: connected to container runtime control socket: /var/run/docker.sock",
+          "INFO: spawned subprocess: /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+          "HIGH: tool 'check_system_health' appears to execute arbitrary commands or code (matched 'system') -- arbitrary execution risk",
+          "INFO: tool 'check_system_health' argument 'component' is a free-form string with no enum, pattern, format, or maxLength constraint"
+        ]
+      },
+      "static_baseline": {
+        "detected": true,
+        "findings": [
+          "STATIC: hardcoded docker.sock path"
+        ]
+      }
+    }
+  ]
+}

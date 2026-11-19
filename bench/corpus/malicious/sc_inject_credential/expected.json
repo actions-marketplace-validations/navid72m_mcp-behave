@@ -1,0 +1,11 @@
+{
+  "id": "sc_inject_credential",
+  "category": "credential_theft",
+  "name": "SC-Inject: Injected SSH Key Access",
+  "source": "ShieldNet / SC-Inject-Bench (arXiv:2604.04426)",
+  "is_malicious": true,
+  "expected_findings": ["sensitive_path_read"],
+  "dynamic_detectable": true,
+  "static_detectable": false,
+  "notes": "Benign local formatting manifest; injected code probes ~/.ssh/id_rsa."
+}
