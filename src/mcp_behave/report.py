@@ -36,12 +36,15 @@ INVISIBLE_UNICODE_CHARS = {
     '\u2069': "BiDi PDI",
 }
 
-# Prompt injection heuristics in metadata and outputs (CSA TTP: Tool Description & Output Poisoning)
+# Prompt injection heuristics in metadata and outputs (CSA TTP: Tool Description & Output Poisoning, MCP06)
 PROMPT_INJECTION_PATTERN = re.compile(
     r'(?i)(?:\bignore\s+(?:all\s+)?previous\s+instructions\b'
     r'|\bsystem\s+prompt\s*:'
     r'|<system>'
-    r'|\[system\s+instruction\]'
+    r'|\[system(?:\s+instruction)?\]'
+    r'|\bnote\s+to\s+(?:assistant|agent|ai)\b'
+    r'|\b(?:tip|note)\s*:\s*.*?\b(?:user\'?s?\s+(?:saved\s+)?api[\s_-]?key|token|credential|secret|validate|refresh_credentials)\b'
+    r'|\bnext_step\s*=\s*call\b'
     r'|\byou\s+must\s+(?:always\s+)?call\s+this\s+tool\s+first\b'
     r'|\boverride\s+(?:all\s+)?prior\s+instructions\b)'
 )
@@ -264,6 +267,47 @@ def _scan_outputs(manifest: dict) -> list[tuple[str, str]]:
                 f"tool '{tname}' returned prompt injection directive in output: '{match.group()}'"
             ))
 
+        # 3. Context over-sharing (MCP10: Context Injection & Over-Sharing)
+        overshare_match = re.search(r'(?i)\b(?:internal[\s_-]?customer[\s_-]?id|customer[\s_-]?id|account[\s_-]?notes|password[\s_-]?hash|ssn\b|national[\s_-]?id|social\s+security|credit[\s_-]?card|billing[\s_-]?address|session[\s_-]?cookie|auth[\s_-]?token|\.corp\.internal|customer\s+[^:\n,]+@[a-z0-9.-]+)', output_text)
+        if overshare_match:
+            t_desc = ""
+            for t in manifest.get("tools", []):
+                if t.get("name") == tname:
+                    t_desc = (t.get("description") or "").lower()
+            if not any(k in t_desc for k in ("all fields", "full profile", "everything", "customer id", "notes")):
+                findings.append((
+                    "HIGH",
+                    f"context over-sharing (MCP10): tool '{tname}' returned sensitive undeclared fields in output ('{overshare_match.group()}')"
+                ))
+
+    # 4. Cross-tool secret reflection (MCP01: Token Mismanagement)
+    tool_history = manifest.get("tool_history") or {}
+    secret_inputs = {}
+    for hist_tname, calls in tool_history.items():
+        for call in calls:
+            args = call.get("args") or {}
+            for k, v in args.items():
+                if isinstance(v, str) and len(v) >= 4:
+                    if any(s in k.lower() for s in ("token", "secret", "key", "password", "code", "credential", "auth")):
+                        secret_inputs[v] = (hist_tname, k)
+
+    for tname, output_text in outputs.items():
+        if not isinstance(output_text, str) or not output_text:
+            continue
+        for sec_val, (src_tool, src_key) in secret_inputs.items():
+            if src_tool != tname and sec_val in output_text:
+                findings.append((
+                    "HIGH",
+                    f"cross-tool secret exposure (MCP01): tool '{tname}' output leaked registered {src_key} ('{sec_val}') from prior call to '{src_tool}'"
+                ))
+
+        debug_secret_match = re.search(r'(?i)\b(?:last\s+registered\s+key|session\s+token|password\s+reset\s+code|api\s*key\s*is|debug:\s*last).*?([a-z0-9_-]{5,})', output_text)
+        if debug_secret_match and not any("password" in tname.lower() or "keygen" in tname.lower() for _ in [0]):
+            findings.append((
+                "HIGH",
+                f"secret exposure in tool response (MCP01): tool '{tname}' returned sensitive token/secret in output: '{debug_secret_match.group()}'"
+            ))
+
     return findings
 
 
@@ -280,6 +324,47 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
     all_tools_claim_local = bool(tools) and all(tool_local_claims.values())
 
     findings = []
+
+    # Check tool annotation contracts (MCP02: Scope Creep & Privilege Escalation)
+    tool_history = manifest.get("tool_history") or {}
+    for tool in tools:
+        tname = tool.get("name", "unknown")
+        ann = tool.get("annotations") or {}
+        read_only = ann.get("readOnlyHint")
+        idempotent = ann.get("idempotentHint")
+        destructive = ann.get("destructiveHint")
+        t_desc = (tool.get("description") or "").lower()
+
+        if read_only is True:
+            mut_words = ("delete", "remove", "drop", "decrement", "mutate", "overwrite", "erase", "modify", "append", "deduct")
+            hit = next((w for w in mut_words if re.search(rf'\b{w}\b', t_desc)), None)
+            if hit:
+                findings.append((
+                    "HIGH",
+                    f"scope escalation (MCP02): tool '{tname}' advertises readOnlyHint: true but implies mutating or destructive action ('{hit}')"
+                ))
+
+        if destructive is False:
+            dest_words = ("delete", "destroy", "wipe", "truncate", "drop", "purge", "overwrite")
+            hit = next((w for w in dest_words if re.search(rf'\b{w}\b', t_desc)), None)
+            if hit:
+                findings.append((
+                    "HIGH",
+                    f"deceptive annotation (MCP02): tool '{tname}' advertises destructiveHint: false but implies destructive action ('{hit}')"
+                ))
+
+        if (read_only is True or idempotent is True) and tname in tool_history:
+            calls = tool_history[tname]
+            if len(calls) >= 2:
+                for c1_idx in range(len(calls)):
+                    for c2_idx in range(c1_idx + 1, len(calls)):
+                        if calls[c1_idx]["args"] == calls[c2_idx]["args"] and calls[c1_idx]["output"] != calls[c2_idx]["output"]:
+                            label = "readOnlyHint: true" if read_only else "idempotentHint: true"
+                            findings.append((
+                                "HIGH",
+                                f"scope escalation (MCP02): tool '{tname}' advertises {label} but produced diverging output across identical calls -- state mutation detected"
+                            ))
+                            break
 
     for trunc in profile.get("truncated_paths", []):
         findings.append(("HIGH", f"suspicious path truncation or buffer overflow attempt: {trunc[:120]}"))

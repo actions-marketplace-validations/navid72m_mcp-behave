@@ -318,6 +318,10 @@ def synth_args(schema: dict | None, round_idx: int = 0) -> dict:
         ("file", ["/tmp/sample_file.txt", "/tmp/audit_test.dat", "/tmp/local_document.json"]),
         ("dir", ["/tmp", "/var/tmp"]),
         ("email", ["admin@example.com", "service@example.org"]),
+        ("token", ["mcp-probe-token-sec-99", "mcp-probe-token-sec-88"]),
+        ("secret", ["mcp-probe-secret-8877", "mcp-probe-secret-6655"]),
+        ("key", ["mcp-probe-key-12345", "mcp-probe-key-67890"]),
+        ("password", ["mcp-probe-pass-4321", "mcp-probe-pass-8765"]),
         ("host", ["example.com", "example.org"]),
         ("query", ["system status overview", "service health check", "operational metrics"]),
         ("search", ["system status overview", "service health check", "operational metrics"]),
@@ -449,8 +453,26 @@ async def _discover_manifest(session: ClientSession):
 
     tools_result = await _list_safely(session.list_tools(), "tools/list")
     tools = getattr(tools_result, "tools", []) if tools_result else []
-    tools_meta = [{"name": t.name, "description": t.description,
-                   "inputSchema": t.inputSchema} for t in tools]
+    tools_meta = []
+    for t in tools:
+        t_meta = {
+            "name": t.name,
+            "description": t.description,
+            "inputSchema": t.inputSchema,
+        }
+        if hasattr(t, "annotations") and t.annotations:
+            ann = t.annotations
+            if hasattr(ann, "model_dump"):
+                t_meta["annotations"] = ann.model_dump(exclude_none=True)
+            elif isinstance(ann, dict):
+                t_meta["annotations"] = ann
+            else:
+                t_meta["annotations"] = {
+                    k: getattr(ann, k)
+                    for k in ("readOnlyHint", "idempotentHint", "destructiveHint")
+                    if hasattr(ann, k) and getattr(ann, k) is not None
+                }
+        tools_meta.append(t_meta)
 
     res_result = await _list_safely(session.list_resources(), "resources/list")
     resources = getattr(res_result, "resources", []) if res_result else []
@@ -484,6 +506,7 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
     stats = {"tools": {"called": 0, "ok": 0}, "resources": {"called": 0, "ok": 0},
              "prompts": {"called": 0, "ok": 0}}
     tool_outputs = {}
+    tool_history = {}
 
     tools_meta, resources_meta, prompts_meta = await _discover_manifest(session)
 
@@ -493,7 +516,11 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
         if rounds > 1:
             print(f"[probe] --- probe round {round_idx + 1}/{rounds} ---")
         for t in tools_meta:
-            args = synth_args(t.get("inputSchema"), round_idx=round_idx)
+            ann = t.get("annotations") or {}
+            # If tool claims to be idempotent or read-only, repeat round 0 arguments in round 1
+            # to verify idempotency and detect hidden state mutation
+            r_idx = 0 if (round_idx == 1 and (ann.get("idempotentHint") or ann.get("readOnlyHint"))) else round_idx
+            args = synth_args(t.get("inputSchema"), round_idx=r_idx)
             print(f"[probe] calling tool {t['name']}({json.dumps(args)})")
             stats["tools"]["called"] += 1
             _emit_trace_marker(trace_file, "CALL_START", t["name"])
@@ -503,8 +530,9 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
             if ok:
                 stats["tools"]["ok"] += 1
                 text = _extract_text_content(res)
-                if text and (t["name"] not in tool_outputs or round_idx == 0):
+                if text:
                     tool_outputs[t["name"]] = text
+                    tool_history.setdefault(t["name"], []).append({"args": args, "output": text, "round": round_idx})
 
             if fuzz and round_idx == 0:
                 fuzz_arg_sets = synth_fuzz_args(t.get("inputSchema"))
@@ -549,14 +577,14 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
         if ok:
             stats["prompts"]["ok"] += 1
 
-    return tools_meta, resources_meta, prompts_meta, stats, tool_outputs
+    return tools_meta, resources_meta, prompts_meta, stats, tool_outputs, tool_history
 
 
 def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
                     tool_outputs: dict | None = None,
                     *, transport: str, syscalls_available: bool,
                     manifest_file: str | None = None, trace_file: str | None = None,
-                    sandbox: str | None = None):
+                    sandbox: str | None = None, tool_history: dict | None = None):
     m_file = manifest_file or MANIFEST
     t_file = trace_file or TRACE_FILE
     manifest = {
@@ -568,6 +596,7 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
         "resources": resources_meta,
         "prompts": prompts_meta,
         "tool_outputs": tool_outputs or {},
+        "tool_history": tool_history or {},
         "manifest_sha256": hashlib.sha256(
             json.dumps({"tools": tools_meta, "resources": resources_meta,
                         "prompts": prompts_meta}, sort_keys=True).encode()
@@ -644,7 +673,7 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
 
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
-                tools_meta, resources_meta, prompts_meta, stats, tool_outputs = await _exercise(
+                tools_meta, resources_meta, prompts_meta, stats, tool_outputs, tool_history = await _exercise(
                     session, call_timeout, fuzz=fuzz, trace_file=target_trace_file, rounds=rounds)
 
         stats["rounds"] = rounds
@@ -654,7 +683,7 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
                         tool_outputs=tool_outputs,
                         transport="stdio", syscalls_available=syscalls_available,
                         manifest_file=target_manifest_file, trace_file=target_trace_file,
-                        sandbox=active_sandbox)
+                        sandbox=active_sandbox, tool_history=tool_history)
     finally:
         if canary_dir and os.path.exists(canary_dir):
             try:

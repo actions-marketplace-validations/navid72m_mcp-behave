@@ -38,7 +38,7 @@ MUTATING_VERBS = (
 )
 
 CONFIRM_HINTS = (
-    "confirm", "confirmation", "acknowledge", "force", "dry_run", "dryrun", "yes", "approve",
+    "confirm", "confirmation", "acknowledge", "force", "dry_run", "dryrun", "yes", "approve", "role", "auth", "token", "permission", "requester",
 )
 
 PATH_ARG_KEYWORDS = (
@@ -203,7 +203,8 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
                 ))
 
         # Check: Destructive Action Missing Confirmation (MCP001)
-        destructive_hit = next((v for v in DESTRUCTIVE_VERBS if v in haystack), None)
+        is_query_tool = tname.startswith(("is_", "was_", "get_", "check_", "list_", "has_", "find_")) or bool(read_only)
+        destructive_hit = None if is_query_tool else next((v for v in DESTRUCTIVE_VERBS if v in haystack), None)
         schema = tool.get("inputSchema") or {}
         props = schema.get("properties") or {}
 
@@ -263,8 +264,10 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
             if is_path_param and is_string:
                 has_constraints = bool(pdef.get("pattern") or pdef.get("enum"))
                 if not has_constraints:
+                    is_read_tool = any(w in tname.lower() for w in ("read", "get", "cat", "view", "show", "open"))
+                    sev = "INFO" if is_read_tool else "HIGH"
                     findings.append((
-                        "HIGH",
+                        sev,
                         f"tool '{tname}' argument '{pname}' accepts unconstrained filesystem path without pattern or enum validation -- path traversal risk"
                     ))
 
