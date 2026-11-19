@@ -41,6 +41,23 @@ CONFIRM_HINTS = (
     "confirm", "confirmation", "acknowledge", "force", "dry_run", "dryrun", "yes", "approve", "role", "auth", "token", "permission", "requester",
 )
 
+
+def _match_verb(verbs, text: str | None) -> str | None:
+    """Match verbs using word boundaries and inflections to avoid false positives (e.g. 'put' in 'input', 'sh' in 'shows')."""
+    if not text:
+        return None
+    for v in verbs:
+        v_clean = v.strip()
+        if not v_clean:
+            continue
+        if v_clean == "system":
+            if re.search(r'(?<!\bfile\s)(?<!\boperating\s)\bsystem\b', text, re.IGNORECASE):
+                return "system"
+        else:
+            if re.search(r'\b' + re.escape(v_clean) + r'(?:s|ed|ing|d|es)?\b', text, re.IGNORECASE):
+                return v_clean
+    return None
+
 PATH_ARG_KEYWORDS = (
     "path", "file", "filename", "filepath", "dir", "directory", "location",
 )
@@ -186,7 +203,7 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
             ))
 
         # Check: Arbitrary Execution Tool (MCP002)
-        exec_hit = next((v for v in EXEC_VERBS if v in tname.lower() or (tdesc and v in tdesc.lower())), None)
+        exec_hit = _match_verb(EXEC_VERBS, tname) or _match_verb(EXEC_VERBS, tdesc)
         if exec_hit:
             findings.append((
                 "HIGH",
@@ -195,7 +212,7 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
 
         # Check: readOnlyHint Mismatch (MCP004)
         if read_only:
-            hit = next((v for v in MUTATING_VERBS if v in haystack), None)
+            hit = _match_verb(MUTATING_VERBS, haystack)
             if hit:
                 findings.append((
                     "HIGH",
@@ -204,7 +221,7 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
 
         # Check: Destructive Action Missing Confirmation (MCP001)
         is_query_tool = tname.startswith(("is_", "was_", "get_", "check_", "list_", "has_", "find_")) or bool(read_only)
-        destructive_hit = None if is_query_tool else next((v for v in DESTRUCTIVE_VERBS if v in haystack), None)
+        destructive_hit = None if is_query_tool else _match_verb(DESTRUCTIVE_VERBS, haystack)
         schema = tool.get("inputSchema") or {}
         props = schema.get("properties") or {}
 
@@ -221,7 +238,7 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
 
         # Check: Deceptive destructiveHint: false Annotation
         if annotations.get("destructiveHint") is False:
-            deceptive_hit = next((v for v in ("overwrite", "reset", "clear", "wipe", "flush", *DESTRUCTIVE_VERBS) if v in haystack), None)
+            deceptive_hit = _match_verb(("overwrite", "reset", "clear", "wipe", "flush", *DESTRUCTIVE_VERBS), haystack)
             if deceptive_hit:
                 findings.append((
                     "HIGH",
@@ -238,7 +255,7 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
             ))
 
         # Check: Mutating Tool with Unscoped Input (MCP003)
-        write_hit = next((v for v in WRITE_VERBS if v in haystack), None)
+        write_hit = _match_verb(WRITE_VERBS, haystack)
         if write_hit and not destructive_hit and len(props) == 0:
             findings.append((
                 "INFO",
