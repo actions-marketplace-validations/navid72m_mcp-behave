@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: "Community Survey & Feedback Form"
+    url: "https://navid72m.github.io/mcp-behave/survey.html"
+    about: "Fill out the 2-minute web survey to give feedback on mcp-behave."

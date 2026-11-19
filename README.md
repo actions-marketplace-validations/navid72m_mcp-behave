@@ -16,6 +16,7 @@
   <a href="https://www.npmjs.com/package/mcp-behave"><img src="https://img.shields.io/npm/v/mcp-behave.svg" alt="npm version" /></a>
   <a href="https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.navid72m/mcp-behave"><img src="https://img.shields.io/badge/MCP%20Registry-io.github.navid72m%2Fmcp--behave-blue" alt="Official MCP Registry" /></a>
   <a href="https://glama.ai/mcp/servers/navid72m/mcp-behave"><img src="https://glama.ai/mcp/servers/navid72m/mcp-behave/badges/score.svg" alt="Glama Score" /></a>
+  <a href="https://github.com/navid72m/mcp-behave/issues/new?template=feedback.yml"><img src="https://img.shields.io/badge/Community-Feedback%20Survey-8a2be2" alt="Community Survey" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
 </p>
 
@@ -44,6 +45,8 @@ Static scanners only read tool descriptions. `mcp-behave` observes what servers 
 > 🏗️ **Architecture & Systems Internals**: See [`ARCHITECTURE.md`](ARCHITECTURE.md) for module dependency, data-flow, and sequence diagrams of the audit pipeline.
 >
 > 🛡️ **Empirically Proven**: Evaluated across major public benchmark suites: **90% Recall & 0% FPR** on the [Twin-Server SafeMCP Corpus](BENCHMARK.md) (17 servers), **100% Prevention & 0% FPR** on [CrossMCP-Bench](https://huggingface.co/datasets/MLZoo/CrossMCP-Bench) (134 multi-server scenarios), **100% Detection & Prevention** on [MCP-GuardBench](https://github.com/Manishmaurya89/mcp-guardbench), **100% Precision** on [Pluto MCP Visibility Bench](https://github.com/plutosecurity/pluto-mcp-visibility-bench), and tested against **7 official reference MCP servers** (`modelcontextprotocol/servers`) across an automated 15-test adversarial validation campaign. [View Full Benchmark Results &rarr;](#security-benchmarks)
+>
+> 💬 **Share Your Feedback**: Have 2 minutes? Take our **[Community Feedback Survey](https://github.com/navid72m/mcp-behave/issues/new?template=feedback.yml)** (or use the [Web Form](https://navid72m.github.io/mcp-behave/survey.html)) to help steer our roadmap and report usability friction.
 
 ## The idea in one contrast
 
@@ -728,6 +731,14 @@ CI tests across Ubuntu and macOS; see `.github/workflows/ci.yml`.
 - **Runtime tracing operates at libc interposition level.** macOS (DYLD interposition) and Linux (LD_PRELOAD) intercept standard dynamic runtime library calls (Python, Node.js, Ruby). Statically linked binaries (e.g. Go, musl Rust) and inline assembly syscalls bypass libc interposition unless run under the Linux `strace` tracer (`--tracer strace`) or the planned kernel eBPF backend — see [ROADMAP.md](ROADMAP.md).
 - **stdio is the primary transport with full runtime tracing.** `sse` and `streamable-http` connect to remote servers where client-side process tracing is not available; manifest analysis, CSA rule linting, and rug-pull detection run there.
 - **Canary & Fuzzing synthesis** — generates realistic, diverse arguments across `--probe-rounds` and adversarial boundary vectors with `--fuzz`. Full property-based hypothesis fuzzing is planned for v0.4.x.
+
+## 💬 Community Feedback & Survey
+
+We want to hear from you! Whether you are building MCP servers, auditing enterprise tools, or evaluating AI agent runtime safety, your real-world feedback directly guides `mcp-behave`'s detection engine and roadmap.
+
+- 📝 **[Take the 2-Minute Survey (GitHub Issue Form)](https://github.com/navid72m/mcp-behave/issues/new?template=feedback.yml)** — structured form right inside GitHub with zero third-party accounts required.
+- 🌐 **[Take the Survey (Web Form)](https://navid72m.github.io/mcp-behave/survey.html)** — interactive browser form with one-click issue generation and markdown export.
+- 💡 **[Feature Requests & Ideas](https://github.com/navid72m/mcp-behave/issues)** — open an issue or report false positives.
 
 ## License
 
