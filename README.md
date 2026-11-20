@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/navid72m/mcp-behave/actions/workflows/ci.yml"><img src="https://github.com/navid72m/mcp-behave/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/search?q=navid72m+mcp-behave+path%3A.github%2Fworkflows+language%3AYAML&type=Code"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/navid72m/mcp-behave/main/docs/mcp-behave.json" alt="Action Users" /></a>
   <a href="https://navid72m.github.io/mcp-behave/"><img src="https://img.shields.io/badge/Website-mcp--behave-cyan" alt="Website" /></a>
   <a href="https://pypi.org/project/mcp-behave/"><img src="https://img.shields.io/pypi/v/mcp-behave.svg" alt="PyPI version" /></a>
   <a href="https://pepy.tech/projects/mcp-behave"><img src="https://static.pepy.tech/personalized-badge/mcp-behave?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads" alt="PyPI Downloads" /></a>

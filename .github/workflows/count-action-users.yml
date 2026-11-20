@@ -1,0 +1,26 @@
+name: count-action-users
+
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  count:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate user count JSON endpoint
+        uses: cicirello/count-action-users@v1
+        with:
+          action-list: navid72m/mcp-behave
+          target-directory: docs
+          fail-on-error: false
+          color: '#06b6d4'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
