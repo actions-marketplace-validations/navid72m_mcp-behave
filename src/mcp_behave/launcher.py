@@ -13,7 +13,45 @@ import re
 import signal
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+
+def get_tracer_environment(
+    resolved_binary: str,
+    enable_trace: bool = True,
+) -> Tuple[Dict[str, str], Optional[str]]:
+    """Determine dynamic tracer interposition library and environment.
+
+    Returns:
+        (tracer_env_dict, disabled_reason_or_none)
+    """
+    if not enable_trace:
+        return {}, "disabled_by_config"
+
+    import platform
+    from .probe import _linux_tracer_so, _macos_tracer_dylib, _target_is_hardened
+
+    sys_name = platform.system()
+    if sys_name == "Darwin":
+        # Check hardened runtime (SIP/hardened binaries refuse injection)
+        is_hardened = _target_is_hardened(resolved_binary)
+        if is_hardened:
+            return {}, "hardened_runtime"
+
+        dylib_path = _macos_tracer_dylib()
+        if not dylib_path or not os.path.isfile(dylib_path):
+            return {}, "no_compiler"
+
+        return {"DYLD_INSERT_LIBRARIES": dylib_path}, None
+
+    elif sys_name == "Linux":
+        so_path = _linux_tracer_so()
+        if not so_path or not os.path.isfile(so_path):
+            return {}, "no_compiler"
+
+        return {"LD_PRELOAD": so_path}, None
+
+    return {}, "unsupported_os"
 
 
 def derive_server_id(server_cmd: List[str]) -> str:

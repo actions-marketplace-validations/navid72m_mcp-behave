@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from .bus import EventBus
+from .attribution import AttributionEngine
 from .canary import CanaryManager
 from .events import (
     BehavioralEvent,
@@ -25,10 +26,17 @@ from .events import (
     KIND_SESSION_START,
 )
 from .identity import resolve_package_identity
-from .launcher import derive_server_id, spawn_child_server, terminate_process_group
+from .launcher import (
+    derive_server_id,
+    get_tracer_environment,
+    resolve_server_executable,
+    spawn_child_server,
+    terminate_process_group,
+)
 from .lockfile import Lockfile, ServerLock, load_lockfile
 from .protocol import ProtocolMonitor, StreamingFramer
 from .telemetry import TelemetryStore
+from .tracer_server import TracerServer
 
 
 def send_macos_notification(title: str, message: str) -> None:
@@ -143,6 +151,7 @@ async def run_proxy(
     enable_content_scan: bool = True,
     lockfile_path: Optional[str] = None,
     enforce: bool = False,
+    enable_trace: bool = True,
     stdin_reader_override: Optional[asyncio.StreamReader] = None,
     stdout_writer_override: Optional[asyncio.StreamWriter] = None,
 ) -> int:
@@ -178,6 +187,13 @@ async def run_proxy(
     if isinstance(lockfile, Lockfile):
         server_lock = lockfile.get_server(eff_server_id)
 
+    # Attribution Engine (Milestone 4)
+    attribution_engine = AttributionEngine(
+        server_id=eff_server_id,
+        server_lock=server_lock,
+        enforce=enforce,
+    )
+
     monitor = ProtocolMonitor(
         session_id=session_id,
         server_id=eff_server_id,
@@ -195,11 +211,44 @@ async def run_proxy(
         server_lock=server_lock,
         enforce=enforce,
         live_identity=live_identity,
+        attribution_engine=attribution_engine,
     )
 
-    # Spawn child server process in its own process group
+    # OS Syscall Interposition Tracer (Milestone 4)
+    tracer_server: Optional[TracerServer] = None
+    tracer_child_env: Dict[str, str] = {}
+    tracing_status = "disabled"
+    tracing_reason = None
+
+    def on_os_event(evt: BehavioralEvent) -> None:
+        attributed_evt, violations = attribution_engine.attribute_os_event(evt)
+        bus.publish_sync(attributed_evt)
+        telemetry.record(attributed_evt)
+        for v in violations:
+            bus.publish_sync(v)
+            telemetry.record(v)
+            monitor._emit_alert(v)
+
+    resolved_binary, _ = resolve_server_executable(server_cmd[0])
+
+    if enable_trace:
+        interposer_env, disabled_reason = get_tracer_environment(resolved_binary, enable_trace=True)
+        if not disabled_reason and interposer_env:
+            tracer_server = TracerServer(session_id=session_id, on_event_fn=on_os_event, loop=loop)
+            trace_sock_env = tracer_server.start()
+            tracer_child_env.update(trace_sock_env)
+            tracer_child_env.update(interposer_env)
+            tracing_status = "active"
+        else:
+            tracing_status = "disabled"
+            tracing_reason = disabled_reason or "tracer_unavailable"
+    else:
+        tracing_status = "disabled"
+        tracing_reason = "disabled_by_config"
+
+    # Spawn child server process in its own process group with tracer environment
     child_proc, resolved_cmd0, resolved_sha256 = await spawn_child_server(
-        server_cmd, augment_path=augment_path
+        server_cmd, env=tracer_child_env, augment_path=augment_path
     )
 
     # Emit session start event with resolved binary and checksum
@@ -225,7 +274,7 @@ async def run_proxy(
     await bus.publish(start_event)
     telemetry.record(start_event)
 
-    # In M1, emit os_tracing=disabled (M4 will integrate dylib/eBPF runtime tracing)
+    # Emit OS tracing status event (Milestone 4)
     os_event = BehavioralEvent(
         event="os_tracing_status",
         session_id=session_id,
@@ -234,7 +283,11 @@ async def run_proxy(
         timestamp=time.time(),
         source="monitor",
         evidence_tier="observed",
-        payload={"status": "disabled"},
+        payload={
+            "status": tracing_status,
+            "reason": tracing_reason,
+            "backend": "interposition" if tracing_status == "active" else None,
+        },
     )
     await bus.publish(os_event)
     telemetry.record(os_event)
@@ -378,6 +431,9 @@ async def run_proxy(
         except (NotImplementedError, ValueError):
             pass
 
+    if tracer_server:
+        tracer_server.close()
+
     monitor.close(timeout=2.0)
     bus.close()
     telemetry.close(timeout=2.0)
@@ -472,6 +528,10 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
         "--enforce", action="store_true",
         help="Strictly enforce behavioral lockfile policies (default: warn only).",
     )
+    parser.add_argument(
+        "--no-trace", action="store_true",
+        help="Disable low-level OS syscall tracing (runs protocol-only monitoring).",
+    )
 
     args = parser.parse_args(wrap_args)
 
@@ -497,6 +557,7 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
             enable_content_scan=not args.no_content_scan,
             lockfile_path=args.lockfile,
             enforce=args.enforce,
+            enable_trace=not args.no_trace,
         ))
     except KeyboardInterrupt:
         return 130

@@ -109,6 +109,7 @@ class ProtocolMonitor:
         server_lock: Optional[Any] = None,
         enforce: bool = False,
         live_identity: Optional[Dict[str, Any]] = None,
+        attribution_engine: Optional[Any] = None,
     ):
         self.session_id = session_id
         self.server_id = server_id
@@ -120,6 +121,7 @@ class ProtocolMonitor:
         self.server_lock = server_lock
         self.enforce = enforce
         self.live_identity = live_identity
+        self.attribution_engine = attribution_engine
 
         # Payload content and canary scanner (Milestone 2b)
         self.canary_mgr = canary_mgr or CanaryManager()
@@ -389,6 +391,14 @@ class ProtocolMonitor:
                             self.telemetry.record(se)
                             self._emit_alert(se)
 
+                    if self.attribution_engine and tool_name and msg_id is not None:
+                        tool_ann = None
+                        if self.manifest_tracker and self.manifest_tracker.tools_baseline:
+                            tool_def = self.manifest_tracker.tools_baseline.get(tool_name)
+                            if tool_def and isinstance(tool_def, dict):
+                                tool_ann = tool_def.get("annotations")
+                        self.attribution_engine.on_tool_call_start(msg_id, tool_name, now, annotations=tool_ann)
+
                 if self.manifest_tracker:
                     if msg_id is not None:
                         self.manifest_tracker.record_client_id_style(msg_id)
@@ -484,6 +494,9 @@ class ProtocolMonitor:
                 tool_name = req_info.get("tool_name") if req_info else None
                 method = req_info.get("method") if req_info else None
                 duration_ms = (now - start_ts) * 1000.0 if start_ts is not None else None
+
+                if method == "tools/call" and self.attribution_engine and msg_id is not None:
+                    self.attribution_engine.on_tool_call_end(msg_id, now)
 
                 is_error = "error" in msg
                 content_obj = msg.get("error") if is_error else msg.get("result")

@@ -124,3 +124,35 @@ This document records key architectural and design decisions made across milesto
   - Parse and index the lockfile in memory at proxy startup into an $O(1)$ tool hash map ($< 0.005$ ms check).
   - Lockfile writes employ atomic file replacement (`tempfile.NamedTemporaryFile` + `os.replace`) guarded by an advisory flock (`fcntl.flock(LOCK_EX)`) on `mcp-behave.lock.json.lock`.
 - **Status**: Implemented & verified.
+
+---
+
+## Milestone 4 Decisions (OS-Layer Telemetry Integration)
+
+### ADR-014: Non-Blocking Asynchronous Tracer Channel & Drop Safeguards
+- **Context**: Real-time syscall tracing via libc interposition must never block or crash the monitored target server. Darwin `struct sockaddr_un.sun_path` is strictly capped at 104 bytes, while temporary test directories often exceed 120 bytes.
+- **Decision**:
+  - Enforce short socket path placement in `/tmp/mcpb_<session_id[:8]>.sock` (< 30 bytes) or inherited non-blocking socketpair file descriptors (`MCP_BEHAVE_TRACE_FD`).
+  - Interposition dylib emits via `send(MSG_DONTWAIT)` with reentrancy guards (`__thread int g_busy`).
+  - If the socket buffer is saturated (`EAGAIN`/`EWOULDBLOCK`), increment a thread-local drop counter without blocking child execution, emitting a `! DROPPED <count>` marker upon buffer recovery.
+  - Proxy consumes trace datagrams off the hot path via `TracerServer` on a non-blocking asyncio socket reader, preserving stdio line forwarding performance.
+- **Status**: Implemented & verified.
+
+### ADR-015: In-Flight Tool Attribution & Disambiguation for Concurrent Tool Calls
+- **Context**: Low-level OS syscalls (file opens, writes, network connects, subprocess executions) must be mapped to the high-level MCP tool call that triggered them, including under asynchronous or overlapping client request pipelines.
+- **Decision**:
+  - Implement an in-memory `AttributionEngine` tracking active tool call spans `(request_id, tool_name, start_ts, annotations)`.
+  - For a single tool in flight, attribute OS events with `evidence_tier = "observed"`.
+  - For concurrent/overlapping tool calls, attribute OS events to all active candidates with `evidence_tier = "correlated"` and tag ambiguity (`ambiguous: True`).
+  - For events occurring outside tool calls (startup, initialization, background threads), attribute to `<lifecycle>` scope with `evidence_tier = "observed"`.
+- **Status**: Implemented & verified.
+
+### ADR-016: Runtime Safety Hint Policy Correlation Engine
+- **Context**: MCP tools declare safety hints (`readOnlyHint`, `openWorldHint`, `destructiveHint`), but hostile or compromised servers can violate these hints at the syscall level.
+- **Decision**:
+  - Evaluate observed syscall operations against effective tool safety hints:
+    - `readOnlyHint=True` violated by `file_write` $\to$ emit `read_only_violation`, `SEVERITY_HIGH`, `would_block: True`.
+    - `openWorldHint=False` violated by non-loopback `network_connect` $\to$ emit `open_world_violation`, `SEVERITY_HIGH`, `would_block: True`.
+    - `destructiveHint=False` violated by destructive modifications $\to$ emit `destructive_violation`, `SEVERITY_HIGH`, `would_block: True`.
+    - Any tool accessing confidential paths (`.ssh`, `.aws`, `.env`, private keys) via `analyze.is_sensitive_path()` $\to$ emit `secret_exposure`, `SEVERITY_HIGH` / `SEVERITY_CRITICAL`, `would_block: True`.
+- **Status**: Implemented & verified.

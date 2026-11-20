@@ -71,43 +71,99 @@ static fn_posix_spawn_t real_posix_spawnp = NULL;
 
 /* ---- trace sink ------------------------------------------------------- */
 static int g_trace_fd = -1;
+static int g_is_socket = 0;
 /* Reentrancy guard: our logging path must never itself be logged. */
 static __thread int g_busy = 0;
+static __thread unsigned long g_dropped_records = 0;
+
+static void init_sink(void) {
+    if (g_trace_fd >= 0) return;
+
+    // 1. Inherited file descriptor (socketpair or non-blocking pipe)
+    const char *fd_env = getenv("MCP_BEHAVE_TRACE_FD");
+    if (fd_env && *fd_env) {
+        int fd = atoi(fd_env);
+        if (fd >= 0) {
+            int fl = fcntl(fd, F_GETFL, 0);
+            if (fl >= 0) {
+                fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+                g_trace_fd = fd;
+                g_is_socket = 1;
+                return;
+            }
+        }
+    }
+
+    // 2. UNIX domain datagram socket
+    const char *sock_path = getenv("MCP_BEHAVE_TRACE_SOCK");
+    if (sock_path && *sock_path) {
+        int s = socket(AF_UNIX, SOCK_DGRAM, 0);
+        if (s >= 0) {
+            struct sockaddr_un un;
+            memset(&un, 0, sizeof(un));
+            un.sun_family = AF_UNIX;
+            strncpy(un.sun_path, sock_path, sizeof(un.sun_path) - 1);
+            fcntl(s, F_SETFL, O_NONBLOCK);
+            if (connect(s, (struct sockaddr *)&un, sizeof(un)) == 0) {
+                g_trace_fd = s;
+                g_is_socket = 1;
+                return;
+            }
+            close(s);
+        }
+    }
+
+    // 3. Fallback to trace file (used by audit)
+    const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
+    if (path && *path) {
+#ifdef SYS_openat
+        g_trace_fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_WRONLY | O_APPEND | O_CREAT, 0600);
+#else
+        g_trace_fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
+#endif
+        g_is_socket = 0;
+    }
+}
 
 static void emit(const char *buf, size_t len) {
     if (g_trace_fd < 0) {
-        const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
-        if (path && *path) {
-#ifdef SYS_openat
-            g_trace_fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-#else
-            g_trace_fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-#endif
-        }
+        init_sink();
     }
-    if (g_trace_fd < 0) return;
+    if (g_trace_fd < 0 || !buf || len == 0) return;
+
+    ssize_t w;
+    if (g_is_socket) {
+        w = send(g_trace_fd, buf, len, MSG_DONTWAIT | MSG_NOSIGNAL);
+    } else {
 #ifdef SYS_write
-    ssize_t w = (ssize_t)syscall(SYS_write, g_trace_fd, buf, len);
+        w = (ssize_t)syscall(SYS_write, g_trace_fd, buf, len);
 #else
-    ssize_t w = write(g_trace_fd, buf, len);
+        w = write(g_trace_fd, buf, len);
 #endif
+    }
+
     if (w < 0) {
-        const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
-        if (path && *path) {
-#ifdef SYS_openat
-            int fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-#else
-            int fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-#endif
-            if (fd >= 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            g_dropped_records++;
+            return;
+        }
+        g_trace_fd = -1;
+        init_sink();
+    } else if (g_dropped_records > 0) {
+        char drop_msg[128];
+        int dn = snprintf(drop_msg, sizeof(drop_msg), "! DROPPED %lu\n", g_dropped_records);
+        if (dn > 0) {
+            if (g_is_socket) {
+                (void)!send(g_trace_fd, drop_msg, (size_t)dn, MSG_DONTWAIT | MSG_NOSIGNAL);
+            } else {
 #ifdef SYS_write
-                (void)!syscall(SYS_write, fd, buf, len);
+                (void)!syscall(SYS_write, g_trace_fd, drop_msg, (size_t)dn);
 #else
-                (void)!write(fd, buf, len);
+                (void)!write(g_trace_fd, drop_msg, (size_t)dn);
 #endif
-                g_trace_fd = fd;
             }
         }
+        g_dropped_records = 0;
     }
 }
 
