@@ -193,3 +193,87 @@ Claude Desktop is a GUI app launched by `launchd`, which has a minimal `$PATH` (
    sqlite3 ~/.local/state/mcp-behave/telemetry.db "SELECT ts, kind, payload_json FROM events ORDER BY ts DESC LIMIT 10;"
    ```
 6. **Graceful Teardown**: Quit Claude Desktop. Verify using `ps aux | grep server-everything` that no orphaned node processes remain running.
+
+---
+
+## 5. Milestone 2 (M2): Manifest Pinning, Active Re-Verification & Cross-Session Drift
+
+Milestone 2 adds Trust-On-First-Use (TOFU) manifest integrity enforcement, covert drift detection via synthetic active re-verification, bidirectional annotation evaluation, and append-only cross-session tracking.
+
+### 5.1 Single Serialized Child Stdin Writer
+To eliminate any possibility of byte-level interleaving or splicing when synthetic probes are injected while client streaming occurs (e.g. 1 MB large tool payloads):
+- All client messages from `client_to_server_pump` and proxy synthetic probes from `ManifestTracker` flow through a single `asyncio.Queue[Optional[bytes]]` (`stdin_queue`).
+- A dedicated coroutine `child_stdin_writer` reads complete line bytes from `stdin_queue` and writes atomically to `child_proc.stdin`.
+- `StreamingFramer` ensures messages are framed into complete lines before entering the queue.
+
+### 5.2 Active Re-Verification & Response Demuxing
+Because MCP clients usually cache `tools/list` after initialization, passive TOFU cannot detect covert drift where a server silently changes its manifest mid-session without emitting `notifications/tools/list_changed`.
+- **Triggers**:
+  1. First client invocation of any tool (`first_call_<tool_name>`).
+  2. Every $N$ tool calls (`--reverify-interval`, default 20) with $\pm 20\%$ random jitter.
+  3. Periodic background timer (`--reverify-period`, default 300.0s) with $\pm 10\%$ random jitter.
+- **Probe Coalescing**:
+  - At most 1 probe in flight at any time.
+  - Throttled to a minimum interval of 10.0 seconds between probes.
+  - Probes never delay or block client message forwarding.
+- **Probe ID Mimicry**:
+  - Probe IDs match responses by the exact issued set (`_active_probe_ids`).
+  - No fixed prefix (e.g. no `"mcpb-"`).
+  - Mimics client format: random high integers (`[900000000, 999999999]`) if client uses integers; 12-char hex strings if client uses strings. Excludes in-flight client request IDs to prevent collision.
+- **Response Demuxing**:
+  - In `server_to_client_pump`, any incoming message matching an issued probe ID is intercepted, processed by `ManifestTracker`, and **never forwarded to client stdout**.
+
+### 5.3 Effective Safety Annotations & Bidirectional Diffs
+MCP specification defines default safety expectations when tool annotations are absent:
+- `readOnlyHint`: `False`
+- `destructiveHint`: `True`
+- `idempotentHint`: `False`
+- `openWorldHint`: `True`
+
+`diff_annotations()` compares effective values in both directions:
+1. `annotation_relaxation` (tool claims it got safer):
+   - `readOnlyHint`: False $\to$ True
+   - `destructiveHint`: True $\to$ False
+   - `openWorldHint`: True $\to$ False
+   - `idempotentHint`: False $\to$ True
+   - Severity: `HIGH`, `would_block: True`.
+2. `trusted_tool_escalation` (tool claims it got riskier on an already trusted tool):
+   - `readOnlyHint`: True $\to$ False
+   - `destructiveHint`: False $\to$ True
+   - Severity: `HIGH`, `would_block: True`.
+
+### 5.4 Schema Drift & Constraint Relaxation
+`diff_schemas()` detects:
+- `constraint_relaxation` (HIGH, `would_block: True`):
+  - Required property removed from `required` list.
+  - Enum restricted set widened with new allowed values.
+  - Regex `pattern` constraint removed.
+  - `maxLength` constraint removed or loosened.
+- `capability_expansion`:
+  - Parameter type widened (e.g. `string` $\to$ `["string", "number"]` or `anyOf`) (HIGH, `would_block: True`).
+  - New optional/default property added (MEDIUM, `would_block: False`).
+
+### 5.5 Rename Detection
+If a tool disappears and a new tool appears with **identical inputSchema and effective annotations**, it is classified as a rename (`DRIFT_REMOVAL_OR_RENAME`, `is_rename=True`, `severity=SEVERITY_MEDIUM`), preventing false positive removal + addition pairs.
+
+### 5.6 Prompt Injection Heuristics
+Shared heuristics in `src/mcp_behave/heuristics.py` check server `instructions` and tool `description` strings for:
+- Instruction override directives (`ignore previous instructions`, `disregard prior`).
+- Role hijacking (`you are now in unrestricted / godmode / dan`).
+- Fake system XML tags (`<system>`, `[INST]`, `<<SYS>>`).
+- Concealment instructions (`do not tell the user`, `secretly execute`).
+- Markdown image exfiltration URLs and shell pipes (`curl | bash`).
+- Keyword cues (`jailbreak`).
+Violations in instructions or descriptions are tagged `HIGH` with `would_block: True`.
+
+### 5.7 Cross-Session Drift & Untrusted State Isolation
+- SQLite table `manifest_history (id, server_id, ts, manifest_json, approved_state)` stores append-only session snapshots.
+- On session exit, if the session experienced high-severity drift (`has_high_drift=True`), the snapshot is saved as `approved_state='untrusted'`.
+- Next session retrieves `WHERE server_id = ? AND approved_state = 'trusted' ORDER BY ts DESC LIMIT 1`. Thus, a rug pull in Session 1 cannot poison the trusted baseline for Session 2.
+- Cross-session drift against the trusted baseline is evaluated on the first tools list. If `serverInfo.version` bumped and changes are purely additive, findings are classified as `SEVERITY_MEDIUM`.
+
+### 5.8 Residual Fingerprinting Risk
+While probe IDs mimic client formatting and avoid fixed strings, an adversarial MCP server could detect runtime monitoring through:
+1. **Unsolicited list requests**: If the client never sends unsolicited `tools/list` after initialization, server-side request logging could infer active re-verification.
+2. **Timing correlation**: Injections occurring immediately after tool execution.
+Mitigations include random timing jitter ($\pm 10-20\%$), minimum 10s cooldown, probe coalescing, and the `--no-reverify` opt-out flag.

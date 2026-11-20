@@ -176,6 +176,20 @@ class TelemetryStore:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_events_server ON events(server_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
+
+                # Append-only cross-session manifest history
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS manifest_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        server_id TEXT NOT NULL,
+                        ts REAL NOT NULL,
+                        manifest_json TEXT NOT NULL,
+                        approved_state TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_manifest_hist ON manifest_history(server_id, approved_state, ts)")
                 conn.commit()
 
             if self.db_file.exists():
@@ -183,6 +197,50 @@ class TelemetryStore:
                     os.chmod(self.db_file, 0o600)
                 except OSError:
                     pass
+        except Exception:
+            pass
+
+    def get_last_trusted_manifest(self, server_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve the most recent trusted manifest for a server_id, or None if never seen."""
+        if not self.db_file.exists():
+            return None
+        try:
+            with sqlite3.connect(self.db_file, timeout=15.0) as conn:
+                conn.execute("PRAGMA busy_timeout = 15000")
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT manifest_json FROM manifest_history
+                    WHERE server_id = ? AND approved_state = 'trusted'
+                    ORDER BY ts DESC LIMIT 1
+                    """,
+                    (server_id,),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    return json.loads(row[0])
+        except Exception:
+            pass
+        return None
+
+    def save_manifest_history(
+        self,
+        server_id: str,
+        manifest: Dict[str, Any],
+        approved_state: str = "trusted",
+    ) -> None:
+        """Append a manifest snapshot to manifest_history with its approved_state ('trusted' | 'untrusted')."""
+        try:
+            with sqlite3.connect(self.db_file, timeout=15.0) as conn:
+                conn.execute("PRAGMA busy_timeout = 15000")
+                conn.execute(
+                    """
+                    INSERT INTO manifest_history (server_id, ts, manifest_json, approved_state)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (server_id, time.time(), json.dumps(manifest), approved_state),
+                )
+                conn.commit()
         except Exception:
             pass
 

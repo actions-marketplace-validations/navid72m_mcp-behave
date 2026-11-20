@@ -10,19 +10,28 @@ import hashlib
 import json
 import queue
 import re
+import sys
 import threading
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Callable, Coroutine, Dict, List, Optional, Tuple
 
 from .bus import EventBus
 from .events import (
     BehavioralEvent,
+    KIND_CROSS_SESSION_DRIFT,
+    KIND_MANIFEST_BASELINE,
+    KIND_MANIFEST_DRIFT,
     KIND_PROTOCOL_ANOMALY,
     KIND_PROTOCOL_NOTIFICATION,
     KIND_PROTOCOL_REQUEST,
     KIND_PROTOCOL_RESPONSE,
     KIND_STDOUT_POLLUTION,
+    KIND_TELEMETRY_DROP,
+    SEVERITY_HIGH,
+    SEVERITY_INFO,
+    SEVERITY_MEDIUM,
 )
+from .manifest import ManifestTracker
 from .telemetry import TelemetryStore, hash_content
 
 
@@ -86,16 +95,37 @@ class ProtocolMonitor:
         telemetry: TelemetryStore,
         log_content: bool = False,
         queue_size: int = 10000,
+        send_probe_fn: Optional[Callable[[bytes], Coroutine[Any, Any, None]]] = None,
+        reverify_interval: int = 20,
+        reverify_period: float = 300.0,
+        enable_reverify: bool = True,
+        notify: bool = False,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self.session_id = session_id
         self.server_id = server_id
         self.bus = bus
         self.telemetry = telemetry
         self.log_content = log_content
+        self.notify = notify
+        self.loop = loop
 
         # Active request tracking: request_id -> {"start_ts": float, "method": str, "tool_name": Optional[str]}
         self._active_requests: Dict[Any, Dict[str, Any]] = {}
         self._lock = threading.Lock()
+
+        # TOFU Manifest and Active Re-verification Tracker
+        self.manifest_tracker = ManifestTracker(
+            session_id=session_id,
+            server_id=server_id,
+            send_probe_fn=send_probe_fn,
+            reverify_interval=reverify_interval,
+            reverify_period=reverify_period,
+            enable_reverify=enable_reverify,
+            loop=loop,
+            on_event_fn=self._on_tracker_event,
+            get_active_ids_fn=self.get_active_request_ids,
+        )
 
         # Non-blocking raw line queue for background parsing and telemetry
         self._line_queue: queue.Queue[Optional[Tuple[bytes, str, float]]] = queue.Queue(maxsize=queue_size)
@@ -106,6 +136,51 @@ class ProtocolMonitor:
             daemon=True,
         )
         self._worker_thread.start()
+
+    def _on_tracker_event(self, event: BehavioralEvent) -> None:
+        """Callback for tracker events (e.g. from pagination timeout)."""
+        self.bus.publish_sync(event)
+        self.telemetry.record(event)
+        self._emit_alert(event)
+
+    def _emit_alert(self, event: BehavioralEvent) -> None:
+        """Emit clean stderr alert on HIGH drift / would_block, and optional macOS notification."""
+        payload = event.payload or {}
+        if payload.get("would_block") or event.severity == SEVERITY_HIGH:
+            category = payload.get("category", event.event)
+            tool = payload.get("tool", "")
+            msg = payload.get("message", "")
+            tool_suffix = f" in tool '{tool}'" if tool else ""
+            alert_line = f"\n[mcp-behave] WARNING: High-severity behavioral drift detected{tool_suffix} ({category}): {msg}\n"
+            sys.stderr.write(alert_line)
+            sys.stderr.flush()
+            if self.notify and sys.platform == "darwin":
+                try:
+                    import subprocess
+                    clean_title = "mcp-behave security alert"
+                    clean_msg = f"{category}{tool_suffix}: {msg}".replace('"', '\\"')
+                    script = f'display notification "{clean_msg}" with title "{clean_title}"'
+                    subprocess.Popen(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+
+    def is_synthetic_probe_response(self, line_bytes: bytes) -> bool:
+        """Check if incoming server message is a response to an active proxy probe."""
+        if not self.manifest_tracker:
+            return False
+        header = line_bytes[:2048]
+        id_m = re.search(rb'"id"\s*:\s*([0-9]+|"[^"]+")', header)
+        if not id_m:
+            return False
+        raw_id = id_m.group(1).decode("utf-8", errors="replace")
+        if raw_id.startswith('"') and raw_id.endswith('"'):
+            msg_id = raw_id[1:-1]
+        else:
+            try:
+                msg_id = int(raw_id)
+            except ValueError:
+                msg_id = raw_id
+        return self.manifest_tracker.is_probe_response(msg_id)
 
     def get_active_request_ids(self) -> List[Any]:
         """Return list of currently active request IDs (for M4 attribution)."""
@@ -173,6 +248,8 @@ class ProtocolMonitor:
 
     def close(self, timeout: float = 2.0) -> None:
         """Signal background worker to finish and wait for queue drain."""
+        if self.manifest_tracker:
+            self.manifest_tracker.stop()
         self._stop_event.set()
         try:
             self._line_queue.put(None, timeout=timeout)
@@ -193,8 +270,15 @@ class ProtocolMonitor:
             stripped = stripped[3:]
 
         # For messages > 64 KB when log_content is False, parse envelope headers only
-        # (id, method, params.name) to avoid full JSON tree allocation and GIL contention.
-        if len(stripped) > 65536 and not self.log_content:
+        # (id, method, params.name) to avoid full JSON tree allocation and GIL contention,
+        # UNLESS this is a manifest message (initialize response or tools/list) which requires full parsing.
+        header_check = stripped[:4096]
+        is_manifest_response = (
+            b'"tools"' in header_check
+            or b'"serverInfo"' in header_check
+            or b'"capabilities"' in header_check
+        )
+        if len(stripped) > 65536 and not self.log_content and not is_manifest_response:
             self._handle_large_message_envelope_sync(stripped, len(line_bytes), direction, now)
             return
 
@@ -273,6 +357,12 @@ class ProtocolMonitor:
                 if method == "tools/call" and isinstance(params, dict):
                     tool_name = params.get("name")
 
+                if self.manifest_tracker:
+                    if msg_id is not None:
+                        self.manifest_tracker.record_client_id_style(msg_id)
+                    if tool_name:
+                        self.manifest_tracker.schedule_client_tool_call(tool_name)
+
                 if msg_id is not None:
                     # Request with ID
                     with self._lock:
@@ -333,6 +423,25 @@ class ProtocolMonitor:
                     self.telemetry.record(event)
 
         elif direction == "server_to_client":
+            # Check if this is a response to an active proxy synthetic probe
+            if (
+                msg_id is not None
+                and self.manifest_tracker
+                and self.manifest_tracker.is_probe_response(msg_id)
+            ):
+                is_error = "error" in msg
+                content_obj = msg.get("error") if is_error else msg.get("result")
+                events, _ = self.manifest_tracker.handle_tools_list_response(
+                    msg_id,
+                    content_obj if not is_error else None,
+                    is_error=is_error,
+                )
+                for evt in events:
+                    self.bus.publish_sync(evt)
+                    self.telemetry.record(evt)
+                    self._emit_alert(evt)
+                return
+
             # Response matching a client request
             if msg_id is not None and ("result" in msg or "error" in msg):
                 with self._lock:
@@ -377,10 +486,49 @@ class ProtocolMonitor:
                 self.bus.publish_sync(event)
                 self.telemetry.record(event)
 
+                # Process TOFU Manifest and Drift Detection
+                if self.manifest_tracker:
+                    if method == "initialize" and not is_error and isinstance(content_obj, dict):
+                        init_events = self.manifest_tracker.handle_initialize_response(content_obj)
+                        for ievt in init_events:
+                            self.bus.publish_sync(ievt)
+                            self.telemetry.record(ievt)
+                            self._emit_alert(ievt)
+
+                    elif method == "tools/list":
+                        had_baseline = self.manifest_tracker.tools_baseline is not None
+                        list_events, _ = self.manifest_tracker.handle_tools_list_response(
+                            msg_id,
+                            content_obj if not is_error else None,
+                            is_error=is_error,
+                        )
+                        for levt in list_events:
+                            self.bus.publish_sync(levt)
+                            self.telemetry.record(levt)
+                            self._emit_alert(levt)
+
+                        # If session baseline was just established, evaluate cross-session drift against trusted baseline
+                        if not had_baseline and self.manifest_tracker.tools_baseline is not None:
+                            prior_manifest = self.telemetry.get_last_trusted_manifest(self.server_id)
+                            cross_events = self.manifest_tracker.evaluate_cross_session_drift(prior_manifest)
+                            for cevt in cross_events:
+                                self.bus.publish_sync(cevt)
+                                self.telemetry.record(cevt)
+                                self._emit_alert(cevt)
+
             elif "method" in msg:
                 # Server-initiated notification or request
                 method = msg.get("method")
                 params = msg.get("params") or {}
+
+                if self.manifest_tracker and msg_id is None:
+                    if method == "notifications/tools/list_changed":
+                        self.manifest_tracker.mark_list_changed("tools")
+                    elif method == "notifications/resources/list_changed":
+                        self.manifest_tracker.mark_list_changed("resources")
+                    elif method == "notifications/prompts/list_changed":
+                        self.manifest_tracker.mark_list_changed("prompts")
+
                 payload = {
                     "method": method,
                     "size_bytes": total_bytes,
@@ -434,6 +582,12 @@ class ProtocolMonitor:
 
             name_m = re.search(rb'"name"\s*:\s*"([^"]+)"', header_chunk)
             tool_name = name_m.group(1).decode("utf-8", errors="replace") if name_m else None
+
+            if self.manifest_tracker:
+                if msg_id is not None:
+                    self.manifest_tracker.record_client_id_style(msg_id)
+                if tool_name:
+                    self.manifest_tracker.schedule_client_tool_call(tool_name)
 
             payload: Dict[str, Any] = {
                 "method": method,

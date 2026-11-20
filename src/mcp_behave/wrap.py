@@ -43,29 +43,51 @@ def send_macos_notification(title: str, message: str) -> None:
         pass
 
 
+async def child_stdin_writer(
+    queue: asyncio.Queue[Optional[bytes]],
+    writer: asyncio.StreamWriter,
+) -> None:
+    """Single serialized writer for child stdin.
+
+    All client messages and proxy probes flow through this queue,
+    ensuring whole complete lines are written atomically with zero splicing or tearing.
+    """
+    try:
+        while True:
+            line_bytes = await queue.get()
+            if line_bytes is None:
+                queue.task_done()
+                break
+            try:
+                writer.write(line_bytes)
+                await writer.drain()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                queue.task_done()
+                break
+            queue.task_done()
+    except asyncio.CancelledError:
+        pass
+
+
 async def client_to_server_pump(
     reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
+    stdin_queue: asyncio.Queue[Optional[bytes]],
     monitor: ProtocolMonitor,
     stop_event: asyncio.Event,
 ) -> None:
-    """Stream NDJSON lines from client stdin to child server stdin."""
+    """Stream NDJSON lines from client stdin into child server stdin queue."""
     framer = StreamingFramer(reader)
     try:
         async for line_bytes, is_eof in framer:
             if stop_event.is_set():
                 break
 
-            # 1. Hot path: Forward immediately to child
-            try:
-                writer.write(line_bytes)
-                await writer.drain()
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                break
+            # 1. Hot path: Forward complete line to serialized child stdin writer queue
+            await stdin_queue.put(line_bytes)
 
             # 2. Off hot path: Parse, correlate, and record telemetry
             monitor.enqueue_line(line_bytes, "client_to_server")
-    finally:
+    except Exception:
         stop_event.set()
 
 
@@ -82,7 +104,13 @@ async def server_to_client_pump(
             if stop_event.is_set() and not line_bytes:
                 break
 
-            # 1. Hot path: Forward immediately to client
+            # Check if this line is a response to an active proxy synthetic probe
+            if monitor.is_synthetic_probe_response(line_bytes):
+                # Never forward synthetic probe responses to client stdout
+                monitor.enqueue_line(line_bytes, "server_to_client")
+                continue
+
+            # 1. Hot path: Forward immediately to client stdout
             try:
                 writer.write(line_bytes)
                 await writer.drain()
@@ -104,6 +132,9 @@ async def run_proxy(
     grace_period: float = 3.0,
     augment_path: bool = False,
     retention_days: int = 14,
+    reverify_interval: int = 20,
+    reverify_period: float = 300.0,
+    enable_reverify: bool = True,
     stdin_reader_override: Optional[asyncio.StreamReader] = None,
     stdout_writer_override: Optional[asyncio.StreamWriter] = None,
 ) -> int:
@@ -121,12 +152,24 @@ async def run_proxy(
         log_content=log_content,
         retention_days=retention_days,
     )
+
+    stdin_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+
+    async def send_probe_fn(probe_bytes: bytes) -> None:
+        await stdin_queue.put(probe_bytes)
+
     monitor = ProtocolMonitor(
         session_id=session_id,
         server_id=eff_server_id,
         bus=bus,
         telemetry=telemetry,
         log_content=log_content,
+        send_probe_fn=send_probe_fn,
+        reverify_interval=reverify_interval,
+        reverify_period=reverify_period,
+        enable_reverify=enable_reverify,
+        notify=notify,
+        loop=loop,
     )
 
     # Spawn child server process in its own process group
@@ -206,9 +249,14 @@ async def run_proxy(
         except (NotImplementedError, ValueError):
             pass
 
+    # Start single serialized child stdin writer
+    writer_task = asyncio.create_task(
+        child_stdin_writer(stdin_queue, child_proc.stdin)
+    )
+
     # Start bi-directional pumps
     c2s_task = asyncio.create_task(
-        client_to_server_pump(client_reader, child_proc.stdin, monitor, stop_event)
+        client_to_server_pump(client_reader, stdin_queue, monitor, stop_event)
     )
     s2c_task = asyncio.create_task(
         server_to_client_pump(child_proc.stdout, client_writer, monitor, stop_event)
@@ -220,19 +268,34 @@ async def run_proxy(
         return_when=asyncio.FIRST_COMPLETED,
     )
 
-    # If client stdin closed (c2s finished), close child stdin so server can gracefully exit
-    if c2s_task in done and child_proc.stdin:
+    # If client stdin closed (c2s finished), flush queue then close child stdin so server can gracefully exit
+    if c2s_task in done:
         try:
-            child_proc.stdin.close()
-            await child_proc.stdin.wait_closed()
+            await stdin_queue.join()
+            await stdin_queue.put(None)
+            await asyncio.wait_for(writer_task, timeout=1.0)
         except Exception:
             pass
+        if child_proc.stdin:
+            try:
+                child_proc.stdin.close()
+                await child_proc.stdin.wait_closed()
+            except Exception:
+                pass
 
     # Allow a brief window for server_to_client to finish flushing responses if it was still active
     if s2c_task in pending:
         try:
             await asyncio.wait_for(s2c_task, timeout=grace_period)
         except asyncio.TimeoutError:
+            pass
+
+    # Ensure writer task stops
+    if not writer_task.done():
+        writer_task.cancel()
+        try:
+            await writer_task
+        except (asyncio.CancelledError, Exception):
             pass
 
     # Cancel pending pump tasks
@@ -253,6 +316,16 @@ async def run_proxy(
         except Exception:
             pass
     await asyncio.sleep(0.05)
+
+    # Save manifest history snapshot to SQLite
+    if monitor.manifest_tracker and monitor.manifest_tracker.tools_baseline:
+        approved_state = "untrusted" if monitor.manifest_tracker.has_high_drift else "trusted"
+        snapshot = monitor.manifest_tracker.get_manifest_snapshot()
+        telemetry.save_manifest_history(
+            eff_server_id,
+            snapshot,
+            approved_state=approved_state,
+        )
 
     # Emit session end event
     end_event = BehavioralEvent(
@@ -340,6 +413,18 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
         "--retention-days", type=int, default=14,
         help="Number of days to retain JSONL sessions and telemetry events (default: 14).",
     )
+    parser.add_argument(
+        "--reverify-interval", type=int, default=20,
+        help="Number of tool calls between active manifest re-verifications (default: 20).",
+    )
+    parser.add_argument(
+        "--reverify-period", type=float, default=300.0,
+        help="Periodic interval in seconds for active manifest re-verifications (default: 300.0s).",
+    )
+    parser.add_argument(
+        "--no-reverify", action="store_true",
+        help="Disable active manifest re-verification probes.",
+    )
 
     args = parser.parse_args(wrap_args)
 
@@ -357,6 +442,9 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
             grace_period=args.grace_period,
             augment_path=args.augment_path,
             retention_days=args.retention_days,
+            reverify_interval=args.reverify_interval,
+            reverify_period=args.reverify_period,
+            enable_reverify=not args.no_reverify,
         ))
     except KeyboardInterrupt:
         return 130

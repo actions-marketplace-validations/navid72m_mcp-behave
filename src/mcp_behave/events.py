@@ -51,6 +51,12 @@ TIER_MONITOR_TO_SCORECARD = {
     "informational": "INFORMATIONAL",
 }
 
+# Runtime monitor event severities
+SEVERITY_INFO = "INFO"
+SEVERITY_MEDIUM = "MEDIUM"
+SEVERITY_HIGH = "HIGH"
+SEVERITY_CRITICAL = "CRITICAL"
+
 # Runtime monitor event kinds
 KIND_PROTOCOL_REQUEST = "protocol_request"
 KIND_PROTOCOL_RESPONSE = "protocol_response"
@@ -62,6 +68,22 @@ KIND_TELEMETRY_DROP = "telemetry_drop"
 KIND_SESSION_START = "session_start"
 KIND_SESSION_END = "session_end"
 KIND_BLIND_SPOT = "blind_spot"
+KIND_MANIFEST_BASELINE = "manifest_baseline"
+KIND_MANIFEST_DRIFT = "manifest_drift"
+KIND_CROSS_SESSION_DRIFT = "cross_session_drift"
+
+# Manifest drift categories
+DRIFT_COVERT_ADDITION = "covert_addition"
+DRIFT_ANNOUNCED_ADDITION = "announced_addition"
+DRIFT_REMOVAL_OR_RENAME = "removal_or_rename"
+DRIFT_CAPABILITY_EXPANSION = "capability_expansion"
+DRIFT_CONSTRAINT_RELAXATION = "constraint_relaxation"
+DRIFT_ANNOTATION_RELAXATION = "annotation_relaxation"
+DRIFT_TRUSTED_TOOL_ESCALATION = "trusted_tool_escalation"
+DRIFT_DESCRIPTION_MUTATION = "description_mutation"
+DRIFT_DESCRIPTION_INJECTION = "description_injection"
+DRIFT_INSTRUCTIONS_MUTATION = "instructions_mutation"
+DRIFT_INSTRUCTIONS_INJECTION = "instructions_injection"
 
 
 @dataclass
@@ -85,6 +107,7 @@ class BehavioralEvent:
     kind: str | None = None                # Monitor event kind (e.g. protocol_request, stdout_pollution)
     request_id: str | int | None = None    # Correlated JSON-RPC request ID
     evidence_tier: str | None = None       # "observed" | "correlated" | "structural" | "heuristic"
+    severity: str | None = None            # "INFO" | "MEDIUM" | "HIGH" | "CRITICAL"
     payload: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
