@@ -4,6 +4,7 @@ manifest and the raw syscall trace of what it actually did.
 
 No judgements here -- that's report.py."""
 import asyncio, hashlib, json, os, platform, re, shutil, sys, tempfile
+from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -528,10 +529,41 @@ def _emit_trace_marker(trace_file: str | None, tag: str, val: str = ""):
 async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = False,
                     trace_file: str | None = None, rounds: int = 1):
     """Shared logic: discover + exercise tools, resources, prompts on a live session."""
-    stats = {"tools": {"called": 0, "ok": 0}, "resources": {"called": 0, "ok": 0},
-             "prompts": {"called": 0, "ok": 0}}
+    stats = {
+        "tools": {
+            "called": 0,
+            "transport_ok": 0,
+            "executed_ok": 0,
+            "validation_rejected": 0,
+            "tool_error": 0,
+            "ok": 0,
+        },
+        "resources": {"called": 0, "ok": 0},
+        "prompts": {"called": 0, "ok": 0}
+    }
     tool_outputs = {}
     tool_history = {}
+
+    def _eval_tool_call(ok: bool, res: Any) -> tuple[bool, str]:
+        if not ok or res is None:
+            stats["tools"]["tool_error"] += 1
+            return False, ""
+        stats["tools"]["transport_ok"] += 1
+        is_err = getattr(res, "isError", False)
+        text = _extract_text_content(res)
+        lower_text = text.lower() if text else ""
+        is_val_rej = any(needle in lower_text for needle in ("rejected arguments", "validation error", "invalid_input", "validation_error"))
+
+        if not is_err and not is_val_rej:
+            stats["tools"]["executed_ok"] += 1
+            stats["tools"]["ok"] += 1
+            return True, text
+        elif is_val_rej:
+            stats["tools"]["validation_rejected"] += 1
+            return False, text
+        else:
+            stats["tools"]["tool_error"] += 1
+            return False, text
 
     tools_meta, resources_meta, prompts_meta = await _discover_manifest(session)
 
@@ -556,21 +588,18 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
             ok, res = await _call_with_timeout(
                 session.call_tool(t["name"], args), f"tool {t['name']}", call_timeout)
             _emit_trace_marker(trace_file, "CALL_END", t["name"])
-            if ok:
-                stats["tools"]["ok"] += 1
-                text = _extract_text_content(res)
-                if text:
-                    tool_outputs[t["name"]] = text
-                    tool_history.setdefault(t["name"], []).append({"args": args, "output": text, "round": round_idx})
+            exec_ok, text = _eval_tool_call(ok, res)
+            if text:
+                tool_outputs[t["name"]] = text
+                tool_history.setdefault(t["name"], []).append({"args": args, "output": text, "round": round_idx, "executed_ok": exec_ok})
 
-                # In round 0, call mutating/collection tools a second time to populate multiple test entries
-                if round_idx == 0 and tname.startswith(("add_", "insert_", "append_")):
-                    args2 = synth_args(t.get("inputSchema"), round_idx=1)
-                    stats["tools"]["called"] += 1
-                    ok2, _ = await _call_with_timeout(
-                        session.call_tool(t["name"], args2), f"tool {t['name']} (seed)", call_timeout)
-                    if ok2:
-                        stats["tools"]["ok"] += 1
+            # In round 0, call mutating/collection tools a second time to populate multiple test entries
+            if round_idx == 0 and tname.startswith(("add_", "insert_", "append_")):
+                args2 = synth_args(t.get("inputSchema"), round_idx=1)
+                stats["tools"]["called"] += 1
+                ok2, res2 = await _call_with_timeout(
+                    session.call_tool(t["name"], args2), f"tool {t['name']} (seed)", call_timeout)
+                _eval_tool_call(ok2, res2)
 
             if fuzz and round_idx == 0:
                 fuzz_arg_sets = synth_fuzz_args(t.get("inputSchema"))
@@ -582,10 +611,9 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
                         stats["fuzz"]["attempted"] += 1
                         f_ok, f_res = await _call_with_timeout(
                             session.call_tool(t["name"], f_args), f"fuzz tool {t['name']}", call_timeout)
+                        f_exec_ok, f_text = _eval_tool_call(f_ok, f_res)
                         if f_ok:
-                            stats["tools"]["ok"] += 1
                             stats["fuzz"]["ok"] += 1
-                            f_text = _extract_text_content(f_res)
                             if f_text and t["name"] not in tool_outputs:
                                 tool_outputs[t["name"]] = f_text
                         else:

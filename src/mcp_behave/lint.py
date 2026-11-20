@@ -25,7 +25,7 @@ DESTRUCTIVE_VERBS = (
 
 EXEC_VERBS = (
     "exec", "execute", "spawn", "shell", "bash", "sh ", "command", "eval",
-    "run_command", "system", "subprocess",
+    "run_command", "system_command", "os.system", "subprocess",
 )
 
 WRITE_VERBS = (
@@ -42,6 +42,12 @@ CONFIRM_HINTS = (
 )
 
 
+def _is_query_tool_name(name: str) -> bool:
+    """Check if a tool name explicitly denotes a query / read-only capability."""
+    n = name.lower()
+    return any(q in n for q in ("list", "get", "search", "find", "check", "inspect", "describe", "overview", "status", "compare", "report", "tree", "refs", "read", "view", "show", "query", "audit"))
+
+
 def _match_verb(verbs, text: str | None) -> str | None:
     """Match verbs using word boundaries and inflections to avoid false positives (e.g. 'put' in 'input', 'sh' in 'shows')."""
     if not text:
@@ -50,9 +56,17 @@ def _match_verb(verbs, text: str | None) -> str | None:
         v_clean = v.strip()
         if not v_clean:
             continue
-        if v_clean == "system":
-            if re.search(r'(?<!\bfile\s)(?<!\boperating\s)\bsystem\b', text, re.IGNORECASE):
-                return "system"
+        if v_clean in ("system_command", "os.system"):
+            if re.search(r'\b(?:os\.)?system[\s_]+(?:command|shell|call|exec)\b', text, re.IGNORECASE):
+                return "system_command"
+        elif v_clean == "command":
+            # Match command execution context rather than generic word 'command'
+            if re.search(r'\b(?:run|exec|execute|terminal|shell)\s+commands?\b|\bcommands?\s+(?:line|runner|execution)\b', text, re.IGNORECASE):
+                return "command execution"
+        elif v_clean == "set":
+            # Avoid matching noun 'set' (e.g., 'a ranked set', 'result set')
+            if re.search(r'\bset(?:s|ting)?\s+(?:the\s+)?[a-z0-9_]+\s*(?:to|=)\b', text, re.IGNORECASE) or re.search(r'\bto\s+set\b', text, re.IGNORECASE):
+                return "set"
         else:
             if re.search(r'\b' + re.escape(v_clean) + r'(?:s|ed|ing|d|es)?\b', text, re.IGNORECASE):
                 return v_clean
@@ -205,14 +219,19 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
         # Check: Arbitrary Execution Tool (MCP002)
         exec_hit = _match_verb(EXEC_VERBS, tname) or _match_verb(EXEC_VERBS, tdesc)
         if exec_hit:
+            # If tool name explicitly denotes execution, mark as HIGH. If only in description, mark as WARN (heuristic)
+            sev = "HIGH" if _match_verb(EXEC_VERBS, tname) else "WARN"
             findings.append((
-                "HIGH",
+                sev,
                 f"tool '{tname}' appears to execute arbitrary commands or code (matched '{exec_hit.strip()}') -- arbitrary execution risk"
             ))
 
         # Check: readOnlyHint Mismatch (MCP004)
         if read_only:
-            hit = _match_verb(MUTATING_VERBS, haystack)
+            is_query = _is_query_tool_name(tname)
+            name_hit = _match_verb(MUTATING_VERBS, tname)
+            desc_hit = None if is_query else _match_verb(MUTATING_VERBS, tdesc)
+            hit = name_hit or desc_hit
             if hit:
                 findings.append((
                     "HIGH",
@@ -220,7 +239,7 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
                 ))
 
         # Check: Destructive Action Missing Confirmation (MCP001)
-        is_query_tool = tname.startswith(("is_", "was_", "get_", "check_", "list_", "has_", "find_")) or bool(read_only)
+        is_query_tool = _is_query_tool_name(tname) or bool(read_only)
         destructive_hit = None if is_query_tool else _match_verb(DESTRUCTIVE_VERBS, haystack)
         schema = tool.get("inputSchema") or {}
         props = schema.get("properties") or {}

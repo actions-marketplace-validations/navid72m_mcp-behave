@@ -305,12 +305,19 @@ def _scan_outputs(manifest: dict) -> list[tuple[str, str]]:
     # 4. Cross-tool secret reflection (MCP01: Token Mismanagement)
     tool_history = manifest.get("tool_history") or {}
     secret_inputs = {}
+    SECRET_KEY_PATTERN = re.compile(r'(?i)\b(?:api_key|token|secret|password|passwd|private_key|auth_token|bearer|credential|access_token|secret_key)\b')
+    NON_SECRET_KEYS = {"author", "authority", "authorized_by", "code", "keyword", "status_code", "error_code", "zipcode", "postal_code", "sort_key"}
+    MOCK_PLACEHOLDERS = {"valid-input", "valid", "item-101", "test", "error", "0", "true", "false", "sample", "hello", "demo"}
+
     for hist_tname, calls in tool_history.items():
         for call in calls:
             args = call.get("args") or {}
             for k, v in args.items():
                 if isinstance(v, str) and len(v) >= 4:
-                    if any(s in k.lower() for s in ("token", "secret", "key", "password", "code", "credential", "auth")):
+                    k_lower = k.lower()
+                    if k_lower in NON_SECRET_KEYS or v.lower() in MOCK_PLACEHOLDERS:
+                        continue
+                    if SECRET_KEY_PATTERN.search(k_lower) or any(s in k_lower for s in ("api_key", "secret", "password", "credential", "auth_token")):
                         secret_inputs[v] = (hist_tname, k)
 
     for tname, output_text in outputs.items():
@@ -333,10 +340,61 @@ def _scan_outputs(manifest: dict) -> list[tuple[str, str]]:
     return findings
 
 
+def _extract_declared_scope(manifest: dict, config: dict | None = None) -> tuple[set[str], set[str]]:
+    """Extract declared/configured network hosts and filesystem paths to distinguish expected operations from rogue intrusions."""
+    declared_hosts = set()
+    declared_paths = set()
+
+    if config:
+        declared_hosts.update(config.get("allowed_hosts") or [])
+        declared_paths.update(config.get("allowed_paths") or [])
+
+    server_cmd = manifest.get("server_cmd") or []
+    if isinstance(server_cmd, list):
+        for idx, token in enumerate(server_cmd):
+            if token in ("--config", "-c") and idx + 1 < len(server_cmd):
+                cfg_path = os.path.expanduser(server_cmd[idx + 1])
+                declared_paths.add(cfg_path)
+                if os.path.exists(cfg_path):
+                    try:
+                        with open(cfg_path, "r", errors="ignore") as f:
+                            cfg_content = f.read()
+                            for h in re.findall(r'host\s*=\s*["\']([^"\']+)["\']', cfg_content):
+                                declared_hosts.add(h)
+                            for kp in re.findall(r'key_path\s*=\s*["\']([^"\']+)["\']', cfg_content):
+                                exp = os.path.normpath(os.path.expanduser(kp))
+                                declared_paths.add(exp)
+                                declared_paths.add(Path(exp).name)
+                            for kh in re.findall(r'known_hosts(?:_path)?\s*=\s*["\']([^"\']+)["\']', cfg_content):
+                                exp = os.path.normpath(os.path.expanduser(kh))
+                                declared_paths.add(exp)
+                                declared_paths.add(Path(exp).name)
+                    except OSError:
+                        pass
+        cmd_str = " ".join(server_cmd)
+        for ip in re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', cmd_str):
+            declared_hosts.add(ip)
+
+    for t in manifest.get("tools", []):
+        desc = t.get("description", "")
+        for ip in re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', desc):
+            declared_hosts.add(ip)
+
+    if declared_hosts or any(".ssh" in str(p) for p in declared_paths):
+        declared_paths.add(os.path.expanduser("~/.ssh/config"))
+        declared_paths.add(os.path.expanduser("~/.ssh/known_hosts"))
+        declared_paths.add("config")
+        declared_paths.add("known_hosts")
+
+    return declared_hosts, declared_paths
+
+
 def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, config: dict | None = None, persist_rugpull: bool = True) -> list:
     """Returns list of (severity, message) tuples."""
     server_instructions = manifest.get("instructions") or ""
     server_claims_local = _claims_local_operation(server_instructions)
+
+    declared_hosts, declared_paths = _extract_declared_scope(manifest, config)
 
     tools = manifest.get("tools") or []
     tool_local_claims = {
@@ -357,7 +415,7 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
         destructive = ann.get("destructiveHint")
         t_desc = (tool.get("description") or "").lower()
 
-        if read_only is True:
+        if read_only is True and not tname.startswith(("list_", "get_", "is_", "has_", "find_", "check_", "read_", "inspect_", "describe_")):
             mut_words = ("delete", "remove", "drop", "decrement", "mutate", "overwrite", "erase", "modify", "append", "deduct")
             hit = next((w for w in mut_words if re.search(rf'\b{w}\b', t_desc)), None)
             if hit:
@@ -367,7 +425,7 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
                 ))
 
         if destructive is False:
-            dest_words = ("delete", "destroy", "wipe", "truncate", "drop", "purge", "overwrite", "refresh", "reset", "clear", "flush", "clean", "modify", "update")
+            dest_words = ("delete", "destroy", "wipe", "truncate", "drop", "purge", "format")
             hit = next((w for w in dest_words if re.search(rf'\b{w}\b', t_desc)), None)
             if hit:
                 findings.append((
@@ -411,6 +469,9 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
         where = f"{ipport} ({host})" if host else ipport
         origin_tool = net_to_tool.get(ipport)
 
+        ip_only = ipport.split(":")[0] if ":" in ipport else ipport
+        is_declared_host = bool(declared_hosts and (ip_only in declared_hosts or host in declared_hosts))
+
         # Scoped local claim check:
         # A network connection is HIGH severity if:
         # 1. Server-level instructions claim local/offline, OR
@@ -420,15 +481,20 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
         tool_claims_local = tool_local_claims.get(origin_tool, False) if origin_tool else False
         is_violating_local = server_claims_local or all_tools_claim_local or tool_claims_local or is_cloud_metadata
 
-        sev = "HIGH" if is_violating_local else "INFO"
         if is_cloud_metadata:
+            sev = "HIGH"
             note = " -- cloud instance metadata endpoint probed (IMDS / SSRF risk)"
         elif is_violating_local:
+            sev = "HIGH"
             if origin_tool and tool_claims_local and not (server_claims_local or all_tools_claim_local):
                 note = f" -- but tool '{origin_tool}' claims local/offline operation"
             else:
                 note = " -- but a description claims local/offline operation"
+        elif is_declared_host:
+            sev = "INFO"
+            note = " (matches declared/configured target host)"
         else:
+            sev = "INFO"
             note = ""
         findings.append((sev, f"network egress to {where}{note}"))
 
@@ -439,7 +505,11 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
         is_sens, _ = is_sensitive_path(path)
         if is_sens:
             action = "modified or wrote to" if path in files_written else "read"
-            findings.append(("HIGH", f"{action} a sensitive path: {path}"))
+            is_declared_key = any(p in path for p in declared_paths) if declared_paths else False
+            if is_declared_key:
+                findings.append(("INFO", f"{action} declared/configured credential path: {path}"))
+            else:
+                findings.append(("HIGH", f"{action} a sensitive path: {path}"))
 
     for unix_sock in profile.get("unix_sockets", []):
         # Flag container runtime control sockets as high risk
@@ -500,8 +570,11 @@ def compute_audit_confidence(manifest: dict, profile: dict | None = None) -> dic
     num_declared = len(declared_tools)
 
     called_calls = tool_stats.get("called", 0)
-    ok_calls = tool_stats.get("ok", 0)
-    failed_calls = max(0, called_calls - ok_calls)
+    transport_ok = tool_stats.get("transport_ok", tool_stats.get("ok", 0))
+    executed_ok = tool_stats.get("executed_ok", tool_stats.get("ok", 0))
+    validation_rejected = tool_stats.get("validation_rejected", 0)
+    tool_errors = tool_stats.get("tool_error", 0)
+    failed_calls = max(0, called_calls - executed_ok)
     rounds = stats.get("rounds", 1)
     tracer = stats.get("tracer") or ("stdio" if manifest.get("syscalls_available") else "none")
     syscalls_available = manifest.get("syscalls_available", False)
@@ -514,7 +587,7 @@ def compute_audit_confidence(manifest: dict, profile: dict | None = None) -> dic
         exercised_unique = num_declared if (called_calls >= num_declared) else min(num_declared, called_calls)
         tool_coverage_pct = min(100.0, (exercised_unique / num_declared) * 100.0)
 
-    call_success_pct = 100.0 if called_calls == 0 else (ok_calls / called_calls) * 100.0
+    call_success_pct = 100.0 if called_calls == 0 else (executed_ok / called_calls) * 100.0
 
     # Tracer fidelity
     sb_mode = manifest.get("sandbox") or (tracer if isinstance(tracer, str) and tracer.startswith("sandbox-") else None)
@@ -575,7 +648,11 @@ def compute_audit_confidence(manifest: dict, profile: dict | None = None) -> dic
         "tools_exercised": exercised_unique,
         "tools_coverage_pct": round(tool_coverage_pct, 1),
         "calls_total": called_calls,
-        "calls_ok": ok_calls,
+        "calls_transport_ok": transport_ok,
+        "calls_executed_ok": executed_ok,
+        "calls_validation_rejected": validation_rejected,
+        "calls_tool_error": tool_errors,
+        "calls_ok": executed_ok,
         "calls_failed": failed_calls,
         "call_success_rate_pct": round(call_success_pct, 1),
         "probe_rounds": rounds,
@@ -599,7 +676,12 @@ def report(out_dir, *, resolve_dns: bool = True, show_scorecard: bool = False, c
     confidence = compute_audit_confidence(manifest, profile)
     print(f"\n  === AUDIT CONFIDENCE: {confidence['score']} ===")
     print(f"  • Tool Coverage:  {confidence['tools_exercised']}/{confidence['tools_declared']} tools exercised ({confidence['tools_coverage_pct']}%)")
-    print(f"  • Call Success:   {confidence['calls_ok']}/{confidence['calls_total']} calls succeeded ({confidence['call_success_rate_pct']}%)")
+    exec_str = f"{confidence['calls_executed_ok']}/{confidence['calls_total']} calls executed logic ({confidence['call_success_rate_pct']}%)"
+    if confidence.get('calls_validation_rejected', 0) > 0:
+        exec_str += f", {confidence['calls_validation_rejected']} rejected by schema validation"
+    if confidence.get('calls_tool_error', 0) > 0:
+        exec_str += f", {confidence['calls_tool_error']} runtime error(s)"
+    print(f"  • Tool Execution: {exec_str}")
     print(f"  • Probing Depth:  {confidence['probe_rounds']} round(s)")
     print(f"  • Tracer Backend: {confidence['tracer_description']} [{confidence['tracer_fidelity']}]")
     if confidence["caveats"]:
