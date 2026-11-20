@@ -57,7 +57,18 @@ jobs:
         run: mcp-publisher login github-oidc
       - name: Wait for package registries replication
         run: |
-          echo "Waiting 30 seconds for package registries (PyPI / npm) to replicate..."
-          sleep 30
+          echo "Waiting for package registries (npm & PyPI) to replicate globally..."
+          for i in {1..18}; do
+            NPM_VER=$(npm view mcp-behave version --registry=https://registry.npmjs.org/ 2>/dev/null || true)
+            PYPI_VER=$(curl -s https://pypi.org/pypi/mcp-behave/json | grep -o '"version":"[^"]*"' | head -n 1 | cut -d'"' -f4 || true)
+            TAG_VER="${GITHUB_REF_NAME#v}"
+            echo "Attempt $i/18: Target=$TAG_VER, npm=$NPM_VER, PyPI=$PYPI_VER"
+            if [ "$NPM_VER" = "$TAG_VER" ] && [ "$PYPI_VER" = "$TAG_VER" ]; then
+              echo "Both npm and PyPI show version $TAG_VER! Ready to publish to MCP Registry."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Proceeding to publish after polling timeout..."
       - name: Publish to MCP Registry
         run: mcp-publisher publish server.json
