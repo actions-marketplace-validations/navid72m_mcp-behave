@@ -27,11 +27,14 @@ from .events import (
     KIND_PROTOCOL_RESPONSE,
     KIND_STDOUT_POLLUTION,
     KIND_TELEMETRY_DROP,
+    SEVERITY_CRITICAL,
     SEVERITY_HIGH,
     SEVERITY_INFO,
     SEVERITY_MEDIUM,
 )
+from .canary import CanaryManager
 from .manifest import ManifestTracker
+from .scanner import ContentScanner
 from .telemetry import TelemetryStore, hash_content
 
 
@@ -101,6 +104,8 @@ class ProtocolMonitor:
         enable_reverify: bool = True,
         notify: bool = False,
         loop: Optional[asyncio.AbstractEventLoop] = None,
+        canary_mgr: Optional[CanaryManager] = None,
+        enable_content_scan: bool = True,
     ):
         self.session_id = session_id
         self.server_id = server_id
@@ -109,6 +114,15 @@ class ProtocolMonitor:
         self.log_content = log_content
         self.notify = notify
         self.loop = loop
+
+        # Payload content and canary scanner (Milestone 2b)
+        self.canary_mgr = canary_mgr or CanaryManager()
+        self.scanner = ContentScanner(
+            session_id=session_id,
+            server_id=server_id,
+            canary_mgr=self.canary_mgr,
+            enabled=enable_content_scan,
+        )
 
         # Active request tracking: request_id -> {"start_ts": float, "method": str, "tool_name": Optional[str]}
         self._active_requests: Dict[Any, Dict[str, Any]] = {}
@@ -144,14 +158,17 @@ class ProtocolMonitor:
         self._emit_alert(event)
 
     def _emit_alert(self, event: BehavioralEvent) -> None:
-        """Emit clean stderr alert on HIGH drift / would_block, and optional macOS notification."""
+        """Emit clean stderr alert on HIGH/CRITICAL drift / would_block, and optional macOS notification."""
         payload = event.payload or {}
-        if payload.get("would_block") or event.severity == SEVERITY_HIGH:
+        if payload.get("would_block") or event.severity in (SEVERITY_HIGH, SEVERITY_CRITICAL):
             category = payload.get("category", event.event)
             tool = payload.get("tool", "")
             msg = payload.get("message", "")
             tool_suffix = f" in tool '{tool}'" if tool else ""
-            alert_line = f"\n[mcp-behave] WARNING: High-severity behavioral drift detected{tool_suffix} ({category}): {msg}\n"
+            if event.severity == SEVERITY_CRITICAL:
+                alert_line = f"\n[mcp-behave] CRITICAL SECURITY ALERT: Behavioral alert detected{tool_suffix} ({category}): {msg}\n"
+            else:
+                alert_line = f"\n[mcp-behave] WARNING: High-severity behavioral drift detected{tool_suffix} ({category}): {msg}\n"
             sys.stderr.write(alert_line)
             sys.stderr.flush()
             if self.notify and sys.platform == "darwin":
@@ -355,6 +372,13 @@ class ProtocolMonitor:
                 tool_name = None
                 if method == "tools/call" and isinstance(params, dict):
                     tool_name = params.get("name")
+                    tool_args = params.get("arguments") if "arguments" in params else params
+                    if getattr(self, "scanner", None):
+                        scan_events = self.scanner.scan_tool_call(tool_name, tool_args, request_id=msg_id, now=now)
+                        for se in scan_events:
+                            self.bus.publish_sync(se)
+                            self.telemetry.record(se)
+                            self._emit_alert(se)
 
                 if self.manifest_tracker:
                     if msg_id is not None:
@@ -454,6 +478,13 @@ class ProtocolMonitor:
 
                 is_error = "error" in msg
                 content_obj = msg.get("error") if is_error else msg.get("result")
+
+                if method == "tools/call" and getattr(self, "scanner", None) and not is_error:
+                    scan_events = self.scanner.scan_tool_result(tool_name, content_obj, request_id=msg_id, now=now)
+                    for se in scan_events:
+                        self.bus.publish_sync(se)
+                        self.telemetry.record(se)
+                        self._emit_alert(se)
 
                 payload = {
                     "size_bytes": total_bytes,
@@ -559,8 +590,8 @@ class ProtocolMonitor:
     ) -> None:
         """Extract id, method, and params.name without full JSON parsing or intermediate copies for >64 KB messages."""
         header_chunk = raw_bytes[:4096]
-
         msg_id: Any = None
+        tool_name: Optional[str] = None
         id_m = re.search(rb'"id"\s*:\s*([0-9]+|"[^"]+")', header_chunk)
         if id_m:
             raw_id = id_m.group(1).decode("utf-8", errors="replace")
@@ -672,3 +703,13 @@ class ProtocolMonitor:
             )
             self.bus.publish_sync(event)
             self.telemetry.record(event)
+
+        # Content scanning for large messages using fast byte pre-filters
+        if getattr(self, "scanner", None):
+            scan_events = self.scanner.scan_raw_bytes(
+                raw_bytes, direction, tool_name=tool_name, request_id=msg_id, now=now
+            )
+            for se in scan_events:
+                self.bus.publish_sync(se)
+                self.telemetry.record(se)
+                self._emit_alert(se)

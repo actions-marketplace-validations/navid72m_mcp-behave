@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from .bus import EventBus
+from .canary import CanaryManager
 from .events import (
     BehavioralEvent,
     KIND_OS_TRACING,
@@ -135,6 +136,9 @@ async def run_proxy(
     reverify_interval: int = 20,
     reverify_period: float = 300.0,
     enable_reverify: bool = True,
+    canaries: Optional[List[str]] = None,
+    canary_file: Optional[str] = None,
+    enable_content_scan: bool = True,
     stdin_reader_override: Optional[asyncio.StreamReader] = None,
     stdout_writer_override: Optional[asyncio.StreamWriter] = None,
 ) -> int:
@@ -158,6 +162,11 @@ async def run_proxy(
     async def send_probe_fn(probe_bytes: bytes) -> None:
         await stdin_queue.put(probe_bytes)
 
+    # Initialize canary manager
+    canary_mgr = CanaryManager(initial_canaries=canaries)
+    if canary_file:
+        canary_mgr.load_from_file(canary_file)
+
     monitor = ProtocolMonitor(
         session_id=session_id,
         server_id=eff_server_id,
@@ -170,6 +179,8 @@ async def run_proxy(
         enable_reverify=enable_reverify,
         notify=notify,
         loop=loop,
+        canary_mgr=canary_mgr,
+        enable_content_scan=enable_content_scan,
     )
 
     # Spawn child server process in its own process group
@@ -425,6 +436,18 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
         "--no-reverify", action="store_true",
         help="Disable active manifest re-verification probes.",
     )
+    parser.add_argument(
+        "--canary", action="append", default=[],
+        help="Register a canary token to monitor for unauthorized exfiltration or leakage (repeatable).",
+    )
+    parser.add_argument(
+        "--canary-file", default=None,
+        help="Path to file containing canary tokens (one per line).",
+    )
+    parser.add_argument(
+        "--no-content-scan", action="store_true",
+        help="Disable payload argument and output content scanning (secrets, canaries, indirect injection).",
+    )
 
     args = parser.parse_args(wrap_args)
 
@@ -445,6 +468,9 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
             reverify_interval=args.reverify_interval,
             reverify_period=args.reverify_period,
             enable_reverify=not args.no_reverify,
+            canaries=args.canary,
+            canary_file=args.canary_file,
+            enable_content_scan=not args.no_content_scan,
         ))
     except KeyboardInterrupt:
         return 130

@@ -70,3 +70,22 @@ This document records key architectural and design decisions made across milesto
   - Separation of concerns: `heuristics.py` only returns `(matched: bool, reasons: List[str])`. Severity assignment belongs to callers (`manifest.py` assigning `SEVERITY_HIGH` and `would_block: True` when combined with manifest drift).
   - All manifest drift findings strictly use evidence tier `observed`.
 - **Status**: Implemented & verified.
+
+---
+
+## Milestone 2b Decisions (Argument & Output Content Scanning)
+
+### ADR-008: Off-Hot-Path Content Scanning, Byte Pre-Filters & Redaction
+- **Context**: Deep scanning of JSON-RPC parameters and server response bodies for secrets (AWS, OpenAI, GitHub PAT, Slack, Private Keys) could block the stdio forwarding pipeline or leak sensitive credentials into audit logs and persistent SQLite databases.
+- **Decision**:
+  - Keep stdio forwarding decoupled from payload scanning. Forwarding lines happen immediately on the streaming pump; content scanning is executed asynchronously on the background worker thread.
+  - To prevent GIL lockup on large messages (>64 KB), run fast byte pre-filters (`FAST_SECRET_MARKERS = (b"AKIA", b"sk-", b"ghp_", b"github_pat_", b"xox", b"BEGIN", b"mcpb_canary_")`) over the raw buffer. Complex regex evaluation is bypassed if no markers appear.
+  - Under no circumstances are raw credentials persisted. Telemetry records only `hash_content()` metadata (`sha256`, 4-character prefix, length).
+- **Status**: Implemented & verified.
+
+### ADR-009: Universal Canary Tracking & Indirect Injection Severity
+- **Context**: Canary token exfiltration must not rely on brittle tool-name whitelists (e.g. only checking `fetch` or `curl`), and indirect prompt injection detected in retrieved external tool outputs must not produce high-severity blocking false positives.
+- **Decision**:
+  - Canary token scanning evaluates ALL tool call arguments (`client_to_server`) and ALL tool call results (`server_to_client`) without tool-name restrictions. Any canary presence emits `SEVERITY_CRITICAL`, `evidence_tier=EVIDENCE_TIER_OBSERVED`, and `would_block=True`.
+  - Indirect prompt injection cues detected in returned tool results (e.g., fetched web pages or database queries) are categorized as `KIND_INDIRECT_INJECTION` with `SEVERITY_MEDIUM`, `evidence_tier=EVIDENCE_TIER_HEURISTIC`, and `would_block=False`, ensuring standalone external heuristics never trigger false-positive blocks.
+- **Status**: Implemented & verified.

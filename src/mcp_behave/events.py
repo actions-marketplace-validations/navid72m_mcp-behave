@@ -72,6 +72,13 @@ KIND_MANIFEST_BASELINE = "manifest_baseline"
 KIND_MANIFEST_DRIFT = "manifest_drift"
 KIND_CROSS_SESSION_DRIFT = "cross_session_drift"
 
+# Content inspection event kinds (Milestone 2b)
+KIND_SECRET_LEAK = "secret_leak"
+KIND_SECRET_EXPOSURE = "secret_exposure"
+KIND_CANARY_EXFILTRATION = "canary_exfiltration"
+KIND_INDIRECT_INJECTION = "indirect_injection"
+KIND_ARGUMENT_HEURISTIC = "argument_heuristic"
+
 # Manifest drift categories
 DRIFT_COVERT_ADDITION = "covert_addition"
 DRIFT_ANNOUNCED_ADDITION = "announced_addition"
