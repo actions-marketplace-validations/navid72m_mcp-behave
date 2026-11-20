@@ -437,6 +437,7 @@ def test_paginated_manifest_aggregation():
             events1, is_p1 = monitor.manifest_tracker.handle_tools_list_response(p1_id, p1_resp)
             assert is_p1 is True
             assert len(events1) == 0  # not finalized yet
+            assert monitor.manifest_tracker._probe_in_flight is True  # stays in flight during multi-page pagination
 
             # Verify next probe was automatically requested with cursor
             probe2_raw = await asyncio.wait_for(stdin_queue.get(), timeout=1.0)
@@ -453,6 +454,7 @@ def test_paginated_manifest_aggregation():
             events2, is_p2 = monitor.manifest_tracker.handle_tools_list_response(p2_id, p2_resp)
             assert is_p2 is True
             assert len(events2) == 1
+            assert monitor.manifest_tracker._probe_in_flight is False  # released to False on final page
             assert events2[0].kind == KIND_MANIFEST_BASELINE
             assert set(events2[0].payload["tools"]) == {"tool1", "tool2"}
 
@@ -716,7 +718,7 @@ def test_instructions_drift_with_and_without_injection():
     e_inj = events_inj[0]
     assert e_inj.payload["category"] == DRIFT_INSTRUCTIONS_INJECTION
     assert e_inj.severity == SEVERITY_HIGH
-    assert e_inj.evidence_tier == "correlated"
+    assert e_inj.evidence_tier == "observed"
     assert e_inj.payload["would_block"] is True
     assert tracker.has_high_drift is True
 
@@ -876,6 +878,36 @@ def test_additive_version_bump_cross_session_medium():
     assert d_ev.payload["would_block"] is False
     assert d_ev.payload["version_bumped"] is True
     assert tracker.has_high_drift is False
+
+
+def test_version_bump_with_tool_deletion_is_high_drift():
+    """Verify tool deletion under a version bump remains high drift (SEVERITY_HIGH, would_block=True)."""
+    tracker = ManifestTracker("sess_del", "srv_del", send_probe_fn=None, enable_reverify=False)
+    tracker.server_info = {"name": "target", "version": "2.0.0"}
+
+    # Current session baseline has only 'ping' (tool 'fetch' was deleted/removed)
+    curr_tools = [
+        {"name": "ping", "inputSchema": {"type": "object", "properties": {"host": {"type": "string"}}}},
+    ]
+    tracker._evaluate_tools_manifest(curr_tools)
+
+    # Prior trusted manifest from version 1.0.0 had both 'fetch' and 'ping'
+    prior_manifest = {
+        "serverInfo": {"name": "target", "version": "1.0.0"},
+        "tools": [
+            {"name": "fetch", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}}},
+            {"name": "ping", "inputSchema": {"type": "object", "properties": {"host": {"type": "string"}}}},
+        ],
+    }
+
+    drift_events = tracker.evaluate_cross_session_drift(prior_manifest)
+    assert len(drift_events) == 1
+    d_ev = drift_events[0]
+    assert d_ev.payload["tool"] == "fetch"
+    assert d_ev.payload["is_rename"] is False
+    assert d_ev.severity == SEVERITY_HIGH
+    assert d_ev.payload["would_block"] is True
+    assert tracker.has_high_drift is True
 
 
 def test_e2e_id_safety_string_client():

@@ -547,7 +547,7 @@ class ManifestTracker:
                     server_id=self.server_id,
                     kind=KIND_MANIFEST_DRIFT,
                     source="monitor",
-                    evidence_tier=EVIDENCE_TIER_CORRELATED,
+                    evidence_tier=EVIDENCE_TIER_OBSERVED,
                     severity=SEVERITY_HIGH,
                     timestamp=time.time(),
                     payload={
@@ -595,8 +595,6 @@ class ManifestTracker:
             (events_to_emit, is_probe_response)
         """
         is_probe = self.is_probe_response(resp_id)
-        if is_probe:
-            self._probe_in_flight = False
 
         if is_error or not isinstance(result, dict):
             if is_probe:
@@ -623,6 +621,8 @@ class ManifestTracker:
         if is_probe:
             self._probe_pagination_tools.extend(raw_tools)
             if next_cursor:
+                # Keep probe in flight during multi-page pagination
+                self._probe_in_flight = True
                 # Follow nextCursor until exhausted
                 next_id = self.generate_probe_id()
                 self._issued_probe_ids[next_id] = time.time()
@@ -781,6 +781,7 @@ class ManifestTracker:
 
         # Emit remaining removals
         for rem_n in unmatched_removed:
+            self.has_high_drift = True
             evt = BehavioralEvent(
                 event="manifest_drift",
                 session_id=self.session_id,
@@ -788,14 +789,14 @@ class ManifestTracker:
                 kind=KIND_MANIFEST_DRIFT,
                 source="monitor",
                 evidence_tier=EVIDENCE_TIER_OBSERVED,
-                severity=SEVERITY_MEDIUM,
+                severity=SEVERITY_HIGH,
                 timestamp=time.time(),
                 payload={
                     "category": DRIFT_REMOVAL_OR_RENAME,
                     "tool": rem_n,
                     "is_rename": False,
                     "drift_origin": drift_origin,
-                    "would_block": False,
+                    "would_block": True,
                     "message": f"Tool '{rem_n}' was removed from manifest",
                 },
             )
@@ -964,8 +965,11 @@ class ManifestTracker:
         for de in drift_events:
             p = de.payload
             cat = p.get("category")
-            # If version bumped and changes are purely additive: classify as MEDIUM
-            if version_bumped and cat in (DRIFT_ANNOUNCED_ADDITION, DRIFT_COVERT_ADDITION, DRIFT_REMOVAL_OR_RENAME):
+            # If version bumped and changes are purely additive (or renames): classify as MEDIUM
+            is_additive = cat in (DRIFT_ANNOUNCED_ADDITION, DRIFT_COVERT_ADDITION) or (
+                cat == DRIFT_REMOVAL_OR_RENAME and p.get("is_rename") is True
+            )
+            if version_bumped and is_additive:
                 sev = SEVERITY_MEDIUM
                 wb = False
             else:
