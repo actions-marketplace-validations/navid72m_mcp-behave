@@ -106,6 +106,9 @@ class ProtocolMonitor:
         loop: Optional[asyncio.AbstractEventLoop] = None,
         canary_mgr: Optional[CanaryManager] = None,
         enable_content_scan: bool = True,
+        server_lock: Optional[Any] = None,
+        enforce: bool = False,
+        live_identity: Optional[Dict[str, Any]] = None,
     ):
         self.session_id = session_id
         self.server_id = server_id
@@ -114,6 +117,9 @@ class ProtocolMonitor:
         self.log_content = log_content
         self.notify = notify
         self.loop = loop
+        self.server_lock = server_lock
+        self.enforce = enforce
+        self.live_identity = live_identity
 
         # Payload content and canary scanner (Milestone 2b)
         self.canary_mgr = canary_mgr or CanaryManager()
@@ -139,6 +145,9 @@ class ProtocolMonitor:
             loop=loop,
             on_event_fn=self._on_tracker_event,
             get_active_ids_fn=self.get_active_request_ids,
+            server_lock=server_lock,
+            enforce=enforce,
+            live_identity=live_identity,
         )
 
         # Non-blocking raw line queue for background parsing and telemetry

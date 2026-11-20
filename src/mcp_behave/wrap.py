@@ -24,7 +24,9 @@ from .events import (
     KIND_SESSION_END,
     KIND_SESSION_START,
 )
+from .identity import resolve_package_identity
 from .launcher import derive_server_id, spawn_child_server, terminate_process_group
+from .lockfile import Lockfile, ServerLock, load_lockfile
 from .protocol import ProtocolMonitor, StreamingFramer
 from .telemetry import TelemetryStore
 
@@ -139,6 +141,8 @@ async def run_proxy(
     canaries: Optional[List[str]] = None,
     canary_file: Optional[str] = None,
     enable_content_scan: bool = True,
+    lockfile_path: Optional[str] = None,
+    enforce: bool = False,
     stdin_reader_override: Optional[asyncio.StreamReader] = None,
     stdout_writer_override: Optional[asyncio.StreamWriter] = None,
 ) -> int:
@@ -167,6 +171,13 @@ async def run_proxy(
     if canary_file:
         canary_mgr.load_from_file(canary_file)
 
+    # Offline package identity resolution and lockfile discovery (Milestone 3)
+    live_identity = resolve_package_identity(server_cmd, augment_path=augment_path, allow_network=False)
+    lockfile = load_lockfile(lockfile_path)
+    server_lock: Optional[ServerLock] = None
+    if isinstance(lockfile, Lockfile):
+        server_lock = lockfile.get_server(eff_server_id)
+
     monitor = ProtocolMonitor(
         session_id=session_id,
         server_id=eff_server_id,
@@ -181,6 +192,9 @@ async def run_proxy(
         loop=loop,
         canary_mgr=canary_mgr,
         enable_content_scan=enable_content_scan,
+        server_lock=server_lock,
+        enforce=enforce,
+        live_identity=live_identity,
     )
 
     # Spawn child server process in its own process group
@@ -204,6 +218,8 @@ async def run_proxy(
             "resolved_command": resolved_cmd0,
             "resolved_command_sha256": resolved_sha256,
             "augmented_path": augment_path,
+            "package_identity": live_identity,
+            "locked_server": server_lock.server_id if server_lock else None,
         },
     )
     await bus.publish(start_event)
@@ -397,7 +413,7 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
         description="Inline transparent stdio proxy and runtime behavioral monitor for MCP servers.",
     )
     parser.add_argument(
-        "--server-id", default=None,
+        "--server", "--server-id", dest="server_id", default=None,
         help="Custom identifier for the monitored server (default: derived from command name and args).",
     )
     parser.add_argument(
@@ -448,6 +464,14 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
         "--no-content-scan", action="store_true",
         help="Disable payload argument and output content scanning (secrets, canaries, indirect injection).",
     )
+    parser.add_argument(
+        "--lockfile", default=None,
+        help="Path to behavioral lockfile (mcp-behave.lock.json). Auto-discovers up to git root if omitted.",
+    )
+    parser.add_argument(
+        "--enforce", action="store_true",
+        help="Strictly enforce behavioral lockfile policies (default: warn only).",
+    )
 
     args = parser.parse_args(wrap_args)
 
@@ -471,6 +495,8 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
             canaries=args.canary,
             canary_file=args.canary_file,
             enable_content_scan=not args.no_content_scan,
+            lockfile_path=args.lockfile,
+            enforce=args.enforce,
         ))
     except KeyboardInterrupt:
         return 130

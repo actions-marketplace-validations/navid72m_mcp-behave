@@ -2,7 +2,8 @@
 
 Thin orchestrator. Does NOT reimplement probe/analyze/report -- it calls them.
 """
-import argparse, asyncio, json, os, platform, sys
+import argparse, asyncio, datetime, json, os, platform, sys
+from pathlib import Path
 
 from . import __version__
 from . import probe as probe_mod
@@ -147,6 +148,15 @@ def _build_parser():
              "only manifest analysis and rug-pull detection run.",
     )
     p.add_argument(
+        "--lock", nargs="?", const="mcp-behave.lock.json", default=None,
+        metavar="LOCKFILE",
+        help="Generate or update behavioral lockfile (mcp-behave.lock.json) with audited server baseline.",
+    )
+    p.add_argument(
+        "--server-id", default=None,
+        help="Explicit server identifier to record in lockfile (defaults to derived from command).",
+    )
+    p.add_argument(
         "server_command", nargs=argparse.REMAINDER,
         help="For --transport stdio: the command to spawn (e.g. "
              "`python -m mcp_server_fetch`). For --transport sse/"
@@ -162,7 +172,7 @@ def _exit_code(findings: list, fail_on: str) -> int:
     return 3 if any(SEV_RANK.get(s, 0) >= threshold for s, _ in findings) else 0
 
 
-SUBCOMMANDS = {"init", "check", "push", "serve", "scan-configs", "audit-configs", "inspect", "lint", "wrap"}
+SUBCOMMANDS = {"init", "check", "push", "serve", "scan-configs", "audit-configs", "inspect", "lint", "wrap", "approve"}
 
 
 def main(argv=None):
@@ -206,6 +216,9 @@ def main(argv=None):
         elif sub == "wrap":
             from . import wrap as wrap_mod
             return wrap_mod.main_wrap(rest)
+        elif sub == "approve":
+            from . import approve as approve_mod
+            return approve_mod.main_approve(rest)
 
     parser = _build_parser()
     args = parser.parse_args(raw_argv)
@@ -305,6 +318,75 @@ def main(argv=None):
     else:
         print("=== STEP 2: declared-vs-observed diff ===")
         findings = report_mod.report(args.out_dir, resolve_dns=not args.no_dns, show_scorecard=args.scorecard, config=cfg)
+
+    if args.lock:
+        from . import identity as identity_mod
+        from . import launcher as launcher_mod
+        from . import lockfile as lockfile_mod
+
+        eff_server_id = args.server_id or launcher_mod.derive_server_id(args.server_command)
+        manifest_path = os.path.join(args.out_dir, "manifest.json")
+        if os.path.exists(manifest_path):
+            with open(manifest_path, "r", encoding="utf-8") as mf:
+                manifest_data = json.load(mf)
+
+            # In audit --lock mode, network registry lookup is permitted
+            pkg_identity = identity_mod.resolve_package_identity(args.server_command, allow_network=True)
+            pkg_lock = lockfile_mod.PackageLock(
+                ecosystem=pkg_identity.get("ecosystem", "unknown"),
+                name=pkg_identity.get("name", ""),
+                version=pkg_identity.get("version", ""),
+                resolved_source=pkg_identity.get("resolved_source", "local"),
+                integrity=pkg_identity.get("integrity", ""),
+            ) if pkg_identity.get("name") else None
+
+            exe_path, exe_hash = identity_mod.resolve_executable_path(args.server_command[0])
+            rt_lock = lockfile_mod.RuntimeLock(
+                executable_path=exe_path or "",
+                executable_sha256=exe_hash or "",
+            ) if exe_path else None
+
+            tools_map = {}
+            for t in manifest_data.get("tools", []):
+                t_name = t.get("name")
+                if t_name:
+                    tools_map[t_name] = lockfile_mod.ToolLock(
+                        description_hash=lockfile_mod.canonical_hash(t.get("description", "")),
+                        input_schema_hash=lockfile_mod.canonical_hash(t.get("inputSchema")),
+                        annotations=lockfile_mod.compute_effective_annotations(t.get("annotations")),
+                    )
+
+            instructions_text = manifest_data.get("instructions")
+            inst_hash = lockfile_mod.canonical_hash(instructions_text) if instructions_text is not None else ""
+
+            server_lock = lockfile_mod.ServerLock(
+                server_id=eff_server_id,
+                command=list(args.server_command),
+                package=pkg_lock,
+                runtime=rt_lock,
+                audit={
+                    "audited_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "findings_count": len(findings),
+                },
+                manifest={
+                    "server_info": manifest_data.get("server_info", {}),
+                    "instructions_hash": inst_hash,
+                    "capabilities": manifest_data.get("capabilities", {}),
+                    "tools": tools_map,
+                    "prompts": {p.get("name"): p for p in manifest_data.get("prompts", []) if p.get("name")},
+                    "resources": {r.get("uri"): r for r in manifest_data.get("resources", []) if r.get("uri")},
+                },
+            )
+
+            target_lock_file = Path(args.lock).resolve()
+            lf = lockfile_mod.load_lockfile(target_lock_file)
+            if not isinstance(lf, lockfile_mod.Lockfile):
+                lf = lockfile_mod.Lockfile()
+
+            lf.add_or_update_server(server_lock)
+            lockfile_mod.save_lockfile(lf, target_lock_file)
+            if not quiet:
+                print(f"\n[lockfile] Behavioral baseline committed to '{target_lock_file.name}' for server '{eff_server_id}' ({len(tools_map)} tools locked).")
 
     return _exit_code(findings, fail_on)
 

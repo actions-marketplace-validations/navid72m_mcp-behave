@@ -89,3 +89,38 @@ This document records key architectural and design decisions made across milesto
   - Canary token scanning evaluates ALL tool call arguments (`client_to_server`) and ALL tool call results (`server_to_client`) without tool-name restrictions. Any canary presence emits `SEVERITY_CRITICAL`, `evidence_tier=EVIDENCE_TIER_OBSERVED`, and `would_block=True`.
   - Indirect prompt injection cues detected in returned tool results (e.g., fetched web pages or database queries) are categorized as `KIND_INDIRECT_INJECTION` with `SEVERITY_MEDIUM`, `evidence_tier=EVIDENCE_TIER_HEURISTIC`, and `would_block=False`, ensuring standalone external heuristics never trigger false-positive blocks.
 - **Status**: Implemented & verified.
+
+### ADR-010: GIL-Yielding Fast Pre-Filtering for Large Byte Buffers
+- **Context**: Running multi-alternative regex passes or 22 compiled regexes across 1 MB byte arrays on Python worker threads monopolizes the GIL for 4+ ms, delaying stdio pump processing.
+- **Decision**:
+  - Deploy `COMBINED_TEXT_PREFILTER` to bypass regex evaluation on standard clean tool call text in `< 0.01 ms`.
+  - Deploy single-pass hierarchical byte searching in `scan_raw_bytes` skipping 1 MB clean buffers in `< 1.2 ms`.
+- **Status**: Implemented & verified.
+
+---
+
+## Milestone 3 Decisions (Behavioral Lockfiles, Approve Workflow & Package Pinning)
+
+### ADR-011: Canonical Schema Hashing & Multi-Server Lockfile Representation
+- **Context**: Behavioral lockfiles must establish a tamper-evident, version-controllable ground truth across multiple servers without false-positive drift alerts from JSON key reordering or whitespace variance.
+- **Decision**:
+  - Structure `mcp-behave.lock.json` with a top-level `"servers": { "<server_id>": ... }` dictionary to support multi-server client configurations.
+  - Compute SHA-256 digests over canonically serialized JSON schemas (sorted keys, compact delimiters, UTF-8 encoded).
+  - All lockfile drift events strictly emit `evidence_tier = "observed"`.
+- **Status**: Implemented & verified.
+
+### ADR-012: Offline Package Identity Pinning for Ephemeral Runners
+- **Context**: Resolving `/usr/bin/npx` or `/Users/.../uvx` yields the launcher's hash rather than the server's package identity, while making external network queries during proxy operation violates standing offline invariants.
+- **Decision**:
+  - Package identity inspection inside `mcp-behave wrap` is strictly local and offline.
+  - Inspect local package runner caches (`~/.npm/_npx/`, `~/.cache/uv/`, `.dist-info/METADATA`) or compute cryptographic hashes of resolved package entrypoint files.
+  - Remote registry queries (npm, PyPI) are permitted only during offline lockfile generation in `mcp-behave audit --lock`, never in `wrap`.
+  - If package metadata cannot be extracted locally, fall back gracefully to entrypoint file SHA-256 and argument pinning with an `INFORMATIONAL` event.
+- **Status**: Implemented & verified.
+
+### ADR-013: Lockfile In-Memory Indexing & Atomic Flock Persistence
+- **Context**: Verifying tool calls against the lockfile must not incur disk I/O on the streaming hot path, and updating the lockfile during `approve` or `audit --lock` must not race with concurrent executions.
+- **Decision**:
+  - Parse and index the lockfile in memory at proxy startup into an $O(1)$ tool hash map ($< 0.005$ ms check).
+  - Lockfile writes employ atomic file replacement (`tempfile.NamedTemporaryFile` + `os.replace`) guarded by an advisory flock (`fcntl.flock(LOCK_EX)`) on `mcp-behave.lock.json.lock`.
+- **Status**: Implemented & verified.

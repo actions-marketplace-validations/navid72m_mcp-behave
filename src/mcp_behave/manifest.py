@@ -29,13 +29,19 @@ from .events import (
     EVIDENCE_TIER_CORRELATED,
     EVIDENCE_TIER_OBSERVED,
     KIND_CROSS_SESSION_DRIFT,
+    KIND_LOCKFILE_DRIFT,
     KIND_MANIFEST_BASELINE,
     KIND_MANIFEST_DRIFT,
+    KIND_PACKAGE_DRIFT,
+    KIND_PACKAGE_TAMPER,
+    SEVERITY_CRITICAL,
     SEVERITY_HIGH,
     SEVERITY_INFO,
     SEVERITY_MEDIUM,
 )
 from .heuristics import check_prompt_injection
+from .identity import check_package_tamper
+from .lockfile import ServerLock, diff_against_lockfile
 
 
 def get_effective_annotations(tool: Dict[str, Any]) -> Dict[str, bool]:
@@ -297,6 +303,9 @@ class ManifestTracker:
         loop: Optional[asyncio.AbstractEventLoop] = None,
         on_event_fn: Optional[Callable[[BehavioralEvent], None]] = None,
         get_active_ids_fn: Optional[Callable[[], List[Any]]] = None,
+        server_lock: Optional[ServerLock] = None,
+        enforce: bool = False,
+        live_identity: Optional[Dict[str, Any]] = None,
     ):
         self.session_id = session_id
         self.server_id = server_id
@@ -308,6 +317,9 @@ class ManifestTracker:
         self.pagination_timeout = pagination_timeout
         self.on_event_fn = on_event_fn
         self.get_active_ids_fn = get_active_ids_fn
+        self.server_lock = server_lock
+        self.enforce = enforce
+        self.live_identity = live_identity
 
         if loop is not None:
             self.loop = loop
@@ -537,6 +549,12 @@ class ManifestTracker:
         self.instructions = result.get("instructions")
 
         events: List[BehavioralEvent] = []
+
+        # Check package identity against lockfile baseline (Milestone 3)
+        if self.server_lock:
+            pkg_events = self.evaluate_package_identity()
+            events.extend(pkg_events)
+
         if self.instructions:
             is_suspicious, reasons = check_prompt_injection(self.instructions)
             if is_suspicious:
@@ -680,6 +698,75 @@ class ManifestTracker:
                 for evt in events:
                     self.on_event_fn(evt)
 
+    def evaluate_package_identity(self) -> List[BehavioralEvent]:
+        """Verify live resolved package identity against locked package baseline."""
+        if not self.server_lock or not self.server_lock.package or not self.live_identity:
+            return []
+
+        tamper_findings = check_package_tamper(self.server_lock.package, self.live_identity)
+        events: List[BehavioralEvent] = []
+        for f in tamper_findings:
+            if f["severity"] in (SEVERITY_HIGH, SEVERITY_CRITICAL):
+                self.has_high_drift = True
+            evt = BehavioralEvent(
+                event="package_tamper" if f["kind"] == KIND_PACKAGE_TAMPER else "package_drift",
+                session_id=self.session_id,
+                server_id=self.server_id,
+                kind=f["kind"],
+                source="monitor",
+                evidence_tier=EVIDENCE_TIER_OBSERVED,
+                severity=f["severity"],
+                target=self.server_id,
+                timestamp=time.time(),
+                payload={
+                    "server_id": self.server_id,
+                    "category": f["category"],
+                    "message": f["message"],
+                    "details": f.get("details", {}),
+                    "would_block": f["would_block"] or self.enforce,
+                    "enforce": self.enforce,
+                },
+            )
+            events.append(evt)
+            if self.on_event_fn:
+                self.on_event_fn(evt)
+        return events
+
+    def _evaluate_lockfile_drift(self, tools_list: List[Dict[str, Any]]) -> List[BehavioralEvent]:
+        """Evaluate tools list against locked baseline."""
+        if not self.server_lock:
+            return []
+        diffs = diff_against_lockfile(self.server_lock, tools_list, self.instructions)
+        events: List[BehavioralEvent] = []
+        for d in diffs:
+            if d["severity"] in (SEVERITY_HIGH, SEVERITY_CRITICAL):
+                self.has_high_drift = True
+            evt = BehavioralEvent(
+                event="lockfile_drift",
+                session_id=self.session_id,
+                server_id=self.server_id,
+                kind=KIND_LOCKFILE_DRIFT,
+                source="monitor",
+                evidence_tier=EVIDENCE_TIER_OBSERVED,
+                severity=d["severity"],
+                current_tool=d.get("tool"),
+                target=d.get("tool") or self.server_id,
+                timestamp=time.time(),
+                payload={
+                    "server_id": self.server_id,
+                    "category": d["category"],
+                    "tool": d.get("tool"),
+                    "message": d["message"],
+                    "details": d.get("details", {}),
+                    "would_block": d["would_block"] or self.enforce,
+                    "enforce": self.enforce,
+                },
+            )
+            events.append(evt)
+            if self.on_event_fn:
+                self.on_event_fn(evt)
+        return events
+
     def _evaluate_tools_manifest(
         self,
         tools_list: List[Dict[str, Any]],
@@ -709,10 +796,17 @@ class ManifestTracker:
                     "drift_origin": drift_origin,
                 },
             )
-            return [evt]
+            events = [evt]
+            if self.server_lock:
+                lockfile_events = self._evaluate_lockfile_drift(tools_list)
+                events.extend(lockfile_events)
+            return events
 
         # 2. Subsequent observation: Diff against baseline
         events = self._diff_against_tools_baseline(current_map, drift_origin=drift_origin)
+        if self.server_lock:
+            lockfile_events = self._evaluate_lockfile_drift(tools_list)
+            events.extend(lockfile_events)
         return events
 
     def _diff_against_tools_baseline(

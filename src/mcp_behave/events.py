@@ -79,6 +79,11 @@ KIND_CANARY_EXFILTRATION = "canary_exfiltration"
 KIND_INDIRECT_INJECTION = "indirect_injection"
 KIND_ARGUMENT_HEURISTIC = "argument_heuristic"
 
+# Lockfile & package identity event kinds (Milestone 3)
+KIND_LOCKFILE_DRIFT = "lockfile_drift"
+KIND_PACKAGE_DRIFT = "package_drift"
+KIND_PACKAGE_TAMPER = "package_tamper"
+
 # Manifest drift categories
 DRIFT_COVERT_ADDITION = "covert_addition"
 DRIFT_ANNOUNCED_ADDITION = "announced_addition"
