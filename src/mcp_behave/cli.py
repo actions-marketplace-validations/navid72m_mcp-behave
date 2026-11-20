@@ -60,6 +60,9 @@ def _build_parser():
                     "and compares what it DECLARED against what it actually DID.\n\n"
                     "Subcommands:\n"
                     "  `mcp-behave wrap` runs an inline transparent behavioral proxy with lockfile enforcement\n"
+                    "  `mcp-behave install` installs mcp-behave wrapper into MCP client configurations\n"
+                    "  `mcp-behave uninstall` safely unwraps servers in MCP client configurations\n"
+                    "  `mcp-behave status` inspects client configuration wrapping and lockfile status\n"
                     "  `mcp-behave init` generates a committed baseline behavior lockfile (mcp-behave.lock)\n"
                     "  `mcp-behave check` diffs live server behavior against mcp-behave.lock in CI\n"
                     "  `mcp-behave lint` statically audits a manifest.json or tools file without execution\n"
@@ -172,7 +175,7 @@ def _exit_code(findings: list, fail_on: str) -> int:
     return 3 if any(SEV_RANK.get(s, 0) >= threshold for s, _ in findings) else 0
 
 
-SUBCOMMANDS = {"init", "check", "push", "serve", "scan-configs", "audit-configs", "inspect", "lint", "wrap", "approve"}
+SUBCOMMANDS = {"init", "check", "push", "serve", "scan-configs", "audit-configs", "inspect", "lint", "wrap", "approve", "install", "uninstall", "status"}
 
 
 def main(argv=None):
@@ -219,6 +222,15 @@ def main(argv=None):
         elif sub == "approve":
             from . import approve as approve_mod
             return approve_mod.main_approve(rest)
+        elif sub == "install":
+            from . import install as install_mod
+            return install_mod.main_install(rest)
+        elif sub == "uninstall":
+            from . import install as install_mod
+            return install_mod.main_uninstall(rest)
+        elif sub == "status":
+            from . import install as install_mod
+            return install_mod.main_status(rest)
 
     parser = _build_parser()
     args = parser.parse_args(raw_argv)
