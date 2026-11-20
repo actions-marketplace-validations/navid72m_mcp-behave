@@ -126,7 +126,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run MCP-Behave Check
-        uses: navid72m/mcp-behave@v0.4.3
+        uses: navid72m/mcp-behave@v0.4.4
         with:
           command: "python -m my_server"
           lockfile: "mcp-behave.lock"
