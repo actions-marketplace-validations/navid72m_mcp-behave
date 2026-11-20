@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import __version__
 from . import config as config_mod
+from .probe import unwrap_schema
 from . import report as report_mod
 from . import sarif as sarif_mod
 from . import scorecard as scorecard_mod
@@ -257,12 +258,19 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
 
         # Check: Deceptive destructiveHint: false Annotation
         if annotations.get("destructiveHint") is False:
-            deceptive_hit = _match_verb(("overwrite", "reset", "clear", "wipe", "flush", *DESTRUCTIVE_VERBS), haystack)
-            if deceptive_hit:
+            name_hit = _match_verb(("overwrite", "reset", "clear", "wipe", "flush", *DESTRUCTIVE_VERBS), tname)
+            if name_hit:
                 findings.append((
                     "HIGH",
-                    f"tool '{tname}' advertises destructiveHint: false but implies destructive action ('{deceptive_hit}') -- deceptive annotation risk"
+                    f"tool '{tname}' advertises destructiveHint: false but tool name implies destructive action ('{name_hit}') -- deceptive annotation risk [STRONG_EVIDENCE]"
                 ))
+            else:
+                desc_hit = _match_verb(("overwrite", "reset", "clear", "wipe", "flush", *DESTRUCTIVE_VERBS), tdesc)
+                if desc_hit:
+                    findings.append((
+                        "WARN",
+                        f"tool '{tname}' advertises destructiveHint: false but description mentions potentially destructive keyword ('{desc_hit}') -- deceptive annotation risk [HEURISTIC]"
+                    ))
 
         # Check: Hidden / Backdoor Exfiltration Tool (MCP009 Shadow Server Indicator)
         is_backdoor_name = tname.startswith("_") and any(k in tname.lower() for k in ("dump", "exfil", "log", "buffer", "secret", "leak", "backdoor", "query"))
@@ -274,7 +282,7 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
             ))
 
         # Check: Mutating Tool with Unscoped Input (MCP003)
-        write_hit = _match_verb(WRITE_VERBS, haystack)
+        write_hit = None if is_query_tool else _match_verb(WRITE_VERBS, haystack)
         if write_hit and not destructive_hit and len(props) == 0:
             findings.append((
                 "INFO",
@@ -305,25 +313,34 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
                 ))
 
         # Parameter-Level Checks (Path traversal, SSRF, Hardcoded secrets, Unconstrained strings)
-        for pname, pdef in props.items():
-            if not isinstance(pdef, dict):
+        for pname, raw_pdef in props.items():
+            if not isinstance(raw_pdef, dict):
                 continue
 
+            pdef = unwrap_schema(raw_pdef)
             pname_lower = pname.lower()
             ptype = pdef.get("type")
-            is_string = (ptype == "string") or (ptype is None)
+            is_string = (ptype == "string") or (ptype is None and not any(k in pdef for k in ("items", "properties")))
 
             # Check: Path Traversal Argument (MCP031)
             is_path_param = any(k in pname_lower for k in PATH_ARG_KEYWORDS)
             if is_path_param and is_string:
+                # Distinguish remote repository/VCS paths from local host filesystem paths
+                is_remote_vcs = any(tname.lower().startswith(p) for p in ("gitlab_", "github_", "git_", "s3_", "repo_", "remote_")) or any(w in tname.lower() for w in ("tree", "commit", "compare", "branch"))
                 has_constraints = bool(pdef.get("pattern") or pdef.get("enum"))
                 if not has_constraints:
-                    is_read_tool = any(w in tname.lower() for w in ("read", "get", "cat", "view", "show", "open"))
-                    sev = "INFO" if is_read_tool else "HIGH"
-                    findings.append((
-                        sev,
-                        f"tool '{tname}' argument '{pname}' accepts unconstrained filesystem path without pattern or enum validation -- path traversal risk"
-                    ))
+                    if is_remote_vcs:
+                        findings.append((
+                            "INFO",
+                            f"tool '{tname}' argument '{pname}' accepts a repository or remote object path"
+                        ))
+                    else:
+                        is_read_tool = any(w in tname.lower() for w in ("read", "get", "cat", "view", "show", "open"))
+                        sev = "INFO" if is_read_tool else "WARN"
+                        findings.append((
+                            sev,
+                            f"tool '{tname}' argument '{pname}' accepts unconstrained filesystem path without pattern or enum validation -- path traversal risk [HEURISTIC]"
+                        ))
 
             # Check: SSRF Argument (MCP041)
             is_url_param = any(k in pname_lower for k in URL_ARG_KEYWORDS) or pdef.get("format") in ("uri", "url")

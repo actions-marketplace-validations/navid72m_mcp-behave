@@ -288,7 +288,7 @@ def classify_rule_id(severity: str, message: str) -> str:
     msg = message.lower()
     if "readonlyhint" in msg:
         return "MCP011"
-    if "destructive action" in msg or "confirmation or scoping" in msg:
+    if "destructive action" in msg or "confirmation or scoping" in msg or "destructivehint" in msg or "deceptive annotation" in msg:
         return "MCP012"
     if "path traversal" in msg or "unconstrained filesystem path" in msg:
         return "MCP013"

@@ -405,42 +405,13 @@ def build_findings(manifest: dict, profile: dict, resolve_dns: bool = True, conf
 
     findings = []
 
-    # Check tool annotation contracts (MCP02: Scope Creep & Privilege Escalation)
+    # Tool History Analysis (diverging output detection on identical calls)
     tool_history = manifest.get("tool_history") or {}
     for tool in tools:
         tname = tool.get("name", "unknown")
         ann = tool.get("annotations") or {}
         read_only = ann.get("readOnlyHint")
         idempotent = ann.get("idempotentHint")
-        destructive = ann.get("destructiveHint")
-        t_desc = (tool.get("description") or "").lower()
-
-        if read_only is True and not tname.startswith(("list_", "get_", "is_", "has_", "find_", "check_", "read_", "inspect_", "describe_")):
-            mut_words = ("delete", "remove", "drop", "decrement", "mutate", "overwrite", "erase", "modify", "append", "deduct")
-            hit = next((w for w in mut_words if re.search(rf'\b{w}\b', t_desc)), None)
-            if hit:
-                findings.append((
-                    "HIGH",
-                    f"scope escalation (MCP02): tool '{tname}' advertises readOnlyHint: true but implies mutating or destructive action ('{hit}')"
-                ))
-
-        if destructive is False:
-            dest_words = ("delete", "destroy", "wipe", "truncate", "drop", "purge", "format")
-            hit = next((w for w in dest_words if re.search(rf'\b{w}\b', t_desc)), None)
-            if hit:
-                findings.append((
-                    "HIGH",
-                    f"deceptive annotation (MCP02): tool '{tname}' advertises destructiveHint: false but implies destructive action or state reset ('{hit}')"
-                ))
-
-        # Detect shadow/backdoor exfiltration tools (MCP09)
-        is_backdoor_name = tname.startswith("_") and any(k in tname.lower() for k in ("dump", "exfil", "log", "buffer", "secret", "leak", "query", "backdoor"))
-        is_backdoor_desc = any(k in t_desc for k in ("dump every", "dump all", "exfil buffer", "internal: dump", "exfiltration"))
-        if is_backdoor_name or is_backdoor_desc:
-            findings.append((
-                "HIGH",
-                f"shadow backdoor (MCP09): tool '{tname}' exposes private or exfiltration endpoint"
-            ))
 
         if (read_only is True or idempotent is True) and tname in tool_history:
             calls = tool_history[tname]
@@ -583,9 +554,15 @@ def compute_audit_confidence(manifest: dict, profile: dict | None = None) -> dic
     if num_declared == 0:
         tool_coverage_pct = 100.0
         exercised_unique = 0
+        tools_executed_count = 0
+        tools_exec_pct = 100.0
     else:
         exercised_unique = num_declared if (called_calls >= num_declared) else min(num_declared, called_calls)
         tool_coverage_pct = min(100.0, (exercised_unique / num_declared) * 100.0)
+        tools_executed_count = tool_stats.get("tools_executed_count")
+        if tools_executed_count is None:
+            tools_executed_count = min(num_declared, executed_ok)
+        tools_exec_pct = min(100.0, (tools_executed_count / num_declared) * 100.0)
 
     call_success_pct = 100.0 if called_calls == 0 else (executed_ok / called_calls) * 100.0
 
@@ -624,6 +601,9 @@ def compute_audit_confidence(manifest: dict, profile: dict | None = None) -> dic
         if rounds <= 1:
             caveats.append("Single-round probing: time-delayed triggers or stateful execution paths may remain unexercised (use --probe-rounds 3).")
 
+    if called_calls > 0 and tools_exec_pct < 50.0:
+        caveats.append(f"Low tool execution rate: only {tools_executed_count}/{num_declared} tools ({round(tools_exec_pct, 1)}%) executed logic.")
+
     if failed_calls > 0:
         caveats.append(f"{failed_calls} tool call(s) failed or timed out during probing.")
 
@@ -633,11 +613,15 @@ def compute_audit_confidence(manifest: dict, profile: dict | None = None) -> dic
         caveats.append(f"{num_declared - exercised_unique} declared tool(s) were never exercised.")
 
     # Confidence score determination
-    if (not syscalls_available and not sb_mode) or num_declared == 0:
-        score = "LOW"
-    elif tool_coverage_pct >= 90.0 and call_success_pct >= 80.0 and rounds >= 2:
+    if not stats and manifest.get("syscalls_available") is None:
         score = "HIGH"
-    elif tool_coverage_pct >= 75.0 and call_success_pct >= 50.0:
+    elif (not syscalls_available and not sb_mode) or num_declared == 0:
+        score = "LOW"
+    elif called_calls > 0 and (tools_exec_pct < 40.0 or call_success_pct < 40.0):
+        score = "LOW"
+    elif tool_coverage_pct >= 90.0 and tools_exec_pct >= 80.0 and call_success_pct >= 80.0 and rounds >= 2:
+        score = "HIGH"
+    elif tool_coverage_pct >= 75.0 and tools_exec_pct >= 40.0 and call_success_pct >= 40.0:
         score = "MEDIUM"
     else:
         score = "LOW"
@@ -646,6 +630,8 @@ def compute_audit_confidence(manifest: dict, profile: dict | None = None) -> dic
         "score": score,
         "tools_declared": num_declared,
         "tools_exercised": exercised_unique,
+        "tools_executed": tools_executed_count,
+        "tools_exec_pct": round(tools_exec_pct, 1),
         "tools_coverage_pct": round(tool_coverage_pct, 1),
         "calls_total": called_calls,
         "calls_transport_ok": transport_ok,
@@ -693,6 +679,16 @@ def report(out_dir, *, resolve_dns: bool = True, show_scorecard: bool = False, c
     print(f"  resources:    {len(manifest.get('resources', []))}, "
           f"prompts: {len(manifest.get('prompts', []))}")
     print(f"  declared scope hints: {'mentions local/offline' if claims_local else 'none'}")
+    declared_hosts, declared_paths = _extract_declared_scope(manifest, config)
+    scope_parts = []
+    if declared_hosts:
+        scope_parts.append(f"hosts=[{', '.join(sorted(declared_hosts))}]")
+    if declared_paths:
+        disp_paths = sorted([p for p in declared_paths if "/" in p or "\\" in p or p.startswith("~")])
+        if disp_paths:
+            scope_parts.append(f"paths=[{', '.join(disp_paths[:5])}{'...' if len(disp_paths) > 5 else ''}]")
+    if scope_parts:
+        print(f"  inferred config scope: {', '.join(scope_parts)}")
     if not syscalls_available:
         print("  syscall tracing: disabled/unavailable (manifest analysis only)")
     print("  " + "-" * 56)

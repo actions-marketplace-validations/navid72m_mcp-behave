@@ -298,6 +298,34 @@ def _tracer_setup(server_cmd: list[str], trace_file: str,
     return server_cmd, "", {}
 
 
+def unwrap_schema(spec: dict | None) -> dict:
+    """Unwrap anyOf / oneOf / allOf schemas (e.g. FastMCP / Pydantic v2 Optional types).
+    Selects the first non-null branch and merges its properties with outer spec.
+    """
+    if not isinstance(spec, dict):
+        return {}
+    unwrapped = dict(spec)
+    for branch_key in ("anyOf", "oneOf", "allOf"):
+        branches = unwrapped.get(branch_key)
+        if isinstance(branches, list) and branches:
+            non_null_branches = [
+                b for b in branches
+                if isinstance(b, dict) and b.get("type") != "null"
+            ]
+            if non_null_branches:
+                target = non_null_branches[0]
+                target_unwrapped = unwrap_schema(target)
+                merged = dict(target_unwrapped)
+                merged.update({k: v for k, v in unwrapped.items() if k not in ("anyOf", "oneOf", "allOf") and v is not None})
+                unwrapped = merged
+                break
+    t_type = unwrapped.get("type")
+    if isinstance(t_type, list):
+        non_null = [t for t in t_type if t != "null"]
+        unwrapped["type"] = non_null[0] if non_null else ("string" if not non_null else non_null[0])
+    return unwrapped
+
+
 def synth_args(schema: dict | None, round_idx: int = 0) -> dict:
     """Synthesize valid arguments from a tool's JSON Schema.
 
@@ -352,7 +380,7 @@ def synth_args(schema: dict | None, round_idx: int = 0) -> dict:
         "string": ["valid-input", "standard-value", "test-parameter"],
         "integer": [1, 2, 5],
         "number": [1.0, 2.5, 10.0],
-        "boolean": [True, False],
+        "boolean": [False, True],
         "array": [[]],
         "object": [{}]
     }
@@ -362,8 +390,19 @@ def synth_args(schema: dict | None, round_idx: int = 0) -> dict:
             return choices[idx % len(choices)]
         return choices
 
-    def synth_one(key: str, spec: dict):
-        spec = spec or {}
+    def synth_one(key: str, raw_spec: dict):
+        spec = unwrap_schema(raw_spec)
+        k = key.lower()
+
+        # Confirmation / action gates must ALWAYS default to False to prevent live mutations
+        is_confirm = any(c in k for c in ("confirm", "force", "execute", "apply", "delete_data", "commit", "action"))
+        if is_confirm:
+            return False
+
+        # Preview / dry run parameters default to True
+        if any(c in k for c in ("dry_run", "dryrun", "preview", "simulate")):
+            return True
+
         if isinstance(spec.get("enum"), list) and spec["enum"]:
             return _pick(spec["enum"], round_idx)
         if "default" in spec and spec["default"] is not None and round_idx == 0:
@@ -375,18 +414,33 @@ def synth_args(schema: dict | None, round_idx: int = 0) -> dict:
         if isinstance(t_type, list):
             non_null = [t for t in t_type if t != "null"]
             t_type = non_null[0] if non_null else (t_type[0] if t_type else "string")
+
+        if t_type == "boolean":
+            if "default" in spec and spec["default"] is not None:
+                return bool(spec["default"]) if round_idx == 0 else not bool(spec["default"])
+            return False if round_idx == 0 else True
+
         if t_type == "string":
-            k = key.lower()
             for needle, val_list in KEYNAME_HINTS:
                 if needle in k:
                     return _pick(val_list, round_idx)
+
         val = _pick(TYPE_DEFAULTS.get(t_type, ["valid-input"]), round_idx)
         if isinstance(val, (int, float)) and "minimum" in spec and val < spec["minimum"]:
             val = spec["minimum"]
         return val
 
-    return {key: synth_one(key, spec)
-            for key, spec in (schema or {}).get("properties", {}).items()}
+    props = (schema or {}).get("properties", {})
+    required = set((schema or {}).get("required") or [])
+
+    # Round 0: if required fields are specified, send required-only payload to avoid
+    # tripping over optional filter/timestamp validators (e.g. since, until, tags)
+    if round_idx == 0 and required:
+        target_keys = [k for k in props if k in required]
+    else:
+        target_keys = list(props.keys())
+
+    return {key: synth_one(key, props[key]) for key in target_keys}
 
 
 def synth_fuzz_args(schema: dict | None) -> list[dict]:
@@ -416,9 +470,10 @@ def synth_fuzz_args(schema: dict | None) -> list[dict]:
 
     for str_payload, num_payload in FUZZ_VECTORS:
         variant = dict(base_args)
-        for key, spec in props.items():
-            if not isinstance(spec, dict):
+        for key, raw_spec in props.items():
+            if not isinstance(raw_spec, dict):
                 continue
+            spec = unwrap_schema(raw_spec)
             t = spec.get("type", "string")
             if isinstance(t, list):
                 non_null = [item for item in t if item != "null"]
@@ -537,14 +592,17 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
             "validation_rejected": 0,
             "tool_error": 0,
             "ok": 0,
+            "tools_executed_count": 0,
+            "tools_executed_names": [],
         },
         "resources": {"called": 0, "ok": 0},
         "prompts": {"called": 0, "ok": 0}
     }
     tool_outputs = {}
     tool_history = {}
+    executed_tools = set()
 
-    def _eval_tool_call(ok: bool, res: Any) -> tuple[bool, str]:
+    def _eval_tool_call(ok: bool, res: Any, tname: str = "") -> tuple[bool, str]:
         if not ok or res is None:
             stats["tools"]["tool_error"] += 1
             return False, ""
@@ -557,6 +615,8 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
         if not is_err and not is_val_rej:
             stats["tools"]["executed_ok"] += 1
             stats["tools"]["ok"] += 1
+            if tname:
+                executed_tools.add(tname)
             return True, text
         elif is_val_rej:
             stats["tools"]["validation_rejected"] += 1
@@ -588,7 +648,7 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
             ok, res = await _call_with_timeout(
                 session.call_tool(t["name"], args), f"tool {t['name']}", call_timeout)
             _emit_trace_marker(trace_file, "CALL_END", t["name"])
-            exec_ok, text = _eval_tool_call(ok, res)
+            exec_ok, text = _eval_tool_call(ok, res, tname)
             if text:
                 tool_outputs[t["name"]] = text
                 tool_history.setdefault(t["name"], []).append({"args": args, "output": text, "round": round_idx, "executed_ok": exec_ok})
@@ -599,7 +659,7 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
                 stats["tools"]["called"] += 1
                 ok2, res2 = await _call_with_timeout(
                     session.call_tool(t["name"], args2), f"tool {t['name']} (seed)", call_timeout)
-                _eval_tool_call(ok2, res2)
+                _eval_tool_call(ok2, res2, tname)
 
             if fuzz and round_idx == 0:
                 fuzz_arg_sets = synth_fuzz_args(t.get("inputSchema"))
@@ -611,13 +671,16 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
                         stats["fuzz"]["attempted"] += 1
                         f_ok, f_res = await _call_with_timeout(
                             session.call_tool(t["name"], f_args), f"fuzz tool {t['name']}", call_timeout)
-                        f_exec_ok, f_text = _eval_tool_call(f_ok, f_res)
+                        f_exec_ok, f_text = _eval_tool_call(f_ok, f_res, tname)
                         if f_ok:
                             stats["fuzz"]["ok"] += 1
                             if f_text and t["name"] not in tool_outputs:
                                 tool_outputs[t["name"]] = f_text
                         else:
                             stats["fuzz"]["failed"] += 1
+
+    stats["tools"]["tools_executed_count"] = len(executed_tools)
+    stats["tools"]["tools_executed_names"] = sorted(list(executed_tools))
 
     print(f"[probe] discovered {len(resources_meta)} resource(s)")
     for r in resources_meta:
