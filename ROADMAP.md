@@ -1,6 +1,6 @@
 # mcp-behave: Roadmap & Strategy
 
-Current state (**v0.4.0**): Canary `$HOME` host isolation, sensitive credential environment scrubbing, explicit `--unsafe-host` gate, hardened MCP `serve` mode with command allowlists, Behavioral Regression Lockfile (`mcp-behave init` & `mcp-behave check`), Audit Confidence scoring across CLI/JSON/SARIF, expanded strace syscall set and parser, Native libc interposition (`DYLD_INSERT_LIBRARIES` on macOS, `LD_PRELOAD` on Linux), hardened symlink resolution, long-path truncation defense, AF_UNIX domain socket & container runtime control interposition (`docker.sock`, `containerd.sock`, `podman.sock`), UDP & `sendmsg`/`sendmmsg` capture, read vs write file distinction, expanded sensitive secret targets, tool-scoped local claims, multi-round probing (`--probe-rounds`), client config scanning (Claude Desktop, Cursor, Continue), full MCP-audit catalog (MCP001–MCP062), SARIF v2.1.0 reporting, and official MCP Registry, PyPI, and npm distribution.
+Current state (**v0.4.2**): Linux eBPF kernel tracepoint backend (`--tracer ebpf`, C CO-RE program `mcp_behave.bpf.c`, normalized `BehavioralEvent` architecture, Python loader & struct unpacker), empirical audit of all 7 official reference MCP servers (`Git`, `Filesystem`, `Fetch`, `Memory`, `Sequential Thinking`, `Everything`, `Time`) across an automated 15-test adversarial validation campaign (`docs/benchmarks/official_servers_audit.md`), grammar-aware heuristic parser in `lint.py` with regex word boundaries and inflections (`_match_verb`), robust JSON Schema union type synthesis support, dual-channel community survey & private feedback system (GitHub Issue form `.github/ISSUE_TEMPLATE/feedback.yml` and interactive web survey `docs/survey.html`), Canary `$HOME` host isolation, sensitive credential environment scrubbing, explicit `--unsafe-host` gate, hardened MCP `serve` mode with command allowlists, Behavioral Regression Lockfile (`mcp-behave init` & `mcp-behave check`), Audit Confidence scoring across CLI/JSON/SARIF, expanded strace syscall set and parser, Native libc interposition (`DYLD_INSERT_LIBRARIES` on macOS, `LD_PRELOAD` on Linux), hardened symlink resolution, long-path truncation defense, AF_UNIX domain socket & container runtime control interposition (`docker.sock`, `containerd.sock`, `podman.sock`), UDP & `sendmsg`/`sendmmsg` capture, read vs write file distinction, expanded sensitive secret targets, tool-scoped local claims, multi-round probing (`--probe-rounds`), client config scanning (Claude Desktop, Cursor, Continue), full MCP-audit catalog (MCP001–MCP062), SARIF v2.1.0 reporting, and live synchronized distribution across PyPI, npm, and official Model Context Protocol Registry.
 
 ---
 
@@ -45,7 +45,7 @@ The core differentiator for `mcp-behave` is **"declared vs observed behavior, tr
 
 ## 4. Phased Roadmap
 
-### Shipped Milestones (v0.1.0 – v0.3.5)
+### Shipped Milestones (v0.1.0 – v0.4.2)
 
 - [x] **Native Libc Interposition Engine** — zero-root, fast interposition on macOS (`DYLD_INSERT_LIBRARIES`) and Linux (`LD_PRELOAD`), hooking `open`, `openat`, `connect`, `sendto`, `sendmsg`, `sendmmsg`, `execve`, and `posix_spawn`.
 - [x] **Symlink Resolution Defense** — pre-open `realpath()` resolution and post-open descriptor lookup (`fcntl(F_GETPATH)` on macOS; `/proc/self/fd` on Linux) to defeat symlink alias cloaking.
@@ -57,25 +57,18 @@ The core differentiator for `mcp-behave` is **"declared vs observed behavior, tr
 - [x] **Per-Tool Scoped Local Claims** — bounds "local/offline" assertions to specific tool invocations using `M CALL_START <tool>` markers, avoiding false positives on multi-tool servers.
 - [x] **Multi-Round Varied Probing** — `--probe-rounds N` generating varied, realistic arguments to defeat single-call canary evasion.
 - [x] **Config Scanning & Audit Catalog** — local client config scans (Claude Desktop, Cursor, Continue) and complete MCP-audit rule coverage (MCP001–MCP062).
-- [x] **Distribution & Registry Verification** — PyPI, npm, and official Model Context Protocol Registry (`io.github.navid72m/mcp-behave`) release pipelines.
+- [x] **Behavior Lockfile & CI Regression Engine** — `mcp-behave init` produces `mcp-behave.lock`, and `mcp-behave check` detects undeclared regressions with zero false positives.
+- [x] **Official GitHub Action (`action.yml`)** — automated PR gating with SARIF v2.1.0 report generation and GitHub Security Code Scanning integration.
+- [x] **Experimental Linux eBPF Engine Prototype (`--tracer ebpf`)** — C CO-RE program (`mcp_behave.bpf.c`), Python loader & binary struct unpacker (`src/mcp_behave/ebpf/`), unified `BehavioralEvent` architecture (`events.py`), and high-confidence audit scoring.
+- [x] **Official Reference Servers Audit & 15-Test Adversarial Benchmark** — empirical audit of all 7 reference MCP servers (`Git`, `Filesystem`, `Fetch`, `Memory`, `Sequential Thinking`, `Everything`, `Time`) published in [`docs/benchmarks/official_servers_audit.md`](docs/benchmarks/official_servers_audit.md).
+- [x] **Grammar-Aware Heuristic Linter** — word-boundary regexes and inflection matching (`_match_verb`) eliminating substring heuristic false positives.
+- [x] **JSON Schema Union Type Support** — robust parameter synthesis supporting union types (`["string", "null"]`).
+- [x] **Community Feedback & Survey System** — native GitHub Issue Form (`.github/ISSUE_TEMPLATE/feedback.yml`) and interactive Web Survey (`docs/survey.html`) with private email delivery.
+- [x] **Triple Distribution Pipeline** — live, synchronized releases on PyPI, npm, and official Model Context Protocol Registry (`io.github.navid72m/mcp-behave@0.4.2`).
 
 ---
 
-### Phase 0: Credibility, Hygiene & Isolation Foundation (v0.4.0)
-
-The goal is ensuring zero host contamination and complete transparency across all default audit runs.
-
-- [x] **Canary `$HOME` Redirection on Host** — natively redirect `$HOME` and config roots to a temporary disposable directory by default so local credentials cannot be touched.
-- [x] **`--unsafe-host` Requirement** — require explicit `--unsafe-host` confirmation when invoking `audit-configs` or running audits outside isolated sandboxes.
-- [x] **Hardened `serve` Mode** — guard `audit_server` against arbitrary execution via command allowlists or pre-approved server definitions in `.mcpbehaverc.json`.
-- [x] **Scorecard Transparency** — rebrand scorecards explicitly as "mcp-behave score", publish category weightings openly, and eliminate stray rule references.
-- [x] **Security Policy & Guidelines** — publish `SECURITY.md` with responsible disclosure instructions and `CONTRIBUTING.md`.
-
-**Exit Criterion:** Demo servers (`honest_server`, `leaky_server`, `poisoned_server`) produce predictable, clean, and zero-false-positive results across CI on macOS and Linux.
-
----
-
-### Phase 1: Trustworthy Observation & Sandboxing (v0.4.x)
+### Phase 1: Trustworthy Observation & Sandboxing (Current — v0.4.x)
 
 The goal is resilient runtime observation that withstands hostile or evasive server code.
 
@@ -88,19 +81,18 @@ The goal is resilient runtime observation that withstands hostile or evasive ser
   - `time_bomb.py` — elapsed execution and sleeping exfiltration triggers
 - [x] **Detection Matrix Documentation** — publish an explicit evasion technique matrix (Technique × Backend → Caught / Missed) in [`docs/detection_matrix.md`](docs/detection_matrix.md).
 - [x] **Experimental Linux eBPF Prototype & Normalized Event Architecture** — unified `BehavioralEvent` model (`events.py`), C CO-RE eBPF program (`mcp_behave.bpf.c`), Python loader & event decoder (`src/mcp_behave/ebpf/`), CLI option `--tracer ebpf`, and cross-platform test harness.
-- [ ] **Full In-Kernel Process Tree Filtering & Ringbuffer Poller** — package pre-compiled BPF object with CO-RE vmlinux.h for zero-dependency Linux deployment across x86_64 and aarch64.
-- [ ] **Namespace-Level Network Capture** — place audited servers in an isolated network namespace behind a logging proxy and controlled DNS resolver to log DNS exfiltration, UDP egress, and connection reuse.
+- [ ] **Production eBPF CO-RE Packaging** — bundle pre-compiled BPF object bytecode with CO-RE / `vmlinux.h` for zero-dependency Linux deployment across x86_64 and aarch64 without requiring local clang/llvm on host.
+- [ ] **Full In-Kernel Process Tree Filtering** — ring buffer event streaming with kernel-level PPID/TGID tracking to capture transient and detached child processes.
+- [ ] **Namespace-Level Network & DNS Capture** — place audited servers in an isolated network namespace behind a logging proxy and controlled DNS resolver to log DNS exfiltration, UDP egress, and connection reuse.
 - [ ] **Explicit Fast-Mode Labeling** — preserve `LD_PRELOAD` / `DYLD` libc interposition as an explicit fast mode, clearly labeled as best-effort in audit reports.
-
-**Exit Criterion:** The eBPF + network namespace backend detects $\ge 90\%$ of the evasion suite, with known architectural limitations transparently documented.
 
 **Exit Criterion:** The eBPF + network namespace backend detects $\ge 90\%$ of the evasion suite, with known architectural limitations transparently documented.
 
 ---
 
-### Phase 2: Coverage & Confidence (v0.5.x)
+### Phase 2: Coverage, Policy & Confidence (v0.5.x)
 
-The goal is exercising servers the way real clients do and quantifying inspection thoroughness.
+The goal is exercising servers the way real clients do and enforcing declarative policy rules.
 
 - [x] **Audit Confidence Score** — report concrete verification depth across CLI, JSON, and SARIF:
   - Percentage of declared tools successfully exercised
@@ -108,14 +100,19 @@ The goal is exercising servers the way real clients do and quantifying inspectio
   - Number of probe rounds completed
   - Inspection backend fidelity (eBPF vs Container vs Libc vs Untraced)
   - Actionable verification caveats
-- [ ] **Schema-Aware Argument Synthesis** — infer semantic types from JSON schemas to generate realistic paths, URLs, entity IDs, and enum combinations instead of obvious static canaries.
+- [ ] **Declarative Policy-as-Code (`policy.yaml`)** — user-defined security policies:
+  - Allowed CIDR network egress ranges (e.g. only internal APIs)
+  - Denied sensitive filesystem path patterns
+  - Permitted executable binaries and arguments
+  - Per-tool policy scoping (e.g. `fetch` allowed HTTP egress; `format` restricted to zero egress)
+- [ ] **Semantic Schema-Aware Argument Synthesis** — infer semantic types from JSON schemas to generate realistic paths, URLs, entity IDs, and enum combinations instead of obvious static canaries.
 - [ ] **Multi-Round Probing with Environmental Permutations** — vary invocation ordering, repeat parameter sets, randomize environment noise, and simulate clock skew to trip delayed triggers.
-- [ ] **Optional Context-Aware Exploration** — optional LLM-driven test case generation (bring-your-own-key) for servers requiring complex conversational state or structured payload sequences.
 - [ ] **Property-Based Fuzzing** — integrate Hypothesis property testing (`hypothesis-jsonschema`) with `--fuzz` for automated edge-case fuzzing.
+- [ ] **Interactive Standalone HTML Audit Report** — export zero-dependency HTML report with interactive visual timeline of tool calls, syscalls, and network/file activity.
 
 ---
 
-### Phase 3: Developer Workflow & Behavioral Regression Testing (v0.6.x – v1.0.0)
+### Phase 3: Developer Workflow & Ecosystem Adoption (v0.6.x – v1.0.0)
 
 The goal is seamless integration into developer CI/CD pipelines as the standard behavioral gate.
 
@@ -124,18 +121,13 @@ The goal is seamless integration into developer CI/CD pipelines as the standard 
   - Accessed sensitive filesystem paths (read vs write)
   - Spawned child binaries and arguments
   - Tool manifest cryptographic hashes
-- [x] **Behavioral Diffing (`mcp-behave check`)** — CI command that fails *only* on undeclared behavioral regressions (e.g., "`format_note` now connects to `telemetry.example.com:443` (not in lockfile)"), while accepting previously recorded baseline behavior.
+- [x] **Behavioral Diffing (`mcp-behave check`)** — CI command that fails *only* on undeclared behavioral regressions, while accepting previously recorded baseline behavior.
 - [x] **Official GitHub Action (`action.yml`)**:
   - Drops into `.github/workflows/` via `- uses: navid72m/mcp-behave@v0.4`
   - Runs lockfile regression check (`mcp-behave check`) or audit (`mcp-behave audit`)
   - Generates and uploads SARIF v2.1.0 reports directly to GitHub Code Scanning / Advanced Security.
-  - Caches warm sandbox container images for rapid execution
 - [ ] **Pre-commit Hook & GitLab CI Template** — support alternative Git workflows and GitLab pipelines.
-- [ ] **Fine-Grained Policy-as-Code** — per-tool behavioral declarations in `.mcpbehaverc.json` (e.g. `fetch_url` permitted network egress; `format_note` restricted to zero egress).
-- [ ] **Polished Output Formats**:
-  - Compact single-screen terminal summary
-  - Standalone, zero-dependency static HTML audit reports
-  - Versioned, schema-validated JSON export
+- [ ] **Windows Native Syscall Tracing** — explore Event Tracing for Windows (ETW) / Windows Filtering Platform for native Windows support.
 - [ ] **Performance SLA** — sub-60-second audit turnaround for typical servers with warm container images.
 - [ ] **Rule Plugin API** — extensibility interface enabling teams to author proprietary or organizational security checks.
 
@@ -147,8 +139,9 @@ The goal is seamless integration into developer CI/CD pipelines as the standard 
 
 The goal is establishing baseline behavioral standards across the wider AI agent ecosystem.
 
+- [x] **Official Reference Servers Audit Report** — published empirical validation report covering all 7 reference servers and 15 adversarial attack scenarios ([`docs/benchmarks/official_servers_audit.md`](docs/benchmarks/official_servers_audit.md)).
 - [ ] **Open Benchmark ("MCP-BehaveBench")** — public, labeled corpus of benign and adversarial MCP servers covering key attack classes, paired with a standardized scoring harness executable by any audit tool.
-- [ ] **Empirical Ecosystem Measurement Study** — audit the top MCP servers across official registries and Glama in isolated sandboxes to report:
+- [ ] **Empirical Ecosystem Measurement Study** — audit the top 100 MCP servers across official registries and Glama in isolated sandboxes to report:
   - Undeclared egress frequencies
   - Telemetry and credential harvesting practices
   - Manifest stability and permission drift across versions
@@ -161,12 +154,12 @@ The goal is establishing baseline behavioral standards across the wider AI agent
 
 ## 5. Developer Experience Checklist
 
-- [ ] **Zero-Friction Installation** — single-command invocation (`uvx mcp-behave` / `npx mcp-behave`), requiring no local C compiler or build tooling on default sandbox paths.
-- [ ] **2-Minute Quickstart** — onboarding tutorial auditing a popular real-world server in under two minutes.
-- [ ] **Actionable Findings** — every diagnostic reports what was observed, which tool call triggered it, why it matters, and the exact `.mcpbehaverc.json` snippet to whitelist it if intentional.
-- [ ] **Documentation Personas** — structured docs tailored for *Server Authors*, *Enterprise SecOps*, and *Researchers*.
-- [ ] **Clear Failure Guidance** — actionable diagnostics detailing missing prerequisites or alternative flags when tracer environments lack privileges.
-- [ ] **Strict Semantic Versioning** — disciplined changelog maintenance and backward-compatible JSON/SARIF schemas.
+- [x] **Zero-Friction Installation** — single-command invocation (`uvx mcp-behave` / `npx mcp-behave`), requiring no local C compiler or build tooling on default sandbox paths.
+- [x] **2-Minute Quickstart & Community Survey** — onboarding tutorial and community feedback forms ([`docs/survey.html`](docs/survey.html)).
+- [x] **Actionable Findings** — every diagnostic reports what was observed, which tool call triggered it, why it matters, and lockfile guidance.
+- [x] **Documentation Personas** — structured docs tailored for *Server Authors*, *Enterprise SecOps*, and *Researchers*.
+- [x] **Clear Failure Guidance** — actionable diagnostics detailing missing prerequisites or alternative flags when tracer environments lack privileges.
+- [x] **Strict Semantic Versioning** — disciplined changelog maintenance and backward-compatible JSON/SARIF schemas.
 
 ---
 
@@ -175,23 +168,24 @@ The goal is establishing baseline behavioral standards across the wider AI agent
 - **Seed Adoption**: Submit pull requests adding `mcp-behave-action` and generated `mcp-behave.lock` baselines to 5–10 prominent open-source MCP servers.
 - **Standards Engagement**: Coordinate with CSA MCP security working groups and open-source MCP security maintainers to integrate evasion test targets into shared audit benchmarks.
 - **Deep-Dive Technical Content**:
+  - *"Auditing Real-World MCP Servers with mcp-behave"* (Published)
   - *"How MCP Servers Evade Libc Interposition"*
   - *"We Audited 500 MCP Registry Servers: Here Is What They Actually Do"*
   - *"Runtime Behavior Lockfiles: Dependency Pinning for Execution"*
-- **Open Contribution**: Well-documented `CONTRIBUTING.md` and tagged `good-first-issue` labels for new evasion targets and inspection rules.
+- **Open Contribution**: Well-documented `CONTRIBUTING.md`, issue forms, and tagged `good-first-issue` labels for new evasion targets and inspection rules.
 
 ---
 
 ## 7. Target Metrics (v1.0)
 
-| Metric | Target by v1.0 |
-|---|---|
-| False-Positive Rate on Top 50 Benign Servers | < 5% of benign servers triggering a HIGH finding |
-| Evasion Suite Detection Rate (eBPF + NetNS) | $\ge 90\%$ of evasion techniques caught, misses documented |
-| Execution Time (Warm Sandbox) | < 60 seconds for standard MCP server audits |
-| CI Adoption | 10 → 50 external repositories running the GitHub Action |
-| External Contributors | $\ge 5$ contributors with merged non-trivial PRs |
-| Capability Manifest Adoption | $\ge 3$ production servers publishing declared manifests |
+| Metric | Target by v1.0 | Current Status (v0.4.2) |
+|---|---|---|
+| False-Positive Rate on Top 50 Benign Servers | < 5% of benign servers triggering a HIGH finding | **0% FPR** across benchmark reference servers |
+| Evasion Suite Detection Rate (eBPF + NetNS) | $\ge 90\%$ of evasion techniques caught | Prototype eBPF live; captures raw syscalls & unhooked binaries |
+| Execution Time (Warm Sandbox) | < 60 seconds for standard MCP server audits | ~10-25 seconds per server audit |
+| CI Adoption | 10 → 50 external repositories running the GitHub Action | Action shipped & available in marketplace |
+| External Contributors | $\ge 5$ contributors with merged non-trivial PRs | Community survey & contribution guidelines live |
+| Capability Manifest Adoption | $\ge 3$ production servers publishing declared manifests | In progress via `mcp-behave.lock` |
 
 ---
 
@@ -216,17 +210,12 @@ To keep the project focused on dependable runtime verification, the following ar
 
 ## 10. Immediate Execution Plan (Next 30 Days)
 
-1. **Week 1 (Hygiene & Host Protection)**:
-   - Implement temporary canary `$HOME` redirection for native audits.
-   - Enforce `--unsafe-host` gate on un-sandboxed runs and config audits.
-   - Add command allowlisting and confirmation safeguards to `serve` mode.
-   - Publish [`SECURITY.md`](file:///Users/seyednavidmirnourilangeroudi/Downloads/mcp-behave/SECURITY.md) and [`CONTRIBUTING.md`](file:///Users/seyednavidmirnourilangeroudi/Downloads/mcp-behave/CONTRIBUTING.md).
-2. **Week 2 (Evasion Suite Genesis)**:
-   - Establish `targets/evasion/` with initial evasion targets (raw syscalls, stripped environments, canary detection).
-   - Publish initial detection matrix in documentation.
-3. **Week 3 (Sandbox-First Prototype)**:
-   - Prototype automated container/bubblewrap orchestration for zero-configuration sandboxed runs.
-4. **Week 4 (Behavior Lockfile & CI Action)**:
-   - Specify and implement `mcp-behave init` (`mcp-behave.lock`) format.
-   - Implement `mcp-behave check` regression verification command.
-   - Draft `mcp-behave-action` prototype and publish initial demonstration blog post.
+1. **Sprint 1 — eBPF Hardening & CO-RE Driver Packaging**:
+   - Bundle pre-compiled BPF object bytecode for x86_64 and aarch64 with `vmlinux.h`.
+   - Implement kernel-level TGID/PPID process tree filtering via eBPF maps to catch detached processes.
+2. **Sprint 2 — Declarative Policy-as-Code (`policy.yaml`)**:
+   - Specify and implement `mcp-behave audit --policy policy.yaml` to enforce CIDR egress allowlists and sensitive path denylists.
+3. **Sprint 3 — Standalone Visual HTML Audit Reports**:
+   - Build zero-dependency interactive HTML report generator with visual execution timelines.
+4. **Sprint 4 — Advanced Adversarial Fuzzing**:
+   - Expand the 15-test benchmark into an automated property-based fuzzing suite (`--fuzz`) targeting multi-turn stateful boundaries.
