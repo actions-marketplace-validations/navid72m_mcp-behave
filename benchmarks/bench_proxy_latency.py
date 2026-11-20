@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gc
 import json
 import os
 import statistics
@@ -228,7 +229,9 @@ async def run_single_benchmark(
     disable_telemetry: bool = False,
 ) -> Tuple[List[float], List[float], Dict[str, Dict[str, float]]]:
     """Execute a single run of direct vs proxied measurement."""
+    gc.collect()
     direct_times = await measure_direct_latency(srv_file, payloads)
+    gc.collect()
     proxied_times = await measure_proxied_latency(
         srv_file, payloads, state_dir=state_dir, disable_telemetry=disable_telemetry
     )
@@ -330,7 +333,7 @@ async def main_async(msg_count: int = 10000, runs: int = 3) -> int:
         name = b.capitalize()
         passed = p99 < budget_ms
         bucket_results[b] = passed
-        status = "PASSED" if passed else "FAILED (pending owner decision)"
+        status = "PASSED" if passed else ("FAILED (pending owner decision)" if b == "large" else "FAILED")
         print(f"  {name:<14} p99={p99:+8.3f} ms   [ {status} ]")
 
     overall_p99 = avg_metric("overall", "p99")
@@ -339,7 +342,7 @@ async def main_async(msg_count: int = 10000, runs: int = 3) -> int:
     print("=" * 74 + "\n")
 
     # If small and medium pass and overall passes, return 0 (large bucket pending owner decision)
-    return 0 if (bucket_results["small"] and bucket_results["medium"]) else 1
+    return 0 if (bucket_results["small"] and bucket_results["medium"] and overall_passed) else 1
 
 
 def main():
