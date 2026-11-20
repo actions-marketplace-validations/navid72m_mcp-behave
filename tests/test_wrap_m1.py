@@ -443,8 +443,148 @@ def test_resolve_server_executable_minimal_path():
     from mcp_behave.launcher import resolve_server_executable
 
     # Test resolution of python or sh under minimal PATH
-    resolved_sh = resolve_server_executable("sh", env={"PATH": "/usr/bin:/bin"})
+    resolved_sh, sh_hash = resolve_server_executable("sh", env={"PATH": "/usr/bin:/bin"})
     assert resolved_sh in ("/bin/sh", "/usr/bin/sh")
+    assert sh_hash is not None and len(sh_hash) == 64
 
     # Test resolution when command has tilde or absolute path
-    assert resolve_server_executable("/bin/sh") == "/bin/sh"
+    res_abs, abs_hash = resolve_server_executable("/bin/sh")
+    assert res_abs == "/bin/sh"
+    assert abs_hash is not None and len(abs_hash) == 64
+
+
+def test_concurrent_telemetry_writers_no_lock():
+    """Verify 5 concurrent telemetry writers to the same database encounter no locks or lost events."""
+    import sqlite3
+    import threading
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        num_writers = 5
+        events_per_writer = 50
+        writers = []
+
+        for i in range(num_writers):
+            store = TelemetryStore(
+                session_id=f"concurrent_sess_{i}",
+                server_id=f"server_{i}",
+                state_dir=tmpdir,
+            )
+            writers.append(store)
+
+        def worker_write(store: TelemetryStore, writer_idx: int):
+            for e_idx in range(events_per_writer):
+                evt = BehavioralEvent(
+                    event="worker_event",
+                    session_id=store.session_id,
+                    server_id=store.server_id,
+                    kind="protocol_test",
+                    timestamp=time.time(),
+                    payload={"writer": writer_idx, "idx": e_idx},
+                )
+                store.record(evt)
+
+        threads = [
+            threading.Thread(target=worker_write, args=(writers[i], i))
+            for i in range(num_writers)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        for store in writers:
+            store.close(timeout=3.0)
+
+        db_file = Path(tmpdir) / "telemetry.db"
+        assert db_file.exists()
+
+        with sqlite3.connect(db_file) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM events WHERE kind = 'protocol_test'")
+            count = cur.fetchone()[0]
+
+        expected_count = num_writers * events_per_writer
+        assert count == expected_count, f"Expected {expected_count} events in SQLite, got {count}"
+
+
+def test_telemetry_permissions_and_retention():
+    """Verify state directory 0700, files 0600, and JSONL/SQLite retention cleanup."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = TelemetryStore(
+            session_id="perm_sess",
+            server_id="perm_server",
+            state_dir=tmpdir,
+            retention_days=7,
+        )
+        evt = BehavioralEvent(
+            event="test_perm",
+            session_id=store.session_id,
+            server_id=store.server_id,
+            kind="perm_check",
+            timestamp=time.time(),
+            payload={"check": True},
+        )
+        store.record(evt)
+        store.close(timeout=2.0)
+
+        state_dir = Path(tmpdir)
+        sessions_dir = state_dir / "sessions"
+        db_file = state_dir / "telemetry.db"
+        jsonl_file = store.jsonl_file
+
+        # Check permissions
+        assert oct(state_dir.stat().st_mode & 0o777) == "0o700"
+        assert oct(sessions_dir.stat().st_mode & 0o777) == "0o700"
+        assert oct(db_file.stat().st_mode & 0o777) == "0o600"
+        assert oct(jsonl_file.stat().st_mode & 0o777) == "0o600"
+
+        # Create expired session file (10 days old)
+        old_session = sessions_dir / "expired_session_10d.jsonl"
+        old_session.write_text('{"event": "old"}\n')
+        ten_days_ago = time.time() - (10 * 86400)
+        os.utime(old_session, (ten_days_ago, ten_days_ago))
+
+        # Run retention cleanup with 7 days threshold
+        purged = store.cleanup_retention(7)
+        assert purged == 1
+        assert not old_session.exists()
+        assert jsonl_file.exists()
+
+
+def test_no_secret_leaks_without_log_content():
+    """Automated check verifying raw arguments and results never appear in JSONL or SQLite without --log-content."""
+    import sqlite3
+
+    async def run():
+        bus = EventBus()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            telemetry = TelemetryStore("leak_sess", "leak_srv", state_dir=tmpdir, log_content=False)
+            monitor = ProtocolMonitor("leak_sess", "leak_srv", bus, telemetry, log_content=False)
+
+            canary_token = "SECRET_CANARY_TOKEN_998877"
+            canary_result = "SECRET_CANARY_RESULT_443322"
+
+            req_bytes = f'{{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {{"token": "{canary_token}"}}}}\n'.encode()
+            resp_bytes = f'{{"jsonrpc": "2.0", "id": 1, "result": {{"output": "{canary_result}"}}}}\n'.encode()
+
+            await monitor.process_line(req_bytes, "client_to_server", sync=True)
+            await monitor.process_line(resp_bytes, "server_to_client", sync=True)
+
+            monitor.close(timeout=2.0)
+            telemetry.close(timeout=2.0)
+
+            # 1. Inspect JSONL file contents
+            jsonl_content = telemetry.jsonl_file.read_text(encoding="utf-8")
+            assert canary_token not in jsonl_content, "Canary token leaked into JSONL log!"
+            assert canary_result not in jsonl_content, "Canary result leaked into JSONL log!"
+            assert "params_hash" in jsonl_content
+            assert "content_hash" in jsonl_content
+
+            # 2. Inspect SQLite contents
+            with sqlite3.connect(telemetry.db_file) as conn:
+                rows = conn.execute("SELECT payload_json FROM events").fetchall()
+                for (row_json,) in rows:
+                    assert canary_token not in row_json, "Canary token leaked into SQLite database!"
+                    assert canary_result not in row_json, "Canary result leaked into SQLite database!"
+
+    asyncio.run(run())

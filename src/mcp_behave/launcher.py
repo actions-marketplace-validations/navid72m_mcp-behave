@@ -40,49 +40,85 @@ def derive_server_id(server_cmd: List[str]) -> str:
     return f"{clean_name}_{short_hash}"
 
 
-def resolve_server_executable(cmd: str, env: Optional[Dict[str, str]] = None) -> str:
-    """Resolve executable path, expanding ~ and searching standard macOS directories if PATH is minimal.
+STANDARD_FALLBACK_DIRS = [
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    os.path.expanduser("~/.local/bin"),
+    os.path.expanduser("~/.cargo/bin"),
+]
 
-    GUI MCP clients (Claude Desktop, Cursor) often launch processes with a minimal launchd PATH
-    (e.g. /usr/bin:/bin:/usr/sbin:/sbin), missing Homebrew (/opt/homebrew/bin), Cargo, and uv paths.
+
+def resolve_server_executable(
+    cmd: str, env: Optional[Dict[str, str]] = None
+) -> Tuple[str, Optional[str]]:
+    """Resolve executable path and compute its sha256 checksum.
+
+    To prevent PATH hijacking vulnerabilities, existing PATH entries always take
+    precedence; fallback system/Homebrew directories are only appended AFTER the existing PATH
+    if the command is not found in the primary PATH.
+
+    Returns:
+        (resolved_absolute_path_or_cmd, sha256_checksum_or_none)
     """
     import shutil
+
+    resolved_path: Optional[str] = None
 
     if os.path.isabs(cmd) or os.path.sep in cmd:
         expanded = os.path.expanduser(cmd)
         if os.path.exists(expanded):
-            return expanded
-        return cmd
+            resolved_path = os.path.abspath(expanded)
+        else:
+            resolved_path = cmd
+    else:
+        current_path = (env.get("PATH") if env else None) or os.environ.get("PATH", "")
+        path_dirs = [d for d in current_path.split(os.path.pathsep) if d]
 
-    current_path = (env.get("PATH") if env else None) or os.environ.get("PATH", "")
-    extra_dirs = [
-        os.path.expanduser("~/.local/bin"),
-        os.path.expanduser("~/.cargo/bin"),
-        "/opt/homebrew/bin",
-        "/opt/homebrew/sbin",
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-    ]
-    path_dirs = [d for d in current_path.split(os.path.pathsep) if d]
-    for d in extra_dirs:
-        if d not in path_dirs:
-            path_dirs.append(d)
+        # 1. First attempt resolution strictly on the existing PATH (never hijacked by fallbacks)
+        resolved = shutil.which(cmd, path=os.path.pathsep.join(path_dirs))
+        if resolved:
+            resolved_path = os.path.abspath(resolved)
+        else:
+            # 2. Append fallback dirs strictly after the existing PATH
+            fallback_search = list(path_dirs)
+            for fb in STANDARD_FALLBACK_DIRS:
+                if fb not in fallback_search and os.path.isdir(fb):
+                    fallback_search.append(fb)
+            fallback_resolved = shutil.which(cmd, path=os.path.pathsep.join(fallback_search))
+            resolved_path = os.path.abspath(fallback_resolved) if fallback_resolved else cmd
 
-    augmented_path = os.path.pathsep.join(path_dirs)
-    resolved = shutil.which(cmd, path=augmented_path)
-    return resolved if resolved else cmd
+    # Compute SHA-256 if resolved to a readable regular file
+    sha256_hex: Optional[str] = None
+    if resolved_path and os.path.isfile(resolved_path):
+        try:
+            with open(resolved_path, "rb") as f:
+                sha256_hex = hashlib.sha256(f.read()).hexdigest()
+        except (OSError, PermissionError):
+            sha256_hex = None
+
+    return resolved_path, sha256_hex
 
 
 async def spawn_child_server(
     server_cmd: List[str],
     env: Optional[Dict[str, str]] = None,
-) -> asyncio.subprocess.Process:
+    augment_path: bool = False,
+) -> Tuple[asyncio.subprocess.Process, str, Optional[str]]:
     """Spawn target MCP server subprocess with start_new_session=True.
 
     stdin: PIPE (fed by wrap)
     stdout: PIPE (read by wrap)
     stderr: None (inherits parent stderr directly, ensuring stdout purity)
+
+    By default, child environment PATH is left UNCHANGED to avoid path hijacking.
+    If augment_path=True, standard fallback directories are appended strictly after
+    existing PATH entries.
+
+    Returns:
+        (child_proc, resolved_command_path, resolved_command_sha256)
     """
     if not server_cmd:
         raise ValueError("Cannot spawn child server with empty command list.")
@@ -91,24 +127,18 @@ async def spawn_child_server(
     if env:
         child_env.update(env)
 
-    # Augment child PATH with standard directories if launched with minimal PATH (e.g. Claude Desktop GUI)
-    current_path = child_env.get("PATH", "")
-    extra_dirs = [
-        os.path.expanduser("~/.local/bin"),
-        os.path.expanduser("~/.cargo/bin"),
-        "/opt/homebrew/bin",
-        "/opt/homebrew/sbin",
-        "/usr/local/bin",
-    ]
-    path_dirs = [d for d in current_path.split(os.path.pathsep) if d]
-    for d in extra_dirs:
-        if d not in path_dirs and os.path.isdir(d):
-            path_dirs.append(d)
-    child_env["PATH"] = os.path.pathsep.join(path_dirs)
-
-    # Resolve executable path even under minimal PATH environments
-    resolved_binary = resolve_server_executable(server_cmd[0], child_env)
+    # Resolve executable path (using fallback dirs strictly for resolution)
+    resolved_binary, resolved_sha256 = resolve_server_executable(server_cmd[0], child_env)
     eff_cmd = [resolved_binary] + list(server_cmd[1:])
+
+    # Child PATH augmentation is opt-in only
+    if augment_path:
+        current_path = child_env.get("PATH", "")
+        path_dirs = [d for d in current_path.split(os.path.pathsep) if d]
+        for fb in STANDARD_FALLBACK_DIRS:
+            if fb not in path_dirs and os.path.isdir(fb):
+                path_dirs.append(fb)
+        child_env["PATH"] = os.path.pathsep.join(path_dirs)
 
     # start_new_session=True ensures the child becomes a process group leader,
     # allowing os.killpg() to cleanly reap all descendants (e.g. npx/uvx grandchildren).
@@ -120,7 +150,7 @@ async def spawn_child_server(
         start_new_session=True,
         env=child_env,
     )
-    return proc
+    return proc, resolved_binary, resolved_sha256
 
 
 async def terminate_process_group(

@@ -102,6 +102,8 @@ async def run_proxy(
     log_content: bool = False,
     notify: bool = False,
     grace_period: float = 3.0,
+    augment_path: bool = False,
+    retention_days: int = 14,
     stdin_reader_override: Optional[asyncio.StreamReader] = None,
     stdout_writer_override: Optional[asyncio.StreamWriter] = None,
 ) -> int:
@@ -117,6 +119,7 @@ async def run_proxy(
         server_id=eff_server_id,
         state_dir=state_dir,
         log_content=log_content,
+        retention_days=retention_days,
     )
     monitor = ProtocolMonitor(
         session_id=session_id,
@@ -126,7 +129,12 @@ async def run_proxy(
         log_content=log_content,
     )
 
-    # Emit session start event
+    # Spawn child server process in its own process group
+    child_proc, resolved_cmd0, resolved_sha256 = await spawn_child_server(
+        server_cmd, augment_path=augment_path
+    )
+
+    # Emit session start event with resolved binary and checksum
     start_event = BehavioralEvent(
         event="session_start",
         session_id=session_id,
@@ -139,6 +147,9 @@ async def run_proxy(
             "server_cmd": server_cmd,
             "server_id": eff_server_id,
             "session_id": session_id,
+            "resolved_command": resolved_cmd0,
+            "resolved_command_sha256": resolved_sha256,
+            "augmented_path": augment_path,
         },
     )
     await bus.publish(start_event)
@@ -157,9 +168,6 @@ async def run_proxy(
     )
     await bus.publish(os_event)
     telemetry.record(os_event)
-
-    # Spawn child server process in its own process group
-    child_proc = await spawn_child_server(server_cmd)
 
     # Connect client stdin / stdout pipes
     if stdin_reader_override:
@@ -324,6 +332,14 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
         "--grace-period", type=float, default=3.0,
         help="Grace period in seconds before sending SIGTERM/SIGKILL on client disconnect (default: 3.0s).",
     )
+    parser.add_argument(
+        "--augment-path", action="store_true",
+        help="Opt-in to appending standard fallback binary directories to the child environment's PATH.",
+    )
+    parser.add_argument(
+        "--retention-days", type=int, default=14,
+        help="Number of days to retain JSONL sessions and telemetry events (default: 14).",
+    )
 
     args = parser.parse_args(wrap_args)
 
@@ -339,6 +355,8 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
             log_content=args.log_content,
             notify=args.notify,
             grace_period=args.grace_period,
+            augment_path=args.augment_path,
+            retention_days=args.retention_days,
         ))
     except KeyboardInterrupt:
         return 130

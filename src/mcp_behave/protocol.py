@@ -6,8 +6,10 @@ JSON-RPC batch handling, BOM stripping for parsing, and asynchronous telemetry e
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import queue
+import re
 import threading
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
@@ -161,9 +163,6 @@ class ProtocolMonitor:
                 if item is None:
                     break
                 line_bytes, direction, now = item
-                # For very large payloads, briefly yield GIL to ensure hot-path pipe forwarding is not preempted
-                if len(line_bytes) > 32768:
-                    time.sleep(0.004)
                 self._sync_process_line(line_bytes, direction, now)
             finally:
                 self._line_queue.task_done()
@@ -192,6 +191,12 @@ class ProtocolMonitor:
         # Strip UTF-8 BOM if present
         if stripped.startswith(b"\xef\xbb\xbf"):
             stripped = stripped[3:]
+
+        # For messages > 64 KB when log_content is False, parse envelope headers only
+        # (id, method, params.name) to avoid full JSON tree allocation and GIL contention.
+        if len(stripped) > 65536 and not self.log_content:
+            self._handle_large_message_envelope_sync(stripped, len(line_bytes), direction, now)
+            return
 
         # Attempt JSON parse directly on bytes (avoids large intermediate str allocation)
         try:
@@ -399,3 +404,116 @@ class ProtocolMonitor:
                 )
                 self.bus.publish_sync(event)
                 self.telemetry.record(event)
+
+    def _handle_large_message_envelope_sync(
+        self, stripped: bytes, total_bytes: int, direction: str, now: float
+    ) -> None:
+        """Extract id, method, and params.name without full JSON parsing for >64 KB messages."""
+        header_chunk = stripped[:4096]
+
+        msg_id: Any = None
+        id_m = re.search(rb'"id"\s*:\s*([0-9]+|"[^"]+")', header_chunk)
+        if id_m:
+            raw_id = id_m.group(1).decode("utf-8", errors="replace")
+            if raw_id.startswith('"') and raw_id.endswith('"'):
+                msg_id = raw_id[1:-1]
+            else:
+                try:
+                    msg_id = int(raw_id)
+                except ValueError:
+                    msg_id = raw_id
+
+        # Compute sha256 in C (releases GIL)
+        h = hashlib.sha256(stripped).hexdigest()
+        prefix = stripped[:4].decode("utf-8", errors="replace")
+        hashed_summary = {"sha256": h, "prefix": prefix, "length": len(stripped)}
+
+        if direction == "client_to_server":
+            method_m = re.search(rb'"method"\s*:\s*"([^"]+)"', header_chunk)
+            method = method_m.group(1).decode("utf-8", errors="replace") if method_m else "unknown"
+
+            name_m = re.search(rb'"name"\s*:\s*"([^"]+)"', header_chunk)
+            tool_name = name_m.group(1).decode("utf-8", errors="replace") if name_m else None
+
+            payload: Dict[str, Any] = {
+                "method": method,
+                "size_bytes": total_bytes,
+                "params_hash": hashed_summary,
+            }
+            if tool_name:
+                payload["tool_name"] = tool_name
+
+            if msg_id is not None:
+                with self._lock:
+                    self._active_requests[msg_id] = {
+                        "start_ts": now,
+                        "method": method,
+                        "tool_name": tool_name,
+                    }
+                event = BehavioralEvent(
+                    event="protocol_request",
+                    session_id=self.session_id,
+                    server_id=self.server_id,
+                    kind=KIND_PROTOCOL_REQUEST,
+                    request_id=msg_id,
+                    current_tool=tool_name,
+                    target=tool_name or method,
+                    timestamp=now,
+                    source="monitor",
+                    evidence_tier="observed",
+                    payload=payload,
+                )
+            else:
+                event = BehavioralEvent(
+                    event="protocol_notification",
+                    session_id=self.session_id,
+                    server_id=self.server_id,
+                    kind=KIND_PROTOCOL_NOTIFICATION,
+                    target=method,
+                    timestamp=now,
+                    source="monitor",
+                    evidence_tier="observed",
+                    payload=payload,
+                )
+            self.bus.publish_sync(event)
+            self.telemetry.record(event)
+
+        elif direction == "server_to_client":
+            is_error = b'"error"' in header_chunk
+            req_info = None
+            if msg_id is not None:
+                with self._lock:
+                    req_info = self._active_requests.pop(msg_id, None)
+
+            start_ts = req_info["start_ts"] if req_info else None
+            tool_name = req_info.get("tool_name") if req_info else None
+            method = req_info.get("method") if req_info else None
+            duration_ms = (now - start_ts) * 1000.0 if start_ts is not None else None
+
+            payload = {
+                "size_bytes": total_bytes,
+                "is_error": is_error,
+                "content_hash": hashed_summary,
+            }
+            if method:
+                payload["method"] = method
+            if tool_name:
+                payload["tool_name"] = tool_name
+            if duration_ms is not None:
+                payload["duration_ms"] = round(duration_ms, 3)
+
+            event = BehavioralEvent(
+                event="protocol_response",
+                session_id=self.session_id,
+                server_id=self.server_id,
+                kind=KIND_PROTOCOL_RESPONSE,
+                request_id=msg_id,
+                current_tool=tool_name,
+                target=tool_name or method,
+                timestamp=now,
+                source="monitor",
+                evidence_tier="observed",
+                payload=payload,
+            )
+            self.bus.publish_sync(event)
+            self.telemetry.record(event)

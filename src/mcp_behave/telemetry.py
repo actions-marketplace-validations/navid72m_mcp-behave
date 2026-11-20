@@ -73,15 +73,23 @@ class TelemetryStore:
         state_dir: Optional[Path | str] = None,
         log_content: bool = False,
         queue_size: int = 10000,
+        retention_days: int = 14,
     ):
         self.session_id = session_id
         self.server_id = server_id
         self.state_dir = Path(state_dir) if state_dir else get_default_state_dir()
         self.log_content = log_content
+        self.retention_days = retention_days
 
-        # Create state subdirectories
+        # Create state subdirectories with mode 0o700
         self.sessions_dir = self.state_dir / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self.state_dir, 0o700)
+            os.chmod(self.sessions_dir, 0o700)
+        except OSError:
+            pass
+
         self.jsonl_file = self.sessions_dir / f"{self.session_id}.jsonl"
         self.db_file = self.state_dir / "telemetry.db"
 
@@ -91,8 +99,14 @@ class TelemetryStore:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
 
-        # Initialize SQLite schema
+        # Initialize SQLite schema with mode 0o600
         self._init_sqlite()
+
+        # Auto-clean expired sessions and telemetry records on startup
+        try:
+            self.cleanup_retention(self.retention_days)
+        except Exception:
+            pass
 
         # Start background writer thread
         self._writer_thread = threading.Thread(
@@ -102,10 +116,44 @@ class TelemetryStore:
         )
         self._writer_thread.start()
 
+    def cleanup_retention(self, retention_days: Optional[int] = None) -> int:
+        """Purge JSONL session files and SQLite events older than retention_days (default 14 days).
+
+        Returns the number of purged session files.
+        """
+        days = retention_days if retention_days is not None else self.retention_days
+        if days <= 0:
+            return 0
+        cutoff = time.time() - (days * 86400.0)
+        purged = 0
+
+        # 1. Purge old JSONL session logs
+        if self.sessions_dir.exists():
+            for p in self.sessions_dir.glob("*.jsonl"):
+                try:
+                    if p.stat().st_mtime < cutoff:
+                        p.unlink(missing_ok=True)
+                        purged += 1
+                except OSError:
+                    pass
+
+        # 2. Purge old SQLite records
+        if self.db_file.exists():
+            try:
+                with sqlite3.connect(self.db_file, timeout=30.0) as conn:
+                    conn.execute("PRAGMA busy_timeout = 30000")
+                    conn.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+                    conn.commit()
+            except Exception:
+                pass
+
+        return purged
+
     def _init_sqlite(self) -> None:
         """Create telemetry database table and indices if they do not exist."""
         try:
-            with sqlite3.connect(self.db_file, timeout=10.0) as conn:
+            with sqlite3.connect(self.db_file, timeout=30.0) as conn:
+                conn.execute("PRAGMA busy_timeout = 30000")
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.execute(
@@ -127,7 +175,14 @@ class TelemetryStore:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_events_server ON events(server_id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
                 conn.commit()
+
+            if self.db_file.exists():
+                try:
+                    os.chmod(self.db_file, 0o600)
+                except OSError:
+                    pass
         except Exception:
             pass
 
@@ -161,15 +216,21 @@ class TelemetryStore:
         """Background thread loop consuming events and writing to JSONL and SQLite."""
         db_conn: Optional[sqlite3.Connection] = None
         try:
-            db_conn = sqlite3.connect(self.db_file, timeout=10.0)
-            db_conn.execute("PRAGMA journal_mode=WAL")
-            db_conn.execute("PRAGMA synchronous=NORMAL")
+            db_conn = sqlite3.connect(self.db_file, timeout=30.0)
+            db_conn.execute("PRAGMA busy_timeout = 30000")
+            db_conn.execute("PRAGMA journal_mode = WAL")
+            db_conn.execute("PRAGMA synchronous = NORMAL")
         except Exception:
             db_conn = None
 
         jsonl_fp = None
         try:
-            jsonl_fp = open(self.jsonl_file, "a", encoding="utf-8")
+            fd = os.open(self.jsonl_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            jsonl_fp = open(fd, "a", encoding="utf-8")
+            try:
+                os.chmod(self.jsonl_file, 0o600)
+            except OSError:
+                pass
         except Exception:
             jsonl_fp = None
 
