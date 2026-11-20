@@ -454,46 +454,54 @@ def test_resolve_server_executable_minimal_path():
 
 
 def test_concurrent_telemetry_writers_no_lock():
-    """Verify 5 concurrent telemetry writers to the same database encounter no locks or lost events."""
+    """Verify 5 concurrent OS processes writing to the same database encounter no locks or lost events."""
     import sqlite3
-    import threading
+    import subprocess
+    import sys
+
+    src_dir = str(Path(__file__).resolve().parent.parent / "src")
+    sub_env = dict(os.environ)
+    sub_env["PYTHONPATH"] = src_dir + os.path.pathsep + sub_env.get("PYTHONPATH", "")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         num_writers = 5
         events_per_writer = 50
-        writers = []
 
+        # Subprocess script executed in independent OS processes
+        worker_script = f"""
+import sys, time
+from mcp_behave.telemetry import TelemetryStore
+from mcp_behave.events import BehavioralEvent
+
+idx = int(sys.argv[1])
+state_dir = sys.argv[2]
+store = TelemetryStore(
+    session_id=f"concurrent_proc_sess_{{idx}}",
+    server_id=f"server_{{idx}}",
+    state_dir=state_dir,
+)
+for i in range({events_per_writer}):
+    evt = BehavioralEvent(
+        event="proc_event",
+        session_id=store.session_id,
+        server_id=store.server_id,
+        kind="protocol_test",
+        timestamp=time.time(),
+        payload={{"writer_proc": idx, "idx": i}},
+    )
+    store.record(evt)
+store.close(timeout=5.0)
+"""
+        procs = []
         for i in range(num_writers):
-            store = TelemetryStore(
-                session_id=f"concurrent_sess_{i}",
-                server_id=f"server_{i}",
-                state_dir=tmpdir,
+            p = subprocess.Popen(
+                [sys.executable, "-c", worker_script, str(i), tmpdir],
+                env=sub_env,
             )
-            writers.append(store)
+            procs.append(p)
 
-        def worker_write(store: TelemetryStore, writer_idx: int):
-            for e_idx in range(events_per_writer):
-                evt = BehavioralEvent(
-                    event="worker_event",
-                    session_id=store.session_id,
-                    server_id=store.server_id,
-                    kind="protocol_test",
-                    timestamp=time.time(),
-                    payload={"writer": writer_idx, "idx": e_idx},
-                )
-                store.record(evt)
-
-        threads = [
-            threading.Thread(target=worker_write, args=(writers[i], i))
-            for i in range(num_writers)
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        for store in writers:
-            store.close(timeout=3.0)
+        for p in procs:
+            assert p.wait(timeout=10.0) == 0
 
         db_file = Path(tmpdir) / "telemetry.db"
         assert db_file.exists()
@@ -504,7 +512,92 @@ def test_concurrent_telemetry_writers_no_lock():
             count = cur.fetchone()[0]
 
         expected_count = num_writers * events_per_writer
-        assert count == expected_count, f"Expected {expected_count} events in SQLite, got {count}"
+        assert count == expected_count, f"Expected {expected_count} events in SQLite across 5 OS processes, got {count}"
+
+
+def test_client_eof_disconnect_mid_session():
+    """Verify client EOF closes child stdin, flushes in-flight responses, and terminates gracefully."""
+    async def run():
+        server_script = """
+import sys
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    sys.stdout.write(line)
+    sys.stdout.flush()
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            srv_file = Path(tmpdir) / "echo_server.py"
+            srv_file.write_text(server_script)
+
+            client_reader = asyncio.StreamReader()
+            # Feed 1 valid request
+            client_reader.feed_data(b'{"jsonrpc": "2.0", "id": 1, "method": "ping"}\n')
+
+            out_queue = asyncio.Queue()
+
+            class QueueWriter:
+                def write(self, data):
+                    out_queue.put_nowait(data)
+                async def drain(self):
+                    pass
+                def close(self):
+                    pass
+                async def wait_closed(self):
+                    pass
+
+            # Start proxy
+            proxy_task = asyncio.create_task(run_proxy(
+                server_cmd=[sys.executable, str(srv_file)],
+                server_id="test_eof",
+                state_dir=tmpdir,
+                stdin_reader_override=client_reader,
+                stdout_writer_override=QueueWriter(),
+                grace_period=1.0,
+            ))
+
+            # Receive response to first request
+            first_resp = await out_queue.get()
+            assert b'"id": 1' in first_resp
+
+            # Client disconnects (EOF) mid-session
+            client_reader.feed_eof()
+
+            exit_code = await asyncio.wait_for(proxy_task, timeout=3.0)
+            assert exit_code == 0
+
+    asyncio.run(run())
+
+
+def test_sigint_sigterm_propagation_to_child_group():
+    """Verify SIGINT and SIGTERM delivered to wrap cleanly terminate child process group and grandchildren."""
+    import signal
+    import subprocess
+
+    src_dir = str(Path(__file__).resolve().parent.parent / "src")
+    sub_env = dict(os.environ)
+    sub_env["PYTHONPATH"] = src_dir + os.path.pathsep + sub_env.get("PYTHONPATH", "")
+
+    srv_script = """
+import time, subprocess
+p = subprocess.Popen(['sleep', '12345'])
+while True:
+    time.sleep(1)
+"""
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        cmd = [sys.executable, "-m", "mcp_behave.cli", "wrap", "--", sys.executable, "-c", srv_script]
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=sub_env
+        )
+        time.sleep(0.8)
+
+        proc.send_signal(sig)
+        proc.wait(timeout=5.0)
+
+        # Confirm all grandchildren (sleep 12345) are reaped without surviving
+        res = subprocess.run(["pgrep", "-f", "sleep 12345"], stdout=subprocess.PIPE, text=True)
+        assert not res.stdout.strip(), f"Grandchild process survived signal {sig}!"
 
 
 def test_telemetry_permissions_and_retention():
