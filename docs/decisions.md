@@ -187,3 +187,17 @@ This document records key architectural and design decisions made across milesto
   - Deny non-loopback outbound network connections when `openWorldHint=False`.
   - Implement graceful degradation under `--fail-mode=fail-open` and fail-stop under `--fail-mode=fail-closed`.
 - **Status**: Implemented & verified.
+
+---
+
+## Milestone 7 Decisions (MCP Gateway Architecture & Enterprise Deployment)
+
+### ADR-020: Enterprise Gateway Topology & Transport Translation
+- **Context**: Scaling MCP security from single developer workstations running `mcp-behave wrap` to enterprise multi-tenant infrastructure requires supporting diverse ingress network transports (HTTP/SSE, WebSockets, Unix Domain Sockets), multi-client multiplexing, decoupled credential injection, and bi-directional translation to worker stdio pipes, while maintaining the strict latency, framing, and lockfile guarantees established in Milestones 1 through 6.
+- **Decision**:
+  - Decouple the client network ingress layer from worker execution via an asynchronous bi-directional Transport Translation Pipeline (SSE/WebSocket $\leftrightarrow$ stdio NDJSON) supporting up to 16 MB message framing.
+  - Establish a tiered worker isolation matrix matching workload trust levels: Tier 1 (Host process with Linux Landlock / macOS Seatbelt), Tier 2 (Hardware-isolated MicroVM via Firecracker / gVisor `runsc`), and Tier 3 (Kubernetes rootless container pods).
+  - Centralize behavioral lockfile governance (`mcp-behave.lock.json`) via GitOps and OCI/S3 registries with zero-downtime hot reloading across gateway clusters.
+  - Enforce zero-trust credential brokering: LLM clients never receive third-party credentials, workers receive short-lived JIT tokens injected into JSON-RPC arguments immediately prior to dispatch, and outbound responses undergo inline payload redaction.
+  - Stream real-time attribution and policy enforcement events directly to OpenTelemetry collectors, Splunk, and ClickHouse audit backends.
+- **Status**: Approved Architecture Specification (`docs/gateway_architecture.md`).
