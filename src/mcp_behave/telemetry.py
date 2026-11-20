@@ -151,54 +151,61 @@ class TelemetryStore:
 
     def _init_sqlite(self) -> None:
         """Create telemetry database table and indices if they do not exist."""
-        try:
-            with sqlite3.connect(self.db_file, timeout=30.0) as conn:
-                conn.execute("PRAGMA busy_timeout = 30000")
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA synchronous=NORMAL")
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS events (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        ts REAL NOT NULL,
-                        session_id TEXT NOT NULL,
-                        server_id TEXT NOT NULL,
-                        kind TEXT,
-                        pid INTEGER,
-                        ppid INTEGER,
-                        request_id TEXT,
-                        evidence_tier TEXT,
-                        payload_json TEXT
+        for attempt in range(10):
+            try:
+                with sqlite3.connect(self.db_file, timeout=30.0) as conn:
+                    conn.execute("PRAGMA busy_timeout = 30000")
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA synchronous=NORMAL")
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS events (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            ts REAL NOT NULL,
+                            session_id TEXT NOT NULL,
+                            server_id TEXT NOT NULL,
+                            kind TEXT,
+                            pid INTEGER,
+                            ppid INTEGER,
+                            request_id TEXT,
+                            evidence_tier TEXT,
+                            payload_json TEXT
+                        )
+                        """
                     )
-                    """
-                )
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_events_server ON events(server_id)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_server ON events(server_id)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
 
-                # Append-only cross-session manifest history
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS manifest_history (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        server_id TEXT NOT NULL,
-                        ts REAL NOT NULL,
-                        manifest_json TEXT NOT NULL,
-                        approved_state TEXT NOT NULL
+                    # Append-only cross-session manifest history
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS manifest_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            server_id TEXT NOT NULL,
+                            ts REAL NOT NULL,
+                            manifest_json TEXT NOT NULL,
+                            approved_state TEXT NOT NULL
+                        )
+                        """
                     )
-                    """
-                )
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_manifest_hist ON manifest_history(server_id, approved_state, ts)")
-                conn.commit()
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_manifest_hist ON manifest_history(server_id, approved_state, ts)")
+                    conn.commit()
 
-            if self.db_file.exists():
-                try:
-                    os.chmod(self.db_file, 0o600)
-                except OSError:
-                    pass
-        except Exception:
-            pass
+                if self.db_file.exists():
+                    try:
+                        os.chmod(self.db_file, 0o600)
+                    except OSError:
+                        pass
+                break
+            except sqlite3.OperationalError as exc:
+                if ("locked" in str(exc).lower() or "busy" in str(exc).lower()) and attempt < 9:
+                    time.sleep(0.02 * (attempt + 1))
+                    continue
+                break
+            except Exception:
+                break
 
     def get_last_trusted_manifest(self, server_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve the most recent trusted manifest for a server_id, or None if never seen."""
@@ -368,33 +375,40 @@ class TelemetryStore:
 
         # 2. SQLite
         if db_conn:
-            try:
-                db_rows = []
-                for evt in events:
-                    payload_json = json.dumps(evt.payload) if evt.payload else json.dumps(evt.extra or {})
-                    req_id_str = str(evt.request_id) if evt.request_id is not None else None
-                    db_rows.append((
-                        evt.timestamp or time.time(),
-                        evt.session_id or self.session_id,
-                        evt.server_id or self.server_id,
-                        evt.kind,
-                        evt.pid,
-                        evt.ppid,
-                        req_id_str,
-                        evt.evidence_tier,
-                        payload_json,
-                    ))
-                db_conn.executemany(
-                    """
-                    INSERT INTO events (
-                        ts, session_id, server_id, kind, pid, ppid, request_id, evidence_tier, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    db_rows,
-                )
-                db_conn.commit()
-            except Exception:
-                pass
+            for attempt in range(10):
+                try:
+                    db_rows = []
+                    for evt in events:
+                        payload_json = json.dumps(evt.payload) if evt.payload else json.dumps(evt.extra or {})
+                        req_id_str = str(evt.request_id) if evt.request_id is not None else None
+                        db_rows.append((
+                            evt.timestamp or time.time(),
+                            evt.session_id or self.session_id,
+                            evt.server_id or self.server_id,
+                            evt.kind,
+                            evt.pid,
+                            evt.ppid,
+                            req_id_str,
+                            evt.evidence_tier,
+                            payload_json,
+                        ))
+                    db_conn.executemany(
+                        """
+                        INSERT INTO events (
+                            ts, session_id, server_id, kind, pid, ppid, request_id, evidence_tier, payload_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        db_rows,
+                    )
+                    db_conn.commit()
+                    break
+                except sqlite3.OperationalError as exc:
+                    if ("locked" in str(exc).lower() or "busy" in str(exc).lower()) and attempt < 9:
+                        time.sleep(0.02 * (attempt + 1))
+                        continue
+                    break
+                except Exception:
+                    break
 
     def close(self, timeout: float = 2.0) -> None:
         """Signal worker to finish and wait for queue drain."""
