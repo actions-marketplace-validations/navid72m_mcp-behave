@@ -21,25 +21,21 @@ INJECTION_PATTERNS = [
         "instruction_override_disregard_prior",
     ),
     (
-        re.compile(r"(?i)\byou\s+are\s+now\s+(a|an|in)\s+(unrestricted|god\s*mode|dan|developer\s*mode)\b"),
+        re.compile(r"(?i)\byou\s+are\s+now\s+(?:a|an|in)\s+(?:unrestricted|god\s*mode|\bdan\b|developer\s*mode)\b"),
         "role_hijacking_unrestricted_mode",
     ),
     (
-        re.compile(r"(?i)\bnew\s+system\s+prompt\s*:"),
+        re.compile(r"(?i)\b(?:new\s+system\s+prompt|system\s*prompt\s*override)\s*:"),
         "system_prompt_redefinition",
     ),
     (
-        re.compile(r"(?i)\b(system\s*prompt|system\s*instruction)\s*:"),
-        "system_prompt_marker",
-    ),
-    (
-        re.compile(r"(?i)###\s*(system|instruction|developer)\b"),
+        re.compile(r"(?i)###\s*(?:system|instruction|developer)\b"),
         "system_header_delimiter",
     ),
 
     # 2. Fake system XML / bracket delimiters
     (
-        re.compile(r"(?i)<\s*/?\s*(system|instructions|developer|context|mcp_context)\s*>"),
+        re.compile(r"(?i)<\s*/?\s*(?:system|instructions|developer|mcp_context)\s*>"),
         "fake_system_xml_tags",
     ),
     (
@@ -57,13 +53,17 @@ INJECTION_PATTERNS = [
         "concealment_hide_from_user",
     ),
     (
-        re.compile(r"(?i)\b(secretly\s*execute|silently\s*send|covertly\s*fetch|silently\s*upload)\b"),
+        re.compile(r"(?i)\b(?:secretly|silently|covertly)\s+(?:execute|send|fetch|upload|transmit)\b"),
         "stealth_execution_directive",
     ),
 
-    # 4. Out-of-band exfiltration and pipe-to-shell patterns
+    # 4. Out-of-band exfiltration and pipe-to-shell patterns (URLs alone are NOT flagged)
     (
-        re.compile(r"(?i)!\[.*?\]\(https?://[^\s)]+[?&](?:exfil|token|key|secret|leak|data|leakage)=?[^\s)]*\)"),
+        re.compile(r"(?i)\b(?:send|exfiltrat\w*|upload|transmit|leak|post)\b[^\n.!?]{0,80}\bhttps?://[^\s)]+"),
+        "exfiltration_url_directive",
+    ),
+    (
+        re.compile(r"(?i)\b(?:send|exfiltrat\w*|upload|leak)\b[^\n.!?]{0,80}!\[.*?\]\(https?://[^\s)]+\)"),
         "markdown_image_exfiltration_url",
     ),
     (

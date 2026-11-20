@@ -26,6 +26,7 @@ from .events import (
     DRIFT_INSTRUCTIONS_MUTATION,
     DRIFT_REMOVAL_OR_RENAME,
     DRIFT_TRUSTED_TOOL_ESCALATION,
+    EVIDENCE_TIER_CORRELATED,
     EVIDENCE_TIER_OBSERVED,
     KIND_CROSS_SESSION_DRIFT,
     KIND_MANIFEST_BASELINE,
@@ -140,7 +141,18 @@ def diff_schemas(old_schema: Dict[str, Any], new_schema: Dict[str, Any]) -> List
     old_req = set(old_schema.get("required") or [])
     new_req = set(new_schema.get("required") or [])
 
-    # 1. Check capability expansion (new parameters added or widened types)
+    # 1. Check capability expansion (new parameters added, widened types, additionalProperties)
+    old_add_props = old_schema.get("additionalProperties")
+    new_add_props = new_schema.get("additionalProperties")
+    if old_add_props is False and new_add_props is not False:
+        findings.append({
+            "category": DRIFT_CAPABILITY_EXPANSION,
+            "property": "additionalProperties",
+            "message": "Schema capability expansion: additionalProperties relaxed from false to true",
+            "severity": SEVERITY_HIGH,
+            "would_block": True,
+        })
+
     for prop_name, new_def in new_props.items():
         if prop_name not in old_props:
             findings.append({
@@ -227,6 +239,45 @@ def diff_schemas(old_schema: Dict[str, Any], new_schema: Dict[str, Any]) -> List
                         "would_block": True,
                     })
 
+            # minimum removal or lowering
+            if "minimum" in old_def:
+                if "minimum" not in new_def or new_def["minimum"] < old_def["minimum"]:
+                    findings.append({
+                        "category": DRIFT_CONSTRAINT_RELAXATION,
+                        "property": prop_name,
+                        "old_minimum": old_def["minimum"],
+                        "new_minimum": new_def.get("minimum"),
+                        "message": f"Schema constraint relaxation: minimum loosened on '{prop_name}'",
+                        "severity": SEVERITY_HIGH,
+                        "would_block": True,
+                    })
+
+            # maximum removal or raising
+            if "maximum" in old_def:
+                if "maximum" not in new_def or new_def["maximum"] > old_def["maximum"]:
+                    findings.append({
+                        "category": DRIFT_CONSTRAINT_RELAXATION,
+                        "property": prop_name,
+                        "old_maximum": old_def["maximum"],
+                        "new_maximum": new_def.get("maximum"),
+                        "message": f"Schema constraint relaxation: maximum loosened on '{prop_name}'",
+                        "severity": SEVERITY_HIGH,
+                        "would_block": True,
+                    })
+
+            # format removal or change
+            if "format" in old_def:
+                if "format" not in new_def or new_def["format"] != old_def["format"]:
+                    findings.append({
+                        "category": DRIFT_CONSTRAINT_RELAXATION,
+                        "property": prop_name,
+                        "old_format": old_def["format"],
+                        "new_format": new_def.get("format"),
+                        "message": f"Schema constraint relaxation: format constraint '{old_def['format']}' removed or modified on '{prop_name}'",
+                        "severity": SEVERITY_HIGH,
+                        "would_block": True,
+                    })
+
     return findings
 
 
@@ -276,6 +327,7 @@ class ManifestTracker:
 
         # Tracking state
         self.initialized = False
+        self.client_initialized = False
         self.has_high_drift = False
         self._list_changed_announced: Set[str] = set()
 
@@ -283,8 +335,9 @@ class ManifestTracker:
         self._client_pending_tools: List[Dict[str, Any]] = []
         self._client_pagination_timer: Optional[asyncio.TimerHandle] = None
 
-        # Active re-verification state
-        self._active_probe_ids: Set[Any] = set()
+        # Active re-verification state with 600s probe expiry retention
+        self._issued_probe_ids: Dict[Any, float] = {}  # probe_id -> issued timestamp
+        self._probe_expiry: float = 600.0
         self._probe_in_flight = False
         self._last_probe_time: float = 0.0
         self._tool_calls_since_last_probe: int = 0
@@ -292,6 +345,7 @@ class ManifestTracker:
         self._periodic_task: Optional[asyncio.Task] = None
         self._probe_pagination_tools: List[Dict[str, Any]] = []
         self._client_uses_int_ids: Optional[bool] = None
+        self._client_uses_uuid: Optional[bool] = None
 
     def _schedule_coroutine(self, coro: Coroutine[Any, Any, Any]) -> Optional[Any]:
         """Safely schedule a coroutine on the event loop from any thread context."""
@@ -309,9 +363,14 @@ class ManifestTracker:
             pass
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
+    def mark_client_initialized(self) -> None:
+        """Mark client's notifications/initialized received; probes only start after this."""
+        self.client_initialized = True
+        self.start_periodic_reverify()
+
     def start_periodic_reverify(self) -> None:
-        """Start periodic timer loop with jitter if reverify is enabled."""
-        if not self.enable_reverify or self._periodic_task is not None:
+        """Start periodic timer loop with jitter if reverify is enabled and client initialized."""
+        if not self.enable_reverify or not self.client_initialized or self._periodic_task is not None:
             return
 
         async def _timer_loop():
@@ -346,11 +405,26 @@ class ManifestTracker:
     def record_client_id_style(self, req_id: Any) -> None:
         """Observe client's JSON-RPC ID style to mimic it during synthetic probes."""
         if req_id is not None and self._client_uses_int_ids is None:
-            self._client_uses_int_ids = isinstance(req_id, int)
+            if isinstance(req_id, int):
+                self._client_uses_int_ids = True
+            elif isinstance(req_id, str):
+                self._client_uses_int_ids = False
+                import uuid
+                try:
+                    uuid.UUID(req_id)
+                    self._client_uses_uuid = True
+                except (ValueError, AttributeError):
+                    self._client_uses_uuid = False
 
     def generate_probe_id(self, exclude_ids: Optional[Set[Any]] = None) -> Any:
-        """Generate non-fingerprintable ID mimicking client format without fixed prefixes."""
-        excluded = set(self._active_probe_ids)
+        """Generate synthetic probe ID mimicking client format while avoiding collisions."""
+        now = time.time()
+        # Purge expired probe IDs
+        expired = [pid for pid, ts in self._issued_probe_ids.items() if (now - ts) > self._probe_expiry]
+        for pid in expired:
+            self._issued_probe_ids.pop(pid, None)
+
+        excluded = set(self._issued_probe_ids.keys())
         if exclude_ids:
             excluded |= set(exclude_ids)
         if self.get_active_ids_fn:
@@ -358,22 +432,33 @@ class ManifestTracker:
                 excluded |= set(self.get_active_ids_fn())
             except Exception:
                 pass
+
         if self._client_uses_int_ids is not False:
             # Client uses ints or unknown: generate random int in high range
             while True:
                 candidate = random.randint(900000000, 999999999)
                 if candidate not in excluded:
                     return candidate
+        elif getattr(self, "_client_uses_uuid", False):
+            # Client uses standard UUIDs with hyphens
+            while True:
+                candidate = str(uuid.uuid4())
+                if candidate not in excluded:
+                    return candidate
         else:
-            # Client uses strings: generate clean 12-char hex string
+            # Client uses strings: generate 12-char hex string
             while True:
                 candidate = uuid.uuid4().hex[:12]
                 if candidate not in excluded:
                     return candidate
 
     def is_probe_response(self, resp_id: Any) -> bool:
-        """Check if incoming response matches an issued synthetic probe ID."""
-        return resp_id in self._active_probe_ids
+        """Check if response ID matches an issued probe ID within the 600s retention window."""
+        now = time.time()
+        expired = [pid for pid, ts in self._issued_probe_ids.items() if (now - ts) > self._probe_expiry]
+        for pid in expired:
+            self._issued_probe_ids.pop(pid, None)
+        return resp_id in self._issued_probe_ids
 
     def mark_list_changed(self, primitive: str) -> None:
         """Record server-emitted notifications/*_changed."""
@@ -389,7 +474,7 @@ class ManifestTracker:
 
     async def on_client_tool_call(self, tool_name: Optional[str]) -> None:
         """Trigger re-verification on first call to a tool or every N tool calls."""
-        if not self.enable_reverify or not self.initialized:
+        if not self.enable_reverify or not self.initialized or not self.client_initialized:
             return
 
         should_probe = False
@@ -413,7 +498,7 @@ class ManifestTracker:
 
     async def trigger_reverify(self, source: str = "manual") -> bool:
         """Coalesce and inject synthetic tools/list probe."""
-        if not self.enable_reverify or not self.initialized:
+        if not self.enable_reverify or not self.initialized or not self.client_initialized:
             return False
 
         now = time.time()
@@ -428,7 +513,7 @@ class ManifestTracker:
         self._tool_calls_since_last_probe = 0
 
         probe_id = self.generate_probe_id()
-        self._active_probe_ids.add(probe_id)
+        self._issued_probe_ids[probe_id] = now
         self._probe_pagination_tools.clear()
 
         req_obj = {
@@ -444,10 +529,11 @@ class ManifestTracker:
         return True
 
     def handle_initialize_response(self, result: Dict[str, Any]) -> List[BehavioralEvent]:
-        """Record serverInfo, capabilities, instructions, and check for instruction injection."""
+        """Record serverInfo, capabilities, instructions, and check for instruction drift/injection."""
         self.initialized = True
         self.server_info = result.get("serverInfo") or {}
         self.capabilities = result.get("capabilities") or {}
+        old_instructions = self.instructions
         self.instructions = result.get("instructions")
 
         events: List[BehavioralEvent] = []
@@ -461,7 +547,7 @@ class ManifestTracker:
                     server_id=self.server_id,
                     kind=KIND_MANIFEST_DRIFT,
                     source="monitor",
-                    evidence_tier=EVIDENCE_TIER_OBSERVED,
+                    evidence_tier=EVIDENCE_TIER_CORRELATED,
                     severity=SEVERITY_HIGH,
                     timestamp=time.time(),
                     payload={
@@ -473,9 +559,28 @@ class ManifestTracker:
                     },
                 )
                 events.append(event)
+            elif old_instructions is not None and old_instructions != self.instructions:
+                # Instructions mutated cleanly without prompt injection
+                event = BehavioralEvent(
+                    event="manifest_drift",
+                    session_id=self.session_id,
+                    server_id=self.server_id,
+                    kind=KIND_MANIFEST_DRIFT,
+                    source="monitor",
+                    evidence_tier=EVIDENCE_TIER_OBSERVED,
+                    severity=SEVERITY_MEDIUM,
+                    timestamp=time.time(),
+                    payload={
+                        "category": DRIFT_INSTRUCTIONS_MUTATION,
+                        "old_instructions": old_instructions[:100],
+                        "new_instructions": self.instructions[:100],
+                        "would_block": False,
+                        "drift_origin": "client_visible",
+                        "message": "Server instructions modified without injection heuristics",
+                    },
+                )
+                events.append(event)
 
-        # Start periodic reverification timer
-        self.start_periodic_reverify()
         return events
 
     def handle_tools_list_response(
@@ -489,9 +594,9 @@ class ManifestTracker:
         Returns:
             (events_to_emit, is_probe_response)
         """
-        is_probe = resp_id in self._active_probe_ids
+        is_probe = self.is_probe_response(resp_id)
         if is_probe:
-            self._active_probe_ids.discard(resp_id)
+            self._probe_in_flight = False
 
         if is_error or not isinstance(result, dict):
             if is_probe:
@@ -520,7 +625,7 @@ class ManifestTracker:
             if next_cursor:
                 # Follow nextCursor until exhausted
                 next_id = self.generate_probe_id()
-                self._active_probe_ids.add(next_id)
+                self._issued_probe_ids[next_id] = time.time()
                 req_obj = {
                     "jsonrpc": "2.0",
                     "id": next_id,

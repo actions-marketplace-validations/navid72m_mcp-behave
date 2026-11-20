@@ -259,6 +259,18 @@ class ProtocolMonitor:
 
     def _sync_process_line(self, line_bytes: bytes, direction: str, now: float) -> None:
         """Synchronous parsing and telemetry dispatch on background thread."""
+        # Fast path for large messages (>64 KB): avoid intermediate copy of 1 MB byte string
+        if len(line_bytes) > 65536 and not self.log_content:
+            header_check = line_bytes[:4096]
+            is_manifest_response = (
+                b'"tools"' in header_check
+                or b'"serverInfo"' in header_check
+                or b'"capabilities"' in header_check
+            )
+            if not is_manifest_response:
+                self._handle_large_message_envelope_sync(line_bytes, len(line_bytes), direction, now)
+                return
+
         # Strip trailing newlines for inspection
         stripped = line_bytes.rstrip(b"\r\n")
         if not stripped:
@@ -268,19 +280,6 @@ class ProtocolMonitor:
         # Strip UTF-8 BOM if present
         if stripped.startswith(b"\xef\xbb\xbf"):
             stripped = stripped[3:]
-
-        # For messages > 64 KB when log_content is False, parse envelope headers only
-        # (id, method, params.name) to avoid full JSON tree allocation and GIL contention,
-        # UNLESS this is a manifest message (initialize response or tools/list) which requires full parsing.
-        header_check = stripped[:4096]
-        is_manifest_response = (
-            b'"tools"' in header_check
-            or b'"serverInfo"' in header_check
-            or b'"capabilities"' in header_check
-        )
-        if len(stripped) > 65536 and not self.log_content and not is_manifest_response:
-            self._handle_large_message_envelope_sync(stripped, len(line_bytes), direction, now)
-            return
 
         # Attempt JSON parse directly on bytes (avoids large intermediate str allocation)
         try:
@@ -360,6 +359,8 @@ class ProtocolMonitor:
                 if self.manifest_tracker:
                     if msg_id is not None:
                         self.manifest_tracker.record_client_id_style(msg_id)
+                    if method in ("notifications/initialized", "initialized"):
+                        self.manifest_tracker.mark_client_initialized()
                     if tool_name:
                         self.manifest_tracker.schedule_client_tool_call(tool_name)
 
@@ -554,10 +555,10 @@ class ProtocolMonitor:
                 self.telemetry.record(event)
 
     def _handle_large_message_envelope_sync(
-        self, stripped: bytes, total_bytes: int, direction: str, now: float
+        self, raw_bytes: bytes, total_bytes: int, direction: str, now: float
     ) -> None:
-        """Extract id, method, and params.name without full JSON parsing for >64 KB messages."""
-        header_chunk = stripped[:4096]
+        """Extract id, method, and params.name without full JSON parsing or intermediate copies for >64 KB messages."""
+        header_chunk = raw_bytes[:4096]
 
         msg_id: Any = None
         id_m = re.search(rb'"id"\s*:\s*([0-9]+|"[^"]+")', header_chunk)
@@ -571,10 +572,10 @@ class ProtocolMonitor:
                 except ValueError:
                     msg_id = raw_id
 
-        # Compute sha256 in C (releases GIL)
-        h = hashlib.sha256(stripped).hexdigest()
-        prefix = stripped[:4].decode("utf-8", errors="replace")
-        hashed_summary = {"sha256": h, "prefix": prefix, "length": len(stripped)}
+        # Compute sha256 in C directly on bytes buffer (releases GIL)
+        h = hashlib.sha256(raw_bytes).hexdigest()
+        prefix = raw_bytes[:4].decode("utf-8", errors="replace")
+        hashed_summary = {"sha256": h, "prefix": prefix, "length": len(raw_bytes)}
 
         if direction == "client_to_server":
             method_m = re.search(rb'"method"\s*:\s*"([^"]+)"', header_chunk)

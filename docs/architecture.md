@@ -217,11 +217,11 @@ Because MCP clients usually cache `tools/list` after initialization, passive TOF
   - Throttled to a minimum interval of 10.0 seconds between probes.
   - Probes never delay or block client message forwarding.
 - **Probe ID Mimicry**:
-  - Probe IDs match responses by the exact issued set (`_active_probe_ids`).
+  - Probe IDs match responses by the exact issued dictionary (`_issued_probe_ids`) retained for 600s to cleanly capture and drop late or duplicate responses without forwarding.
   - No fixed prefix (e.g. no `"mcpb-"`).
-  - Mimics client format: random high integers (`[900000000, 999999999]`) if client uses integers; 12-char hex strings if client uses strings. Excludes in-flight client request IDs to prevent collision.
+  - Mimics client format: random high integers (`[900000000, 999999999]`) if client uses integers; standard formatted UUID strings if client uses UUIDs; 12-char hex strings for general string IDs. Excludes in-flight client request IDs to prevent collision.
 - **Response Demuxing**:
-  - In `server_to_client_pump`, any incoming message matching an issued probe ID is intercepted, processed by `ManifestTracker`, and **never forwarded to client stdout**.
+  - In `server_to_client_pump`, any incoming message matching an issued probe ID within the 600s retention window is intercepted, processed by `ManifestTracker`, and **never forwarded to client stdout**. Late-arriving probe responses are dropped silently.
 
 ### 5.3 Effective Safety Annotations & Bidirectional Diffs
 MCP specification defines default safety expectations when tool annotations are absent:
@@ -273,7 +273,11 @@ Violations in instructions or descriptions are tagged `HIGH` with `would_block: 
 - Cross-session drift against the trusted baseline is evaluated on the first tools list. If `serverInfo.version` bumped and changes are purely additive, findings are classified as `SEVERITY_MEDIUM`.
 
 ### 5.8 Residual Fingerprinting Risk
-While probe IDs mimic client formatting and avoid fixed strings, an adversarial MCP server could detect runtime monitoring through:
-1. **Unsolicited list requests**: If the client never sends unsolicited `tools/list` after initialization, server-side request logging could infer active re-verification.
-2. **Timing correlation**: Injections occurring immediately after tool execution.
+While probe IDs avoid fixed string markers like `mcpb-` and mimic client ID style, an adversarial MCP server could detect runtime monitoring through:
+1. **Unsolicited list requests**: If the client application never sends unsolicited `tools/list` after initialization, server-side request logging could infer active re-verification.
+2. **High integer range**: When the client uses integer IDs, probe IDs are chosen from the high range `[900000000, 999999999]` to guarantee non-collision with typical sequential client counters (e.g. 1, 2, 3). This partition is a known residual fingerprint.
+3. **Timing correlation**: Injections occurring on first tool call or periodically.
 Mitigations include random timing jitter ($\pm 10-20\%$), minimum 10s cooldown, probe coalescing, and the `--no-reverify` opt-out flag.
+
+### 5.9 Scope Boundary (Pre-M3)
+Milestone 2 strictly focuses on protocol monitoring, manifest tracking, prompt injection detection, and drift alerting. No Milestone 3 behavioral lockfile schemas (`mcp-behave.lock.json`), filesystem enforcement, or network enforcement hooks are introduced in this phase.
