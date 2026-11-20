@@ -156,3 +156,34 @@ This document records key architectural and design decisions made across milesto
     - `destructiveHint=False` violated by destructive modifications $\to$ emit `destructive_violation`, `SEVERITY_HIGH`, `would_block: True`.
     - Any tool accessing confidential paths (`.ssh`, `.aws`, `.env`, private keys) via `analyze.is_sensitive_path()` $\to$ emit `secret_exposure`, `SEVERITY_HIGH` / `SEVERITY_CRITICAL`, `would_block: True`.
 - **Status**: Implemented & verified.
+
+---
+
+## Milestone 5 Decisions (Policy Enforcement, Sandboxing & Redaction)
+
+### ADR-017: Active Request Interception & Strict JSON-RPC Error Synthesis
+- **Context**: When running with `--enforce`, client requests invoking unapproved tools (not in lockfile) or servers attempting confidential exfiltration must be actively blocked rather than merely alerted. Error responses must strictly conform to JSON-RPC 2.0 and preserve the client's original ID type.
+- **Decision**:
+  - Intercept unauthorized `tools/call` requests in `client_to_server_pump` before they reach the child stdin queue, preventing the server from ever receiving the request.
+  - Synthesize immediate JSON-RPC error responses (`code: -32003`) preserving exact client ID type (integer, string, or null).
+  - Intercept canary or critical credential exfiltration in `server_to_client_pump` under fail-closed enforcement, returning synthetic errors (`code: -32004`).
+  - Emit observed `enforcement_action` events (`action="blocked"`, `evidence_tier="observed"`).
+- **Status**: Implemented & verified.
+
+### ADR-018: In-Place Secret and Canary Redaction Filter
+- **Context**: Servers returning credentials or tokens must not leak them to the client when `--redact` is active. Redaction must maintain valid JSON-RPC structure without corrupting escaping or nested structures.
+- **Decision**:
+  - Run server responses through a fast pre-filter (`COMBINED_TEXT_PREFILTER` and canary presence check) to ensure clean responses pass through in $< 0.01\text{ ms}$.
+  - On suspicious responses, recursively walk the JSON structure and replace detected secrets (AWS, OpenAI, Slack, GitHub, private keys) with `[REDACTED: <type>]` and canaries with `[REDACTED: canary_token]`.
+  - Re-serialize to strict NDJSON and emit `enforcement_action` events (`action="redacted"`).
+- **Status**: Implemented & verified.
+
+### ADR-019: macOS Darwin Seatbelt Kernel Profile Generation and Sandboxing
+- **Context**: Application-layer interception must be complemented by OS-layer kernel sandboxing to prevent compromised native binaries from bypassing proxy hooks.
+- **Decision**:
+  - Implement `seatbelt.py` translating lockfile behavioral guarantees into Scheme (`.sb`) profiles for `/usr/bin/sandbox-exec`.
+  - Sanitize and canonicalize all path literals using `os.path.realpath` with quote/backslash escaping.
+  - Deny unauthorized filesystem writes outside `/tmp` when `readOnlyHint=True`.
+  - Deny non-loopback outbound network connections when `openWorldHint=False`.
+  - Implement graceful degradation under `--fail-mode=fail-open` and fail-stop under `--fail-mode=fail-closed`.
+- **Status**: Implemented & verified.

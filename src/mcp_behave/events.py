@@ -84,6 +84,10 @@ KIND_LOCKFILE_DRIFT = "lockfile_drift"
 KIND_PACKAGE_DRIFT = "package_drift"
 KIND_PACKAGE_TAMPER = "package_tamper"
 
+# Active enforcement & sandboxing event kinds (Milestone 5)
+KIND_ENFORCEMENT_ACTION = "enforcement_action"
+KIND_SANDBOX_STATUS = "sandbox_status"
+
 # Manifest drift categories
 DRIFT_COVERT_ADDITION = "covert_addition"
 DRIFT_ANNOUNCED_ADDITION = "announced_addition"

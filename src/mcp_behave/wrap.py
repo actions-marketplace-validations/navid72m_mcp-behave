@@ -19,9 +19,12 @@ from typing import Any, List, Optional
 from .bus import EventBus
 from .attribution import AttributionEngine
 from .canary import CanaryManager
+from .enforce import PolicyEnforcer
 from .events import (
     BehavioralEvent,
+    KIND_ENFORCEMENT_ACTION,
     KIND_OS_TRACING,
+    KIND_SANDBOX_STATUS,
     KIND_SESSION_END,
     KIND_SESSION_START,
 )
@@ -29,6 +32,7 @@ from .identity import resolve_package_identity
 from .launcher import (
     derive_server_id,
     get_tracer_environment,
+    prepare_sandbox_command,
     resolve_server_executable,
     spawn_child_server,
     terminate_process_group,
@@ -85,6 +89,8 @@ async def client_to_server_pump(
     stdin_queue: asyncio.Queue[Optional[bytes]],
     monitor: ProtocolMonitor,
     stop_event: asyncio.Event,
+    enforcer: Optional[PolicyEnforcer] = None,
+    client_writer: Optional[asyncio.StreamWriter] = None,
 ) -> None:
     """Stream NDJSON lines from client stdin into child server stdin queue."""
     framer = StreamingFramer(reader)
@@ -92,6 +98,23 @@ async def client_to_server_pump(
         async for line_bytes, is_eof in framer:
             if stop_event.is_set():
                 break
+
+            # Active policy enforcement on client requests (Milestone 5)
+            if enforcer and enforcer.enforce and client_writer:
+                err_bytes, enf_event = enforcer.evaluate_client_request(line_bytes)
+                if err_bytes:
+                    # Tool invocation is blocked by lockfile policy; synthesize error to client
+                    try:
+                        client_writer.write(err_bytes)
+                        await client_writer.drain()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        pass
+                    if enf_event:
+                        monitor.bus.publish_sync(enf_event)
+                        monitor.telemetry.record(enf_event)
+                        monitor._emit_alert(enf_event)
+                    # Do NOT forward blocked tool invocation to child server stdin queue
+                    continue
 
             # 1. Hot path: Forward complete line to serialized child stdin writer queue
             await stdin_queue.put(line_bytes)
@@ -107,6 +130,7 @@ async def server_to_client_pump(
     writer: asyncio.StreamWriter,
     monitor: ProtocolMonitor,
     stop_event: asyncio.Event,
+    enforcer: Optional[PolicyEnforcer] = None,
 ) -> None:
     """Stream NDJSON lines from child server stdout to client stdout."""
     framer = StreamingFramer(reader)
@@ -121,15 +145,23 @@ async def server_to_client_pump(
                 monitor.enqueue_line(line_bytes, "server_to_client")
                 continue
 
+            eff_line_bytes = line_bytes
+            if enforcer:
+                eff_line_bytes, enf_events = enforcer.filter_server_response(line_bytes)
+                for enf_evt in enf_events:
+                    monitor.bus.publish_sync(enf_evt)
+                    monitor.telemetry.record(enf_evt)
+                    monitor._emit_alert(enf_evt)
+
             # 1. Hot path: Forward immediately to client stdout
             try:
-                writer.write(line_bytes)
+                writer.write(eff_line_bytes)
                 await writer.drain()
             except (BrokenPipeError, ConnectionResetError, OSError):
                 break
 
             # 2. Off hot path: Parse, correlate, and record telemetry
-            monitor.enqueue_line(line_bytes, "server_to_client")
+            monitor.enqueue_line(eff_line_bytes, "server_to_client")
     finally:
         stop_event.set()
 
@@ -152,6 +184,9 @@ async def run_proxy(
     lockfile_path: Optional[str] = None,
     enforce: bool = False,
     enable_trace: bool = True,
+    fail_mode: str = "fail-closed",
+    sandbox: str = "none",
+    redact: bool = False,
     stdin_reader_override: Optional[asyncio.StreamReader] = None,
     stdout_writer_override: Optional[asyncio.StreamWriter] = None,
 ) -> int:
@@ -194,6 +229,17 @@ async def run_proxy(
         enforce=enforce,
     )
 
+    # Active Policy Enforcer & Redactor (Milestone 5)
+    enforcer = PolicyEnforcer(
+        session_id=session_id,
+        server_id=eff_server_id,
+        server_lock=server_lock,
+        enforce=enforce,
+        fail_mode=fail_mode,
+        redact=redact,
+        canary_mgr=canary_mgr,
+    )
+
     monitor = ProtocolMonitor(
         session_id=session_id,
         server_id=eff_server_id,
@@ -214,6 +260,14 @@ async def run_proxy(
         attribution_engine=attribution_engine,
     )
 
+    # OS Sandboxing (Milestone 5)
+    sandboxed_cmd, sandbox_meta = prepare_sandbox_command(
+        server_cmd,
+        sandbox=sandbox,
+        server_lock=server_lock,
+        fail_mode=fail_mode,
+    )
+
     # OS Syscall Interposition Tracer (Milestone 4)
     tracer_server: Optional[TracerServer] = None
     tracer_child_env: Dict[str, str] = {}
@@ -229,7 +283,7 @@ async def run_proxy(
             telemetry.record(v)
             monitor._emit_alert(v)
 
-    resolved_binary, _ = resolve_server_executable(server_cmd[0])
+    resolved_binary, _ = resolve_server_executable(sandboxed_cmd[0])
 
     if enable_trace:
         interposer_env, disabled_reason = get_tracer_environment(resolved_binary, enable_trace=True)
@@ -248,7 +302,7 @@ async def run_proxy(
 
     # Spawn child server process in its own process group with tracer environment
     child_proc, resolved_cmd0, resolved_sha256 = await spawn_child_server(
-        server_cmd, env=tracer_child_env, augment_path=augment_path
+        sandboxed_cmd, env=tracer_child_env, augment_path=augment_path
     )
 
     # Emit session start event with resolved binary and checksum
@@ -262,6 +316,7 @@ async def run_proxy(
         evidence_tier="observed",
         payload={
             "server_cmd": server_cmd,
+            "sandboxed_cmd": sandboxed_cmd,
             "server_id": eff_server_id,
             "session_id": session_id,
             "resolved_command": resolved_cmd0,
@@ -273,6 +328,20 @@ async def run_proxy(
     )
     await bus.publish(start_event)
     telemetry.record(start_event)
+
+    # Emit sandbox status event (Milestone 5)
+    sandbox_event = BehavioralEvent(
+        event="sandbox_status",
+        session_id=session_id,
+        server_id=eff_server_id,
+        kind=KIND_SANDBOX_STATUS,
+        timestamp=time.time(),
+        source="monitor",
+        evidence_tier="observed",
+        payload=sandbox_meta,
+    )
+    await bus.publish(sandbox_event)
+    telemetry.record(sandbox_event)
 
     # Emit OS tracing status event (Milestone 4)
     os_event = BehavioralEvent(
@@ -334,12 +403,25 @@ async def run_proxy(
         child_stdin_writer(stdin_queue, child_proc.stdin)
     )
 
-    # Start bi-directional pumps
+    # Start bi-directional pumps with enforcer and client_writer wired
     c2s_task = asyncio.create_task(
-        client_to_server_pump(client_reader, stdin_queue, monitor, stop_event)
+        client_to_server_pump(
+            client_reader,
+            stdin_queue,
+            monitor,
+            stop_event,
+            enforcer=enforcer,
+            client_writer=client_writer,
+        )
     )
     s2c_task = asyncio.create_task(
-        server_to_client_pump(child_proc.stdout, client_writer, monitor, stop_event)
+        server_to_client_pump(
+            child_proc.stdout,
+            client_writer,
+            monitor,
+            stop_event,
+            enforcer=enforcer,
+        )
     )
 
     # Wait until either pump finishes or stop_event is set
@@ -529,6 +611,18 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
         help="Strictly enforce behavioral lockfile policies (default: warn only).",
     )
     parser.add_argument(
+        "--fail-mode", choices=["fail-closed", "fail-open"], default="fail-closed",
+        help="Enforcement fail mode: fail-closed (reject on error) or fail-open (allow with warning).",
+    )
+    parser.add_argument(
+        "--sandbox", choices=["auto", "seatbelt", "container", "none"], default="none",
+        help="OS sandboxing backend: auto (Seatbelt on macOS, Container on Linux), seatbelt, container, or none.",
+    )
+    parser.add_argument(
+        "--redact", action="store_true",
+        help="Active inline payload redaction: replace detected secrets with [REDACTED: <type>].",
+    )
+    parser.add_argument(
         "--no-trace", action="store_true",
         help="Disable low-level OS syscall tracing (runs protocol-only monitoring).",
     )
@@ -558,6 +652,9 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
             lockfile_path=args.lockfile,
             enforce=args.enforce,
             enable_trace=not args.no_trace,
+            fail_mode=args.fail_mode,
+            sandbox=args.sandbox,
+            redact=args.redact,
         ))
     except KeyboardInterrupt:
         return 130

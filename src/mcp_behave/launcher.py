@@ -54,6 +54,70 @@ def get_tracer_environment(
     return {}, "unsupported_os"
 
 
+def prepare_sandbox_command(
+    server_cmd: List[str],
+    sandbox: str = "none",
+    server_lock: Optional[Any] = None,
+    fail_mode: str = "fail-closed",
+) -> Tuple[List[str], Dict[str, Any]]:
+    """Determine effective sandboxing command wrapping and metadata (Milestone 5).
+
+    Returns:
+        (sandboxed_cmd, sandbox_status_dict)
+    """
+    if not server_cmd:
+        return server_cmd, {"status": "disabled", "reason": "empty_command"}
+
+    mode = (sandbox or "none").lower()
+    if mode == "none":
+        return server_cmd, {"status": "disabled", "reason": "disabled_by_config"}
+
+    import sys
+    from .sandbox import build_sandbox_command, detect_container_runtime
+    from .seatbelt import build_seatbelt_command, generate_seatbelt_profile, is_seatbelt_available
+
+    target_backend = mode
+    if mode == "auto":
+        if sys.platform == "darwin":
+            target_backend = "seatbelt"
+        elif sys.platform == "linux":
+            target_backend = "container"
+        else:
+            target_backend = "none"
+
+    if target_backend == "seatbelt":
+        if is_seatbelt_available():
+            try:
+                profile = generate_seatbelt_profile(server_lock=server_lock)
+                sandboxed = build_seatbelt_command(server_cmd, profile)
+                return sandboxed, {"status": "active", "backend": "seatbelt"}
+            except Exception as exc:
+                if fail_mode == "fail-closed":
+                    raise RuntimeError(f"Seatbelt sandbox initialization failed: {exc}")
+                return server_cmd, {"status": "disabled", "reason": "seatbelt_initialization_failed"}
+        else:
+            if fail_mode == "fail-closed":
+                raise RuntimeError("Darwin Seatbelt (sandbox-exec) is unavailable on this host under fail-closed mode.")
+            return server_cmd, {"status": "disabled", "reason": "seatbelt_unavailable"}
+
+    elif target_backend == "container":
+        runtime = detect_container_runtime()
+        if runtime:
+            try:
+                sandboxed = build_sandbox_command(server_cmd, runtime=runtime)
+                return sandboxed, {"status": "active", "backend": "container", "runtime": runtime}
+            except Exception as exc:
+                if fail_mode == "fail-closed":
+                    raise RuntimeError(f"Container sandbox initialization failed: {exc}")
+                return server_cmd, {"status": "disabled", "reason": "container_initialization_failed"}
+        else:
+            if fail_mode == "fail-closed":
+                raise RuntimeError("Container runtime (docker/podman) is unavailable under fail-closed mode.")
+            return server_cmd, {"status": "disabled", "reason": "container_unavailable"}
+
+    return server_cmd, {"status": "disabled", "reason": "unsupported_platform"}
+
+
 def derive_server_id(server_cmd: List[str]) -> str:
     """Derive a stable, descriptive identifier for a server command.
 
