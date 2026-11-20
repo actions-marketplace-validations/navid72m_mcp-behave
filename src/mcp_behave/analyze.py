@@ -113,7 +113,14 @@ def is_sensitive_path(path: str) -> tuple[bool, str]:
 
     # Generic private key file extensions
     base = Path(norm).name.lower()
-    if base.endswith((".pem", ".key")) and any(s in base for s in ("private", "id_", "secret", "server", "cert")):
+    norm_lower = norm.lower()
+    is_public_ca = (
+        base in ("cacert.pem", "ca-certificates.crt", "ca-bundle.crt", "cert.pem")
+        or base.startswith(("ca-", "cacert"))
+        or "certifi" in norm_lower
+        or "mozilla" in norm_lower
+    )
+    if not is_public_ca and base.endswith((".pem", ".key")) and any(s in base for s in ("private", "priv", "id_", "secret")):
         return True, base
 
     return False, ""

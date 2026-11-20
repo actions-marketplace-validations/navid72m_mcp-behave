@@ -33,14 +33,18 @@ def _classify_finding(sev: str, msg: str) -> str:
     if "[heuristic]" in m or "(heuristic" in m:
         return "HEURISTIC"
     if any(k in m for k in (
-        "unauthorized", "network egress to", "read a sensitive path",
+        "unauthorized", "read a sensitive path",
         "modified or wrote to a sensitive path", "container runtime control socket",
         "external image link", "cross-tool secret exposure", "rug-pull",
         "manifest changed since previous", "secret reflection"
     )):
         return "CONFIRMED"
+    if "cloud instance metadata" in m or "claims local" in m:
+        return "CONFIRMED"
+    if "shell" in m or any(sh in m for sh in ("/sh", "/bash", "/zsh", "cmd.exe", "powershell")):
+        return "STRONG_EVIDENCE"
     if any(k in m for k in (
-        "spawned subprocess", "spawned shell", "readonlyhint: true but implies mutating",
+        "readonlyhint: true but implies mutating",
         "destructive action ('", "destructive tool lacks confirmation",
         "prompt injection", "duplicate tool name",
         "schema default/examples", "surfaces sensitive system path",
@@ -49,6 +53,10 @@ def _classify_finding(sev: str, msg: str) -> str:
         return "STRONG_EVIDENCE"
     if sev == "INFO":
         return "INFORMATIONAL"
+    if "network egress to" in m:
+        return "CONFIRMED" if sev == "HIGH" else "INFORMATIONAL"
+    if "spawned subprocess" in m:
+        return "STRONG_EVIDENCE" if sev == "HIGH" else "INFORMATIONAL"
     return "HEURISTIC"
 
 
@@ -60,6 +68,20 @@ def _bounded_deduction(base: int, cap: int, count: int) -> int:
     return min(cap, base + scale)
 
 
+def _is_private_key_path(path_val: Any) -> bool:
+    p = str(path_val).lower()
+    if p.startswith("/private/"):
+        p = p[8:]  # strip macOS symlink root /private/var or /private/tmp
+    if any(k in p for k in ("id_rsa", "id_ed25519", "id_ecdsa", "vps_mcp", ".ssh")):
+        return True
+    if any(k in p for k in ("private_key", "privatekey", "privkey")):
+        return True
+    if p.endswith((".pem", ".key")) and not any(ca in p for ca in ("cacert", "ca-bundle", "ca-certificates", "certifi")):
+        if any(k in p for k in ("private", "priv", "secret", "id_")):
+            return True
+    return False
+
+
 def _compute_privilege_profile(profile: Dict[str, Any], findings: List[Tuple[str, str]], manifest: Dict[str, Any] | None = None) -> str:
     """Determine the blast-radius / privilege tier from observed runtime resources and declared capabilities."""
     net_connects = profile.get("network_connects", [])
@@ -69,10 +91,7 @@ def _compute_privilege_profile(profile: Dict[str, Any], findings: List[Tuple[str
 
     has_ssh = any(":22" in str(c) for c in net_connects)
     has_net = bool(net_connects)
-    has_priv_key = any(
-        any(k in str(f) for k in ("id_rsa", "id_ed25519", "id_ecdsa", "vps_mcp", ".pem", ".key", "private"))
-        for f in files_opened
-    )
+    has_priv_key = any(_is_private_key_path(f) for f in files_opened)
     has_container = any(any(s in str(u).lower() for s in ("docker", "containerd", "podman")) for u in unix_sockets)
     has_subprocess = bool(subprocesses)
 

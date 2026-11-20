@@ -1,0 +1,8 @@
+{
+  "name": "@modelcontextprotocol/server-everything",
+  "category": "clean_reference",
+  "command": ["npx", "-y", "@modelcontextprotocol/server-everything"],
+  "expected_status": "PASSED",
+  "min_score": 90,
+  "forbidden_findings": ["CRITICAL", "STRONG_EVIDENCE", "CONFIRMED"]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "mcp-server-time",
+  "category": "clean_reference",
+  "command": ["uvx", "mcp-server-time"],
+  "expected_status": "PASSED",
+  "min_score": 90,
+  "forbidden_findings": ["CRITICAL", "STRONG_EVIDENCE", "CONFIRMED"],
+  "expected_privilege": "MINIMAL"
+}
