@@ -58,6 +58,7 @@ def _build_parser():
                     "Observes server runtime behavior (files, network, subprocesses) "
                     "and compares what it DECLARED against what it actually DID.\n\n"
                     "Subcommands:\n"
+                    "  `mcp-behave wrap` runs an inline transparent behavioral proxy with lockfile enforcement\n"
                     "  `mcp-behave init` generates a committed baseline behavior lockfile (mcp-behave.lock)\n"
                     "  `mcp-behave check` diffs live server behavior against mcp-behave.lock in CI\n"
                     "  `mcp-behave lint` statically audits a manifest.json or tools file without execution\n"
@@ -161,7 +162,7 @@ def _exit_code(findings: list, fail_on: str) -> int:
     return 3 if any(SEV_RANK.get(s, 0) >= threshold for s, _ in findings) else 0
 
 
-SUBCOMMANDS = {"init", "check", "push", "serve", "scan-configs", "audit-configs", "inspect", "lint"}
+SUBCOMMANDS = {"init", "check", "push", "serve", "scan-configs", "audit-configs", "inspect", "lint", "wrap"}
 
 
 def main(argv=None):
@@ -202,6 +203,9 @@ def main(argv=None):
         elif sub == "lint":
             from . import lint as lint_mod
             return lint_mod.main(rest)
+        elif sub == "wrap":
+            from . import wrap as wrap_mod
+            return wrap_mod.main_wrap(rest)
 
     parser = _build_parser()
     args = parser.parse_args(raw_argv)
