@@ -698,7 +698,12 @@ def report(out_dir, *, resolve_dns: bool = True, show_scorecard: bool = False, c
         else:
             print("  no manifest deviations detected (runtime behavior was not traced)")
     for sev, msg in sorted(findings, key=lambda x: x[0]):
-        icon = "[!]" if sev == "HIGH" else "[i]"
+        if sev == "HIGH":
+            icon = "[!]"
+        elif sev == "WARN":
+            icon = "[W]"
+        else:
+            icon = "[i]"
         print(f"  {icon} {sev:4} {msg}")
     print()
 

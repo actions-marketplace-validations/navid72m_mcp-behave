@@ -326,13 +326,14 @@ def unwrap_schema(spec: dict | None) -> dict:
     return unwrapped
 
 
-def synth_args(schema: dict | None, round_idx: int = 0) -> dict:
+def synth_args(schema: dict | None, round_idx: int = 0, harvested_pool: dict[str, list[Any]] | None = None) -> dict:
     """Synthesize valid arguments from a tool's JSON Schema.
 
     Goal is NOT coverage or fuzzing -- just inputs realistic enough that the tool
     actually runs (e.g. a `url` field gets a real URL) so we can observe behavior.
     Uses realistic, diversified payloads across probe rounds to resist canary detection.
     A constrained `enum` is honored when present.
+    Supports seeding from a harvested pool of real read-only entities (services, databases, projects, etc.).
     """
     # RFC 2606 / 5737 / 3849 reserved ranges -- keeps the probe's own traffic honest.
     FORMAT_VALUES = {
@@ -394,36 +395,84 @@ def synth_args(schema: dict | None, round_idx: int = 0) -> dict:
         spec = unwrap_schema(raw_spec)
         k = key.lower()
 
-        # Confirmation / action gates must ALWAYS default to False to prevent live mutations
-        is_confirm = any(c in k for c in ("confirm", "force", "execute", "apply", "delete_data", "commit", "action"))
-        if is_confirm:
-            return False
-
-        # Preview / dry run parameters default to True
-        if any(c in k for c in ("dry_run", "dryrun", "preview", "simulate")):
-            return True
-
+        # If enum is explicitly specified, pick from enum first
         if isinstance(spec.get("enum"), list) and spec["enum"]:
             return _pick(spec["enum"], round_idx)
-        if "default" in spec and spec["default"] is not None and round_idx == 0:
-            return spec["default"]
-        fmt = spec.get("format")
-        if fmt in FORMAT_VALUES:
-            return _pick(FORMAT_VALUES[fmt], round_idx)
+
         t_type = spec.get("type", "string")
         if isinstance(t_type, list):
             non_null = [t for t in t_type if t != "null"]
             t_type = non_null[0] if non_null else (t_type[0] if t_type else "string")
 
+        # Type-aware boolean safety overrides
         if t_type == "boolean":
+            # Confirmation / mutating boolean flags must ALWAYS default to False to prevent live mutations
+            CONFIRM_TOKENS = {"confirm", "force", "apply", "execute", "delete_data", "destructive", "yes", "commit"}
+            k_tokens = set(re.split(r'[_.\-]', k))
+            is_confirm = bool(k_tokens & CONFIRM_TOKENS) or any(c in k for c in ("confirm", "delete_data", "destructive"))
+            if is_confirm:
+                return False
+
+            # Preview / dry run boolean parameters default to True
+            if any(c in k for c in ("dry_run", "dryrun", "preview", "simulate")):
+                return True
+
             if "default" in spec and spec["default"] is not None:
                 return bool(spec["default"]) if round_idx == 0 else not bool(spec["default"])
             return False if round_idx == 0 else True
 
         if t_type == "string":
+            # Seed from harvested pool if available (e.g. real service names, database names, project IDs)
+            if harvested_pool and isinstance(harvested_pool, dict):
+                val_list = harvested_pool.get(k)
+                if not val_list:
+                    aliases = {
+                        "service": ["service", "service_name", "services", "name"],
+                        "db": ["db", "database", "databases", "db_name", "name"],
+                        "database": ["database", "db", "databases", "name"],
+                        "project": ["project", "project_id", "projects", "id"],
+                        "job": ["job", "job_id", "jobs", "id"],
+                        "target": ["target", "target_id", "targets", "name"],
+                        "report": ["report", "report_id", "reports", "id"],
+                        "table": ["table", "table_name", "tables", "name"],
+                        "id": ["id", "name"],
+                    }
+                    for entity_type, cand_keys in aliases.items():
+                        if entity_type in k:
+                            for ck in cand_keys:
+                                if ck in harvested_pool and harvested_pool[ck]:
+                                    val_list = harvested_pool[ck]
+                                    break
+                            if val_list:
+                                break
+                if val_list:
+                    offset = 1 if (k.endswith("2") or "second" in k) and len(val_list) > 1 else 0
+                    return _pick(val_list, round_idx + offset)
+
+            if "default" in spec and spec["default"] is not None and round_idx == 0:
+                return spec["default"]
+            fmt = spec.get("format")
+            if fmt in FORMAT_VALUES:
+                return _pick(FORMAT_VALUES[fmt], round_idx)
             for needle, val_list in KEYNAME_HINTS:
                 if needle in k:
                     return _pick(val_list, round_idx)
+
+        if t_type in ("integer", "number"):
+            if harvested_pool and isinstance(harvested_pool, dict) and any(needle in k for needle in ("id", "project", "job", "pipeline")):
+                for cand in (k, "id", "project", "job", "pipeline"):
+                    if cand in harvested_pool:
+                        for v in harvested_pool[cand]:
+                            try:
+                                return int(v) if t_type == "integer" else float(v)
+                            except (ValueError, TypeError):
+                                continue
+            if "default" in spec and spec["default"] is not None and round_idx == 0:
+                return spec["default"]
+            val = _pick(TYPE_DEFAULTS.get(t_type, [1]), round_idx)
+            if "minimum" in spec and val < spec["minimum"]:
+                val = spec["minimum"]
+            return val
 
         val = _pick(TYPE_DEFAULTS.get(t_type, ["valid-input"]), round_idx)
         if isinstance(val, (int, float)) and "minimum" in spec and val < spec["minimum"]:
@@ -431,11 +480,13 @@ def synth_args(schema: dict | None, round_idx: int = 0) -> dict:
         return val
 
     props = (schema or {}).get("properties", {})
+    has_required_field = "required" in (schema or {})
     required = set((schema or {}).get("required") or [])
 
-    # Round 0: if required fields are specified, send required-only payload to avoid
-    # tripping over optional filter/timestamp validators (e.g. since, until, tags)
-    if round_idx == 0 and required:
+    # Round 0: if required fields are declared in schema, send required-only payload to avoid
+    # tripping over optional filter/timestamp validators (e.g. since, until, tags).
+    # If required is empty ([]), send {} so default query execution path is taken.
+    if round_idx == 0 and has_required_field:
         target_keys = [k for k in props if k in required]
     else:
         target_keys = list(props.keys())
@@ -465,7 +516,7 @@ def synth_fuzz_args(schema: dict | None) -> list[dict]:
         ("", 0),
     ]
 
-    base_args = synth_args(schema)
+    base_args = synth_args(schema, round_idx=1)
     fuzz_variations = []
 
     for str_payload, num_payload in FUZZ_VECTORS:
@@ -571,6 +622,73 @@ async def _discover_manifest(session: ClientSession):
     return tools_meta, resources_meta, prompts_meta
 
 
+def _harvest_entities_from_output(text: str, pool: dict[str, list[Any]], tname: str = "") -> None:
+    """Parse JSON or structured plain text output from a read query to harvest entity names.
+    Populates candidate identifiers (services, databases, projects, jobs, targets, tables, IDs)
+    to seed downstream read-only tool calls without mutating state.
+    """
+    if not text or not isinstance(text, str):
+        return
+    text = text.strip()
+
+    data = None
+    try:
+        data = json.loads(text)
+    except Exception:
+        match = re.search(r'(\[.*\]|\{.*\})', text, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group(1))
+            except Exception:
+                data = None
+
+    def _add_entity(key: str, val: Any):
+        if not isinstance(val, (str, int)) or isinstance(val, bool):
+            return
+        sval = str(val).strip()
+        if not sval or len(sval) > 128:
+            return
+        # Skip generic synthetic placeholders
+        if sval in ("valid-input", "standard-value", "item-101", "test-parameter", "null", "none"):
+            return
+        k = key.lower().strip()
+        pool.setdefault(k, [])
+        if sval not in pool[k]:
+            pool[k].append(sval)
+
+    # Derive entity hint from tool name (e.g., list_services -> service, db_list -> db)
+    tool_entity_hint = ""
+    for prefix in ("list_", "get_", "db_", "gitlab_", "deploy_"):
+        if tname.startswith(prefix):
+            raw_suffix = tname[len(prefix):]
+            tool_entity_hint = raw_suffix[:-1] if raw_suffix.endswith("s") else raw_suffix
+            break
+
+    def _walk(obj, parent_key: str = ""):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(v, (str, int)) and not isinstance(v, bool):
+                    _add_entity(k, v)
+                    if parent_key:
+                        _add_entity(f"{parent_key}_{k}", v)
+                elif isinstance(v, (dict, list)):
+                    _walk(v, k)
+        elif isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, (str, int)) and not isinstance(item, bool):
+                    target_key = parent_key or tool_entity_hint or "id"
+                    _add_entity(target_key, item)
+                else:
+                    _walk(item, parent_key or tool_entity_hint)
+
+    if data is not None:
+        _walk(data)
+    else:
+        # Fallback regex extraction for common key-value or table patterns in plain text
+        for match in re.finditer(r'\b(service|name|db|database|job|project|target|id|host|table)\b\s*[:=]\s*([a-zA-Z0-9_\-\.]+)', text, re.IGNORECASE):
+            _add_entity(match.group(1), match.group(2))
+
+
 def _emit_trace_marker(trace_file: str | None, tag: str, val: str = ""):
     if not trace_file:
         return
@@ -601,6 +719,7 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
     tool_outputs = {}
     tool_history = {}
     executed_tools = set()
+    harvested_pool: dict[str, list[Any]] = {}
 
     def _eval_tool_call(ok: bool, res: Any, tname: str = "") -> tuple[bool, str]:
         if not ok or res is None:
@@ -610,7 +729,16 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
         is_err = getattr(res, "isError", False)
         text = _extract_text_content(res)
         lower_text = text.lower() if text else ""
-        is_val_rej = any(needle in lower_text for needle in ("rejected arguments", "validation error", "invalid_input", "validation_error"))
+        SCHEMA_REJECTION_PATTERNS = (
+            "rejected arguments:",
+            "validation error for ",
+            "extra inputs are not permitted",
+            "missing required argument",
+            "schema validation failed",
+            "value is not a valid",
+            "input should be a valid",
+        )
+        is_val_rej = any(pat in lower_text for pat in SCHEMA_REJECTION_PATTERNS)
 
         if not is_err and not is_val_rej:
             stats["tools"]["executed_ok"] += 1
@@ -628,20 +756,47 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
     tools_meta, resources_meta, prompts_meta = await _discover_manifest(session)
 
     print(f"[probe] discovered {len(tools_meta)} tool(s)")
+
+    def _is_tool_read_only(tool_meta: dict) -> bool:
+        ann = tool_meta.get("annotations") or {}
+        if ann.get("readOnlyHint") is True or tool_meta.get("readOnlyHint") is True:
+            return True
+        tname = tool_meta.get("name", "").lower()
+        if any(m in tname for m in ("delete", "remove", "drop", "create", "write", "update", "set_", "restart", "start", "stop", "deploy", "rollback", "rehearse", "cancel", "run")):
+            return False
+        return any(q in tname for q in ("list_", "get_", "db_", "status", "overview", "_projects", "_targets", "_list", "read_"))
+
+    def _tool_priority(t: dict) -> int:
+        is_ro = _is_tool_read_only(t)
+        schema = t.get("inputSchema") or {}
+        req = schema.get("required") or []
+        if is_ro and len(req) == 0:
+            return 0  # Phase 1: Zero-arg / all-optional read discovery tools
+        elif is_ro:
+            return 1  # Phase 2: Read-only query tools with required parameters
+        else:
+            return 2  # Mutating / stateful tools
+
+    ordered_tools = sorted(tools_meta, key=_tool_priority)
+
     rounds = max(1, rounds)
     for round_idx in range(rounds):
         if rounds > 1:
             print(f"[probe] --- probe round {round_idx + 1}/{rounds} ---")
-        for t in tools_meta:
+        for t in ordered_tools:
             tname = t.get("name", "")
             # Skip re-registering setup/init tools in subsequent rounds so downstream state accumulation can be observed
             if round_idx > 0 and len(tools_meta) > 1 and tname.startswith(("register_", "init_")):
                 continue
             ann = t.get("annotations") or {}
-            # If tool claims to be idempotent or read-only, repeat round 0 arguments across all rounds
-            # to verify idempotency and detect hidden state mutation
-            r_idx = 0 if (ann.get("idempotentHint") or ann.get("readOnlyHint")) else round_idx
-            args = synth_args(t.get("inputSchema"), round_idx=r_idx)
+            is_ro = _is_tool_read_only(t)
+            # If tool claims to be idempotent, repeat round 0 arguments across all rounds
+            r_idx = 0 if ann.get("idempotentHint") else round_idx
+
+            # CRITICAL SAFETY CONSTRAINT: Harvested live asset names are strictly passed
+            # to read-only query tools. Mutating tools NEVER receive harvested entities!
+            active_pool = harvested_pool if is_ro else None
+            args = synth_args(t.get("inputSchema"), round_idx=r_idx, harvested_pool=active_pool)
             print(f"[probe] calling tool {t['name']}({json.dumps(args)})")
             stats["tools"]["called"] += 1
             _emit_trace_marker(trace_file, "CALL_START", t["name"])
@@ -652,6 +807,9 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
             if text:
                 tool_outputs[t["name"]] = text
                 tool_history.setdefault(t["name"], []).append({"args": args, "output": text, "round": round_idx, "executed_ok": exec_ok})
+                # If call succeeded and tool is read-only, harvest candidate entities for downstream tools
+                if exec_ok and is_ro:
+                    _harvest_entities_from_output(text, harvested_pool, tname)
 
             # In round 0, call mutating/collection tools a second time to populate multiple test entries
             if round_idx == 0 and tname.startswith(("add_", "insert_", "append_")):

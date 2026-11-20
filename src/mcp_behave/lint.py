@@ -46,7 +46,12 @@ CONFIRM_HINTS = (
 def _is_query_tool_name(name: str) -> bool:
     """Check if a tool name explicitly denotes a query / read-only capability."""
     n = name.lower()
-    return any(q in n for q in ("list", "get", "search", "find", "check", "inspect", "describe", "overview", "status", "compare", "report", "tree", "refs", "read", "view", "show", "query", "audit"))
+    return any(q in n for q in (
+        "list", "get", "search", "find", "check", "inspect", "describe",
+        "overview", "status", "compare", "report", "tree", "refs", "read",
+        "view", "show", "query", "audit", "projects", "targets", "modules",
+        "catalog", "history"
+    ))
 
 
 def _match_verb(verbs, text: str | None) -> str | None:
@@ -290,8 +295,12 @@ def lint_schema_and_permissions(manifest: Dict[str, Any]) -> List[Tuple[str, str
             ))
 
         # Check: Missing Input Schema (MCP010)
-        empty_schema = (not schema) or (schema.get("type") == "object" and len(props) == 0)
-        if empty_schema and not write_hit:
+        if not schema:
+            findings.append((
+                "INFO",
+                f"tool '{tname}' is missing an input schema or declares no input properties"
+            ))
+        elif schema.get("type") == "object" and len(props) == 0 and not write_hit and not is_query_tool:
             findings.append((
                 "INFO",
                 f"tool '{tname}' is missing an input schema or declares no input properties"

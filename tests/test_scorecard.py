@@ -164,7 +164,8 @@ def test_scorecard_verdict_gated_on_low_execution_coverage():
 
     card = scorecard.compute_scorecard(manifest, profile, findings)
     assert card["score"] == 100
-    assert card["grade"] == "A+"
+    assert card["grade"] == "UNGRADED"
+    assert card["raw_grade"] == "A+"
     # Even though numerical score is 100, verdict must NOT be PASSED
     assert card["passed"] is False
     assert card["provisional"] is True
@@ -258,4 +259,166 @@ def test_query_tool_and_remote_path_linting():
     assert not any("db_list" in msg and "mutates state" in msg for _, msg in findings)
     # gitlab_tree path must not be flagged as local filesystem path traversal risk
     assert not any("gitlab_tree" in msg and "path traversal" in msg for _, msg in findings)
+
+
+def test_action_parameter_and_boolean_safety():
+    """Verify Issue 1:
+    1. 'action' string/enum parameter is NOT forced to boolean False.
+    2. Confirmation flags default to False only if boolean type.
+    """
+    from mcp_behave.probe import synth_args
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["create", "update", "delete"]},
+            "confirm": {"type": "boolean"},
+            "apply": {"type": "boolean"},
+            "action_name": {"type": "string"},
+            "dry_run": {"type": "boolean"},
+        },
+        "required": ["action", "confirm", "action_name"]
+    }
+
+    args = synth_args(schema, round_idx=0)
+    assert args["action"] in ("create", "update", "delete")
+    assert args["confirm"] is False
+    assert args["action_name"] != False
+    assert isinstance(args["action_name"], str)
+
+    # Round 1
+    args_r1 = synth_args(schema, round_idx=1)
+    assert args_r1["action"] in ("create", "update", "delete")
+    assert args_r1["confirm"] is False
+    assert args_r1["apply"] is False
+    assert args_r1["dry_run"] is True
+
+
+def test_round_zero_all_optional_payload():
+    """Verify Issue 2:
+    Tools declaring 'required': [] synthesize an empty payload {} on Round 0,
+    allowing default query execution paths to run without tripping on synthetic filters.
+    """
+    from mcp_behave.probe import synth_args
+
+    # Tool with all-optional filters (e.g. get_audit_log, memory_search, list_services)
+    filter_schema = {
+        "type": "object",
+        "properties": {
+            "service": {"type": "string"},
+            "since": {"type": "string", "format": "date-time"},
+            "limit": {"type": "integer"},
+        },
+        "required": []
+    }
+
+    r0 = synth_args(filter_schema, round_idx=0)
+    assert r0 == {}
+
+    r1 = synth_args(filter_schema, round_idx=1)
+    assert "service" in r1
+    assert "since" in r1
+    assert "limit" in r1
+
+
+def test_response_harvesting_and_read_only_seeding():
+    """Verify Issue 3:
+    1. _harvest_entities_from_output extracts service/database/project/job names.
+    2. synth_args seeds read-only tools from harvested pool.
+    3. Mutating tools (harvested_pool=None) never receive harvested names.
+    """
+    from mcp_behave.probe import synth_args, _harvest_entities_from_output
+
+    pool = {}
+    services_json = '[{"name": "nginx", "status": "active"}, {"name": "odoo", "status": "running"}]'
+    _harvest_entities_from_output(services_json, pool, tname="list_services")
+    assert "nginx" in pool.get("name", [])
+    assert "odoo" in pool.get("name", [])
+
+    db_json = '{"databases": ["postgres", "odoo", "production_app"]}'
+    _harvest_entities_from_output(db_json, pool, tname="db_list")
+    assert "postgres" in pool.get("databases", []) or "postgres" in pool.get("db", [])
+
+    # Seed read-only tool
+    ro_schema = {
+        "type": "object",
+        "properties": {
+            "service": {"type": "string"},
+        },
+        "required": ["service"]
+    }
+    ro_args = synth_args(ro_schema, round_idx=0, harvested_pool=pool)
+    assert ro_args["service"] in ("nginx", "odoo")
+
+    # Mutating tool receiving None pool uses synthetic placeholder
+    mut_args = synth_args(ro_schema, round_idx=0, harvested_pool=None)
+    assert mut_args["service"] == "valid-input"
+
+
+def test_scorecard_confidence_gating_and_capping():
+    """Verify Issue 4:
+    1. Audit Confidence LOW sets grade to UNGRADED and status to PROVISIONAL with observed %.
+    2. Audit Confidence MEDIUM caps grade to B.
+    """
+    # 1. Low confidence -> UNGRADED
+    low_manifest = {
+        "tools": [{"name": f"t_{i}"} for i in range(10)],
+        "syscalls_available": True,
+        "_stats": {
+            "tools": {
+                "called": 10,
+                "executed_ok": 1,
+                "tools_executed_count": 1,
+                "validation_rejected": 0,
+                "tool_error": 9,
+            },
+            "rounds": 1,
+        }
+    }
+    profile = {"network_connects": [], "files_opened": [], "subprocesses": []}
+    card_low = scorecard.compute_scorecard(low_manifest, profile, [])
+    assert card_low["confidence"] == "LOW"
+    assert card_low["grade"] == "UNGRADED"
+    assert "PROVISIONAL" in card_low["status"]
+    assert "10.0%" in card_low["status"]
+
+    # 2. Medium confidence -> Grade capped at B
+    med_manifest = {
+        "tools": [{"name": f"t_{i}"} for i in range(10)],
+        "syscalls_available": True,
+        "_stats": {
+            "tools": {
+                "called": 10,
+                "executed_ok": 7,
+                "tools_executed_count": 7,
+                "validation_rejected": 0,
+                "tool_error": 3,
+            },
+            "rounds": 1,
+        }
+    }
+    card_med = scorecard.compute_scorecard(med_manifest, profile, [])
+    assert card_med["confidence"] == "MEDIUM"
+    assert card_med["score"] == 100
+    assert card_med["raw_grade"] == "A+"
+    assert card_med["grade"] == "B"
+    assert card_med["passed"] is True
+
+
+def test_zero_arg_query_tools_linting():
+    """Verify Issue 4:
+    Valid zero-argument query tools declaring properties: {} are not flagged for missing schema.
+    """
+    from mcp_behave.lint import lint_schema_and_permissions
+
+    manifest = {
+        "tools": [
+            {"name": "list_jobs", "description": "List all active background jobs", "inputSchema": {"type": "object", "properties": {}}},
+            {"name": "gitlab_projects", "description": "Return accessible GitLab projects", "inputSchema": {"type": "object", "properties": {}}},
+            {"name": "deploy_targets", "description": "List deployment target environments", "inputSchema": {"type": "object", "properties": {}}},
+        ]
+    }
+    findings = lint_schema_and_permissions(manifest)
+    for t in ("list_jobs", "gitlab_projects", "deploy_targets"):
+        assert not any(t in msg and "missing an input schema" in msg for _, msg in findings)
 

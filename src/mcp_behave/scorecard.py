@@ -60,8 +60,8 @@ def _bounded_deduction(base: int, cap: int, count: int) -> int:
     return min(cap, base + scale)
 
 
-def _compute_privilege_profile(profile: Dict[str, Any], findings: List[Tuple[str, str]]) -> str:
-    """Determine the blast-radius / privilege tier from observed runtime resources."""
+def _compute_privilege_profile(profile: Dict[str, Any], findings: List[Tuple[str, str]], manifest: Dict[str, Any] | None = None) -> str:
+    """Determine the blast-radius / privilege tier from observed runtime resources and declared capabilities."""
     net_connects = profile.get("network_connects", [])
     files_opened = profile.get("files_opened", [])
     subprocesses = profile.get("subprocesses", [])
@@ -76,30 +76,45 @@ def _compute_privilege_profile(profile: Dict[str, Any], findings: List[Tuple[str
     has_container = any(any(s in str(u).lower() for s in ("docker", "containerd", "podman")) for u in unix_sockets)
     has_subprocess = bool(subprocesses)
 
-    traits = []
+    runtime_traits = []
     if has_ssh:
-        traits.append("SSH egress")
+        runtime_traits.append("SSH egress")
     elif has_net:
-        traits.append("network egress")
+        runtime_traits.append("network egress")
 
     if has_priv_key:
-        traits.append("private key access")
+        runtime_traits.append("private key access")
     elif any(".ssh" in str(f) or "token" in str(f).lower() for f in files_opened):
-        traits.append("credential access")
+        runtime_traits.append("credential access")
 
     if has_container:
-        traits.append("container control")
+        runtime_traits.append("container control")
     if has_subprocess:
-        traits.append("subprocess execution")
+        runtime_traits.append("subprocess execution")
     if has_ssh and (has_subprocess or any("sudo" in str(f).lower() for f in findings)):
-        traits.append("remote exec")
+        runtime_traits.append("remote exec")
 
-    seen = set()
-    dedup_traits = []
-    for t in traits:
-        if t not in seen:
-            seen.add(t)
-            dedup_traits.append(t)
+    declared_traits = []
+    if manifest and isinstance(manifest, dict):
+        tools = manifest.get("tools", [])
+        tool_text = " ".join(f"{t.get('name', '')} {t.get('description', '')}" for t in tools).lower()
+        if any(w in tool_text for w in ("ssh", "remote exec", "vps", "server command")):
+            declared_traits.append("remote exec")
+        if any(w in tool_text for w in ("database", "postgres", "sql", "migration", "pg_")):
+            declared_traits.append("database access")
+        if any(w in tool_text for w in ("gitlab", "github", "git repo", "repository")):
+            declared_traits.append("vcs control")
+        if any(w in tool_text for w in ("subprocess", "shell", "bash", "terminal", "systemctl")):
+            declared_traits.append("host execution")
+        if any(w in tool_text for w in ("docker", "container", "podman", "kubernetes", "k8s")):
+            declared_traits.append("container management")
+        if any(w in tool_text for w in ("secret", "token", "credential", "api_key", "private_key")):
+            declared_traits.append("credential handling")
+
+    seen_rt = set()
+    dedup_rt = [t for t in runtime_traits if not (t in seen_rt or seen_rt.add(t))]
+    seen_dt = set()
+    dedup_dt = [t for t in declared_traits if not (t in seen_dt or seen_dt.add(t))]
 
     if has_ssh and has_priv_key:
         tier = "CRITICAL"
@@ -109,11 +124,21 @@ def _compute_privilege_profile(profile: Dict[str, Any], findings: List[Tuple[str
         tier = "HIGH"
     elif files_opened:
         tier = "STANDARD"
+    elif "remote exec" in dedup_dt or "container management" in dedup_dt:
+        tier = "HIGH"
+    elif dedup_dt:
+        tier = "STANDARD"
     else:
         tier = "MINIMAL"
 
-    trait_str = f" ({', '.join(dedup_traits)})" if dedup_traits else ""
-    return f"{tier}{trait_str}"
+    if dedup_rt and dedup_dt:
+        return f"{tier} (runtime: {', '.join(dedup_rt)}; declared: {', '.join(dedup_dt)})"
+    elif dedup_rt:
+        return f"{tier} ({', '.join(dedup_rt)})"
+    elif dedup_dt:
+        return f"{tier} (declared: {', '.join(dedup_dt)})"
+    else:
+        return tier
 
 
 def compute_scorecard(manifest: Dict[str, Any], profile: Dict[str, Any], findings: List[Tuple[str, str]]) -> Dict[str, Any]:
@@ -419,19 +444,19 @@ def compute_scorecard(manifest: Dict[str, Any], profile: Dict[str, Any], finding
     # Total security score (strictly 0-100 of security properties)
     total_score = runtime_score + semantics_score + schema_score + output_score
 
-    # Grade determination
+    # Raw grade from total security score
     if total_score >= 95:
-        grade = "A+"
+        raw_grade = "A+"
     elif total_score >= 90:
-        grade = "A"
+        raw_grade = "A"
     elif total_score >= 80:
-        grade = "B"
+        raw_grade = "B"
     elif total_score >= 70:
-        grade = "C"
+        raw_grade = "C"
     elif total_score >= 50:
-        grade = "D"
+        raw_grade = "D"
     else:
-        grade = "F"
+        raw_grade = "F"
 
     # Unified Audit Confidence evaluation
     conf_info = compute_audit_confidence(manifest, profile)
@@ -443,21 +468,24 @@ def compute_scorecard(manifest: Dict[str, Any], profile: Dict[str, Any], finding
     tool_stats = stats.get("tools") or {}
     called_calls = tool_stats.get("called", 0)
 
-    # Gate PASSED verdict: when execution coverage is low (< 40% of tools executed logic),
-    # cap status to PROVISIONAL (LOW CONFIDENCE)
+    # Gate grade and verdict based on audit confidence and execution coverage
     provisional = False
     if called_calls > 0 and (tools_exec_pct < 40.0 or confidence_level == "LOW"):
         provisional = True
         passed = False
-        status_str = "PROVISIONAL (LOW AUDIT CONFIDENCE)"
-    elif total_score >= 80 and not has_confirmed_violation:
-        passed = True
-        status_str = "PASSED"
+        grade = "UNGRADED"
+        status_str = f"PROVISIONAL (LOW AUDIT CONFIDENCE - {total_score}/100 on {tools_exec_pct:.1f}% observed)"
+    elif confidence_level == "MEDIUM" and raw_grade in ("A+", "A"):
+        # A and A+ require HIGH confidence; MEDIUM caps at B
+        grade = "B"
+        passed = (total_score >= 80 and not has_confirmed_violation)
+        status_str = "PASSED" if passed else "FAILED / NEEDS REVIEW"
     else:
-        passed = False
-        status_str = "FAILED / NEEDS REVIEW"
+        grade = raw_grade
+        passed = (total_score >= 80 and not has_confirmed_violation)
+        status_str = "PASSED" if passed else "FAILED / NEEDS REVIEW"
 
-    privilege_profile = _compute_privilege_profile(profile, findings)
+    privilege_profile = _compute_privilege_profile(profile, findings, manifest=manifest)
 
     category_dict = {
         "runtime_safety": {
@@ -516,6 +544,7 @@ def compute_scorecard(manifest: Dict[str, Any], profile: Dict[str, Any], finding
         "score": total_score,
         "max_score": 100,
         "grade": grade,
+        "raw_grade": raw_grade,
         "passed": passed,
         "provisional": provisional,
         "status": status_str,

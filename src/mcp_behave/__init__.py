@@ -1,2 +1,2 @@
 """mcp-behave: runtime behavioral auditor for MCP servers."""
-__version__ = "0.4.4"
+__version__ = "0.4.5"
