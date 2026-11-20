@@ -101,9 +101,18 @@ static void mcpbehave_init_sink(void) {
     }
 }
 
+static void emit(const char *buf, size_t len);
+
 __attribute__((constructor))
 static void mcpbehave_init(void) {
     mcpbehave_init_sink();
+    if (g_is_socket && g_trace_fd >= 0) {
+        char msg[64];
+        int n = snprintf(msg, sizeof(msg), "T %d READY\n", getpid());
+        if (n > 0) {
+            emit(msg, (size_t)n);
+        }
+    }
 }
 
 static void emit(const char *buf, size_t len) {

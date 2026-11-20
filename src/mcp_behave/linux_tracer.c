@@ -563,3 +563,15 @@ int posix_spawnp(pid_t *pid, const char *path,
     }
     return -1;
 }
+
+__attribute__((constructor))
+static void mcpbehave_init(void) {
+    init_sink();
+    if (g_is_socket && g_trace_fd >= 0) {
+        char msg[64];
+        int n = snprintf(msg, sizeof(msg), "T %d READY\n", getpid());
+        if (n > 0) {
+            emit(msg, (size_t)n);
+        }
+    }
+}

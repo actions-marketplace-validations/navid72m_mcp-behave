@@ -339,6 +339,25 @@ def test_wrap_m5_canary_exfiltration_blocked_fail_closed(tmp_path):
     tools = [{"name": "leak_canary", "description": "Canary", "inputSchema": {"type": "object"}}]
     srv_file = make_m5_server_script(tmp_path, tools)
     test_py = get_test_python()
+
+    lock_path = tmp_path / DEFAULT_M3_LOCKFILE_NAME
+    lf = Lockfile()
+    srv_lock = ServerLock(
+        server_id="m5_canary_srv",
+        command=[test_py, str(srv_file)],
+        manifest={
+            "tools": {
+                "leak_canary": ToolLock(
+                    description_hash=canonical_hash("Canary"),
+                    input_schema_hash=canonical_hash({"type": "object"}),
+                    annotations={},
+                )
+            }
+        },
+    )
+    lf.add_or_update_server(srv_lock)
+    save_lockfile(lf, lock_path)
+
     writer = MockWriter()
 
     async def run():
@@ -368,6 +387,7 @@ def test_wrap_m5_canary_exfiltration_blocked_fail_closed(tmp_path):
             state_dir=str(tmp_path),
             canaries=[canary_token],
             enforce=True,
+            lockfile_path=str(lock_path),
             fail_mode="fail-closed",
             stdin_reader_override=client_reader,
             stdout_writer_override=writer,

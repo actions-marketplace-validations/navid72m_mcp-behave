@@ -220,13 +220,10 @@ class Lockfile:
         return self.to_dict()[key]
 
     def get_server(self, server_id: Optional[str] = None) -> Optional[ServerLock]:
-        """Look up a server by ID. If server_id is None and exactly 1 server is locked, return it."""
+        """Look up a server by ID. If server_id is None (or not found) and exactly 1 server is locked, return it."""
         if server_id and server_id in self.servers:
             return self.servers[server_id]
-        if not server_id and len(self.servers) == 1:
-            return next(iter(self.servers.values()))
         if len(self.servers) == 1:
-            # Fall back to the single server if locked
             return next(iter(self.servers.values()))
         return None
 

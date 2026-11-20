@@ -201,3 +201,56 @@ This document records key architectural and design decisions made across milesto
   - Enforce zero-trust credential brokering: LLM clients never receive third-party credentials, workers receive short-lived JIT tokens injected into JSON-RPC arguments immediately prior to dispatch, and outbound responses undergo inline payload redaction.
   - Stream real-time attribution and policy enforcement events directly to OpenTelemetry collectors, Splunk, and ClickHouse audit backends.
 - **Status**: Approved Architecture Specification (`docs/gateway_architecture.md`).
+
+---
+
+## v0.5.0 Technical & Security Remediation Decisions
+
+### ADR-021: Cross-Session Drift Baseline Preservation and Enforcement
+- **Context**: In dynamic MCP proxy environments, compromised child servers could declare a backdoored or relaxed tool manifest at the beginning of a new session. If `tools_baseline` is re-initialized from scratch each session without cross-session memory, the compromised manifest is adopted as trusted, evading in-session drift detection.
+- **Decision**:
+  - At startup in `run_proxy()`, query `TelemetryStore.get_last_trusted_manifest(eff_server_id)` to retrieve the most recent uncompromised baseline.
+  - Wire `prior_manifest` into `ProtocolMonitor` and `ManifestTracker`.
+  - Upon receiving the first complete manifest from the child server, invoke `evaluate_cross_session_drift()` against the trusted baseline.
+  - If HIGH-severity drift is detected (tool removal, schema relaxation, safety annotation downgrade), emit a `cross_session_drift` event (`severity=HIGH`, `would_block=True`), mark `has_high_drift=True`, and retain the previous trusted baseline in SQLite to ensure future sessions remain protected.
+- **Status**: Implemented & verified (`tests/test_remediation_v050.py`).
+
+### ADR-022: Fail-Fast Lockfile Validation on Enforcement Preconditions
+- **Context**: Passing `--enforce` without a valid lockfile or without a matching server entry in `mcp-behave.lock.json` previously allowed `server_lock` to be `None`. In `PolicyEnforcer.evaluate_client_request`, an uninitialized `server_lock` caused policy checks to silently skip enforcement, failing open.
+- **Decision**:
+  - In `run_proxy()`, validate before spawning the child process that if `enforce=True`, a valid `Lockfile` exists, contains non-empty servers, and contains `eff_server_id`. If any check fails, abort immediately with exit code 2 and an informative stderr diagnostic.
+  - In `PolicyEnforcer.evaluate_client_request`, explicitly raise `RuntimeError` if `enforce=True` and `server_lock is None` rather than permitting unvalidated client requests.
+- **Status**: Implemented & verified (`tests/test_remediation_v050.py`).
+
+### ADR-023: OS Syscall Interposition Tracer Handshake & Blind Spot Detection
+- **Context**: Reporting `os_tracing_status="active"` simply because the tracer library exists on disk produces false security confidence when target binaries are hardened, stripped by macOS System Integrity Protection (SIP), or statically linked (Go, musl Rust), resulting in silent evasion.
+- **Decision**:
+  - In `macos_tracer.c` and `linux_tracer.c`, emit an explicit initialization handshake datagram (`T <pid> READY\n`) across `MCP_BEHAVE_TRACE_SOCK` inside `mcpbehave_init()` constructor only when connected to the tracing socket.
+  - In `TracerServer`, implement `wait_for_handshake(timeout=0.5)` awaiting child confirmation before declaring active tracing.
+  - In `wrap.py`, await handshake up to 500ms after child spawn; if the handshake times out, emit a `blind_spot` event (`reason="dylib_handshake_timeout_or_sip_stripped"`, `status="disabled"`), ensuring sessions with blind spots are never surfaced as clean.
+- **Status**: Implemented & verified (`tests/test_remediation_v050.py`).
+
+### ADR-024: Full-Payload Chunked Content Scanning with Hierarchical Pre-Filter
+- **Context**: Limiting content scanning to the first 128 KB of JSON-RPC messages allowed exfiltration tokens and prompt injection payloads placed deeper in 1 MB payloads (e.g. at 500 KB or 950 KB) to evade detection. However, evaluating 22 regexes across 1 MB strings introduces unacceptable latency (> 40 ms), violating the < 5.0 ms paired proxy budget.
+- **Decision**:
+  - Implement an ultra-fast hierarchical byte pre-filter (`_has_byte_marker`) using vectorized single-byte checks (`b'A'`, `b'g'`, `b'<'`, `b'['`, `b'x'`, `b'k'`, `b'B'`, `b'm'`, `b'y'`) to bypass scanning on clean 1 MB buffers in < 0.5 ms.
+  - Support case-insensitive injection cues, `ASIA` AWS temporary credentials, and cached canary token bytes.
+  - When markers or canaries are detected, scan the complete payload using bounded 64 KB overlapping chunks with 1 KB overlap, ensuring patterns crossing chunk boundaries are caught at offsets 0, 500 KB, and 950 KB.
+- **Status**: Implemented & verified (`tests/test_remediation_v050.py`).
+
+### ADR-025: Synthetic Manifest Probe Timeout, State Reset, and Response Interception
+- **Context**: If a monitored server hangs, ignores synthetic `tools/list` probes, or drops pagination mid-stream, `_probe_in_flight` remained permanently set to `True`, permanently locking re-verification and blinding the monitor to future runtime capability changes.
+- **Decision**:
+  - In `ManifestTracker`, attach an `asyncio.TimerHandle` (default 30.0s) to every dispatched probe and pagination request.
+  - On probe timeout, trigger `_on_probe_timeout` to reset `_probe_in_flight = False`, clear incomplete pagination buffers, and emit a `probe_timeout` blind-spot event (`severity=MEDIUM`, `evidence_tier="observed"`).
+  - Retain timed-out probe IDs in `_issued_probe_ids` with extended expiry (default 600s) to guarantee late-arriving responses are safely intercepted and dropped rather than forwarded to client stdout.
+- **Status**: Implemented & verified (`tests/test_remediation_v050.py`).
+
+### ADR-026: Adaptive Client-Mimicking Synthetic Probe ID Generation
+- **Context**: Fixed high-integer ranges (`900000000–999999999`) or hardcoded prefixes (`mcpb_probe_...`) for synthetic `tools/list` probes create a fingerprintable channel that evasive servers can detect to alter behavior during re-verification.
+- **Decision**:
+  - In `ManifestTracker`, dynamically record the client's ID style (`record_client_id_style`).
+  - When the client uses sequential small integers (`1, 2, 3...`), generate synthetic probe IDs within a randomized offset near the observed maximum while strictly excluding active client IDs.
+  - When the client uses UUIDs or hex strings, match the casing, formatting, and string length.
+  - Document the residual fingerprinting risk of dynamic integer ranges in `docs/architecture.md`.
+- **Status**: Implemented & verified (`tests/test_remediation_v050.py`).

@@ -222,6 +222,34 @@ async def run_proxy(
     if isinstance(lockfile, Lockfile):
         server_lock = lockfile.get_server(eff_server_id)
 
+    if enforce:
+        if lockfile is None:
+            print(
+                f"error: --enforce specified but no behavioral lockfile found (looked for {lockfile_path or 'mcp-behave.lock.json'}).\n"
+                f"Generate a baseline lockfile using `mcp-behave init -- <command>` before running with --enforce.",
+                file=sys.stderr,
+            )
+            return 2
+        if not isinstance(lockfile, Lockfile) or not lockfile.servers:
+            print(
+                f"error: --enforce specified but lockfile is empty or invalid.\n"
+                f"Re-generate lockfile using `mcp-behave init -- <command>`.",
+                file=sys.stderr,
+            )
+            return 2
+        if server_lock is None or eff_server_id not in lockfile.servers:
+            available = list(lockfile.servers.keys())
+            print(
+                f"error: --enforce specified but server '{eff_server_id}' was not found in lockfile.\n"
+                f"Available servers in lockfile: {available or '(none)'}.\n"
+                f"Specify explicit server ID using --server-id <name> or generate lockfile with `mcp-behave init`.",
+                file=sys.stderr,
+            )
+            return 2
+
+    # Query last trusted manifest baseline for cross-session drift detection (Milestone 2)
+    prior_manifest = telemetry.get_last_trusted_manifest(eff_server_id)
+
     # Attribution Engine (Milestone 4)
     attribution_engine = AttributionEngine(
         server_id=eff_server_id,
@@ -258,6 +286,7 @@ async def run_proxy(
         enforce=enforce,
         live_identity=live_identity,
         attribution_engine=attribution_engine,
+        prior_manifest=prior_manifest,
     )
 
     # OS Sandboxing (Milestone 5)
@@ -304,6 +333,33 @@ async def run_proxy(
     child_proc, resolved_cmd0, resolved_sha256 = await spawn_child_server(
         sandboxed_cmd, env=tracer_child_env, augment_path=augment_path
     )
+
+    if tracer_server:
+        handshake_ok = await tracer_server.wait_for_handshake(timeout=0.5)
+        if handshake_ok:
+            tracing_status = "active"
+            tracing_reason = "handshake_confirmed"
+        else:
+            tracing_status = "disabled"
+            tracing_reason = "dylib_handshake_timeout_or_sip_stripped"
+            blind_spot_evt = BehavioralEvent(
+                event="blind_spot",
+                session_id=session_id,
+                server_id=eff_server_id,
+                kind="blind_spot",
+                timestamp=time.time(),
+                source="monitor",
+                evidence_tier="observed",
+                severity=SEVERITY_HIGH,
+                payload={
+                    "status": "disabled",
+                    "reason": "dylib_handshake_timeout_or_sip_stripped",
+                    "message": "Tracer handshake timed out; tracing disabled due to hardened runtime or SIP",
+                },
+            )
+            await bus.publish(blind_spot_evt)
+            telemetry.record(blind_spot_evt)
+            monitor._emit_alert(blind_spot_evt)
 
     # Emit session start event with resolved binary and checksum
     start_event = BehavioralEvent(

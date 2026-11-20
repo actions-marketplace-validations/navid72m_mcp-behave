@@ -306,6 +306,8 @@ class ManifestTracker:
         server_lock: Optional[ServerLock] = None,
         enforce: bool = False,
         live_identity: Optional[Dict[str, Any]] = None,
+        prior_manifest: Optional[Dict[str, Any]] = None,
+        probe_timeout: float = 30.0,
     ):
         self.session_id = session_id
         self.server_id = server_id
@@ -315,11 +317,13 @@ class ManifestTracker:
         self.enable_reverify = enable_reverify and (send_probe_fn is not None)
         self.min_probe_interval = min_probe_interval
         self.pagination_timeout = pagination_timeout
+        self.probe_timeout = probe_timeout
         self.on_event_fn = on_event_fn
         self.get_active_ids_fn = get_active_ids_fn
         self.server_lock = server_lock
         self.enforce = enforce
         self.live_identity = live_identity
+        self.prior_manifest = prior_manifest
 
         if loop is not None:
             self.loop = loop
@@ -356,8 +360,10 @@ class ManifestTracker:
         self._seen_tools: Set[str] = set()
         self._periodic_task: Optional[asyncio.Task] = None
         self._probe_pagination_tools: List[Dict[str, Any]] = []
+        self._probe_timer: Optional[asyncio.TimerHandle] = None
         self._client_uses_int_ids: Optional[bool] = None
         self._client_uses_uuid: Optional[bool] = None
+        self._observed_client_int_ids: List[int] = []
 
     def _schedule_coroutine(self, coro: Coroutine[Any, Any, Any]) -> Optional[Any]:
         """Safely schedule a coroutine on the event loop from any thread context."""
@@ -413,12 +419,47 @@ class ManifestTracker:
             except Exception:
                 pass
             self._client_pagination_timer = None
+        if self._probe_timer:
+            try:
+                self._probe_timer.cancel()
+            except Exception:
+                pass
+            self._probe_timer = None
+
+    def _on_probe_timeout(self, probe_id: Any) -> None:
+        """Handle timeout when synthetic probe receives no response."""
+        if not self._probe_in_flight:
+            return
+        self._probe_in_flight = False
+        self._probe_pagination_tools.clear()
+        self._probe_timer = None
+
+        evt = BehavioralEvent(
+            event="probe_timeout",
+            session_id=self.session_id,
+            server_id=self.server_id,
+            kind="blind_spot",
+            source="monitor",
+            evidence_tier=EVIDENCE_TIER_OBSERVED,
+            severity=SEVERITY_MEDIUM,
+            timestamp=time.time(),
+            payload={
+                "reason": "probe_response_timeout",
+                "probe_id": probe_id,
+                "timeout_seconds": self.probe_timeout,
+                "message": f"Synthetic tools/list probe {probe_id} timed out after {self.probe_timeout}s without response",
+            },
+        )
+        if self.on_event_fn:
+            self.on_event_fn(evt)
 
     def record_client_id_style(self, req_id: Any) -> None:
         """Observe client's JSON-RPC ID style to mimic it during synthetic probes."""
-        if req_id is not None and self._client_uses_int_ids is None:
+        if req_id is not None:
             if isinstance(req_id, int):
                 self._client_uses_int_ids = True
+                if req_id not in self._observed_client_int_ids:
+                    self._observed_client_int_ids.append(req_id)
             elif isinstance(req_id, str):
                 self._client_uses_int_ids = False
                 import uuid
@@ -446,11 +487,26 @@ class ManifestTracker:
                 pass
 
         if self._client_uses_int_ids is not False:
-            # Client uses ints or unknown: generate random int in high range
-            while True:
-                candidate = random.randint(900000000, 999999999)
+            # Client uses ints or unknown: generate random int adaptive to client sequence
+            if self._observed_client_int_ids:
+                max_int = max(self._observed_client_int_ids)
+                if max_int < 1000:
+                    min_val = max(100, max_int + 50)
+                    max_val = max_int + 1000
+                else:
+                    min_val = max_int + 100
+                    max_val = max_int + 10000
+            else:
+                min_val = 1000
+                max_val = 9999
+
+            attempts = 0
+            while attempts < 1000:
+                candidate = random.randint(min_val, max_val)
                 if candidate not in excluded:
                     return candidate
+                attempts += 1
+            return random.randint(100000, 999999)
         elif getattr(self, "_client_uses_uuid", False):
             # Client uses standard UUIDs with hyphens
             while True:
@@ -527,6 +583,17 @@ class ManifestTracker:
         probe_id = self.generate_probe_id()
         self._issued_probe_ids[probe_id] = now
         self._probe_pagination_tools.clear()
+
+        # Arm probe timeout timer (default 30s)
+        if self._probe_timer:
+            try:
+                self._probe_timer.cancel()
+            except Exception:
+                pass
+        if self.loop and self.loop.is_running():
+            self._probe_timer = self.loop.call_later(
+                self.probe_timeout, self._on_probe_timeout, probe_id
+            )
 
         req_obj = {
             "jsonrpc": "2.0",
@@ -616,6 +683,12 @@ class ManifestTracker:
 
         if is_error or not isinstance(result, dict):
             if is_probe:
+                if self._probe_timer:
+                    try:
+                        self._probe_timer.cancel()
+                    except Exception:
+                        pass
+                    self._probe_timer = None
                 self._probe_in_flight = False
                 # Proxy probe error is logged as info and ignored
                 evt = BehavioralEvent(
@@ -637,6 +710,13 @@ class ManifestTracker:
 
         # 1. Handle synthetic proxy probe response
         if is_probe:
+            if self._probe_timer:
+                try:
+                    self._probe_timer.cancel()
+                except Exception:
+                    pass
+                self._probe_timer = None
+
             self._probe_pagination_tools.extend(raw_tools)
             if next_cursor:
                 # Keep probe in flight during multi-page pagination
@@ -644,6 +724,10 @@ class ManifestTracker:
                 # Follow nextCursor until exhausted
                 next_id = self.generate_probe_id()
                 self._issued_probe_ids[next_id] = time.time()
+                if self.loop and self.loop.is_running():
+                    self._probe_timer = self.loop.call_later(
+                        self.probe_timeout, self._on_probe_timeout, next_id
+                    )
                 req_obj = {
                     "jsonrpc": "2.0",
                     "id": next_id,
@@ -800,6 +884,22 @@ class ManifestTracker:
             if self.server_lock:
                 lockfile_events = self._evaluate_lockfile_drift(tools_list)
                 events.extend(lockfile_events)
+
+            # Evaluate cross-session drift against persisted trusted baseline if available
+            if self.prior_manifest:
+                cross_events = self.evaluate_cross_session_drift(self.prior_manifest)
+                events.extend(cross_events)
+                if any(ce.severity == SEVERITY_HIGH for ce in cross_events):
+                    self.has_high_drift = True
+                    # Retain previous trusted baseline to protect session from covert changes
+                    prior_tools = {
+                        t["name"]: t
+                        for t in self.prior_manifest.get("tools", [])
+                        if isinstance(t, dict) and "name" in t
+                    }
+                    if prior_tools:
+                        self.tools_baseline = copy.deepcopy(prior_tools)
+
             return events
 
         # 2. Subsequent observation: Diff against baseline

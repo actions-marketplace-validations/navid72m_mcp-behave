@@ -60,6 +60,11 @@ class PolicyEnforcer:
             (synthetic_error_bytes_or_none, enforcement_event_or_none)
             If synthetic_error_bytes is returned, the original line MUST NOT be forwarded to the child.
         """
+        if self.enforce and self.server_lock is None:
+            raise RuntimeError(
+                f"PolicyEnforcer cannot enforce without a valid ServerLock for server '{self.server_id}'"
+            )
+
         # Fast path: only tools/call can be rejected by lockfile policy
         if b'"tools/call"' not in line_bytes:
             return None, None
@@ -85,7 +90,11 @@ class PolicyEnforcer:
             return None, None
 
         # When --enforce is active, check against locked tools
-        if self.enforce and self.server_lock:
+        if self.enforce:
+            if not self.server_lock:
+                raise RuntimeError(
+                    f"PolicyEnforcer cannot enforce without a valid ServerLock for server '{self.server_id}'"
+                )
             locked_tool = self.server_lock.get_tool(tool_name)
             if not locked_tool:
                 # Tool not permitted in lockfile

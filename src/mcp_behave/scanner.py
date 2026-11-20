@@ -380,14 +380,36 @@ class ContentScanner:
         if not (has_canary or has_marker):
             return []
 
-        # Decode a bounded sample (first 128 KB) or scan with regex directly if markers hit
-        sample_text = raw_bytes[:131072].decode("utf-8", errors="replace")
-        if direction == "client_to_server":
-            events = self.scan_tool_call(tool_name, sample_text, request_id=request_id, now=now)
-        else:
-            events = self.scan_tool_result(tool_name, sample_text, request_id=request_id, now=now)
+        # Scan the complete buffer using bounded overlapping chunks (64 KB chunks with 1 KB overlap)
+        chunk_size = 65536
+        overlap = 1024
+        stride = chunk_size - overlap
 
-        # Ensure canaries outside the first 128 KB are never missed
+        events: List[BehavioralEvent] = []
+        seen_keys: Set[str] = set()
+
+        offset = 0
+        total_len = len(raw_bytes)
+        while offset < total_len:
+            chunk = raw_bytes[offset : offset + chunk_size]
+            sample_text = chunk.decode("utf-8", errors="replace")
+            if direction == "client_to_server":
+                chunk_events = self.scan_tool_call(tool_name, sample_text, request_id=request_id, now=now)
+            else:
+                chunk_events = self.scan_tool_result(tool_name, sample_text, request_id=request_id, now=now)
+
+            for evt in chunk_events:
+                p = evt.payload or {}
+                k = f"{evt.kind}:{p.get('detector')}:{p.get('secret_hash')}:{p.get('canary_hash')}:{p.get('reasons')}"
+                if k not in seen_keys:
+                    seen_keys.add(k)
+                    events.append(evt)
+
+            offset += stride
+            if offset >= total_len:
+                break
+
+        # Ensure canaries outside the first chunk are never missed
         if has_canary and not any(e.kind == KIND_CANARY_EXFILTRATION for e in events):
             for canary in self.canary_mgr.find_canaries_in_bytes(raw_bytes):
                 evt = BehavioralEvent(
@@ -416,31 +438,56 @@ class ContentScanner:
 
     @staticmethod
     def _has_byte_marker(raw_bytes: bytes) -> bool:
-        """Fast check for secret and injection markers across raw buffer."""
-        if b"mcpb_canary_" in raw_bytes:
+        """Fast check for secret and injection markers across raw buffer (< 0.5 ms for 1 MB clean buffers)."""
+        # 1. AWS credentials (AKIA / ASIA)
+        if b"A" in raw_bytes and (b"AKIA" in raw_bytes or b"ASIA" in raw_bytes):
             return True
-        if b"github_pat_" in raw_bytes:
+        # 2. Slack (xox)
+        if (b"x" in raw_bytes or b"X" in raw_bytes) and (b"xox" in raw_bytes or b"XOX" in raw_bytes):
             return True
-        if b"ignore previous" in raw_bytes:
+        # 3. OpenAI / Anthropic (sk-)
+        if (b"k" in raw_bytes or b"K" in raw_bytes) and (b"sk-" in raw_bytes or b"SK-" in raw_bytes):
             return True
+        # 4. Private keys (BEGIN)
+        if b"B" in raw_bytes and b"BEGIN" in raw_bytes:
+            return True
+        # 5. Default canary (mcpb_canary_)
+        if b"m" in raw_bytes and b"mcpb_canary_" in raw_bytes:
+            return True
+        # 6. XML tags (<system, <instructions, <developer, <<sys)
         if b"<" in raw_bytes and (
-            b"<system" in raw_bytes
-            or b"<instructions" in raw_bytes
-            or b"<developer" in raw_bytes
-            or b"<<sys" in raw_bytes
+            b"<sys" in raw_bytes
+            or b"<SYS" in raw_bytes
+            or b"<inst" in raw_bytes
+            or b"<INST" in raw_bytes
+            or b"<dev" in raw_bytes
+            or b"<DEV" in raw_bytes
         ):
             return True
-        if b"[" in raw_bytes and b"[inst" in raw_bytes:
+        # 7. Bracket tags ([inst)
+        if b"[" in raw_bytes and (b"[inst" in raw_bytes or b"[INST" in raw_bytes):
             return True
-        if b"AKIA" in raw_bytes:
-            return True
-        if b"BEGIN" in raw_bytes:
-            return True
-        if b"ghp_" in raw_bytes:
-            return True
-        if b"sk-" in raw_bytes:
-            return True
-        if b"xox" in raw_bytes:
+        # 8. GitHub tokens & phrases with 'g'/'G' (ghp_, github_pat_, ignore, disregard)
+        if b"g" in raw_bytes or b"G" in raw_bytes:
+            if b"gh" in raw_bytes and (
+                b"ghp_" in raw_bytes
+                or b"github_pat_" in raw_bytes
+                or b"gho_" in raw_bytes
+                or b"ghu_" in raw_bytes
+                or b"ghs_" in raw_bytes
+                or b"ghr_" in raw_bytes
+            ):
+                return True
+            if b"ignore" in raw_bytes or b"IGNORE" in raw_bytes or b"Ignore" in raw_bytes:
+                return True
+            if b"disregard" in raw_bytes or b"DISREGARD" in raw_bytes or b"Disregard" in raw_bytes:
+                return True
+        # 9. System prompt
+        if (b"y" in raw_bytes or b"Y" in raw_bytes) and (
+            b"system prompt" in raw_bytes
+            or b"SYSTEM PROMPT" in raw_bytes
+            or b"System Prompt" in raw_bytes
+        ):
             return True
         return False
 

@@ -110,6 +110,7 @@ class ProtocolMonitor:
         enforce: bool = False,
         live_identity: Optional[Dict[str, Any]] = None,
         attribution_engine: Optional[Any] = None,
+        prior_manifest: Optional[Dict[str, Any]] = None,
     ):
         self.session_id = session_id
         self.server_id = server_id
@@ -122,6 +123,7 @@ class ProtocolMonitor:
         self.enforce = enforce
         self.live_identity = live_identity
         self.attribution_engine = attribution_engine
+        self.prior_manifest = prior_manifest
 
         # Payload content and canary scanner (Milestone 2b)
         self.canary_mgr = canary_mgr or CanaryManager()
@@ -150,6 +152,7 @@ class ProtocolMonitor:
             server_lock=server_lock,
             enforce=enforce,
             live_identity=live_identity,
+            prior_manifest=prior_manifest,
         )
 
         # Non-blocking raw line queue for background parsing and telemetry
@@ -550,7 +553,8 @@ class ProtocolMonitor:
                             self._emit_alert(ievt)
 
                     elif method == "tools/list":
-                        had_baseline = self.manifest_tracker.tools_baseline is not None
+                        if self.manifest_tracker.prior_manifest is None:
+                            self.manifest_tracker.prior_manifest = self.telemetry.get_last_trusted_manifest(self.server_id)
                         list_events, _ = self.manifest_tracker.handle_tools_list_response(
                             msg_id,
                             content_obj if not is_error else None,
@@ -560,15 +564,6 @@ class ProtocolMonitor:
                             self.bus.publish_sync(levt)
                             self.telemetry.record(levt)
                             self._emit_alert(levt)
-
-                        # If session baseline was just established, evaluate cross-session drift against trusted baseline
-                        if not had_baseline and self.manifest_tracker.tools_baseline is not None:
-                            prior_manifest = self.telemetry.get_last_trusted_manifest(self.server_id)
-                            cross_events = self.manifest_tracker.evaluate_cross_session_drift(prior_manifest)
-                            for cevt in cross_events:
-                                self.bus.publish_sync(cevt)
-                                self.telemetry.record(cevt)
-                                self._emit_alert(cevt)
 
             elif "method" in msg:
                 # Server-initiated notification or request

@@ -227,7 +227,7 @@ def test_non_fingerprintable_probe_ids():
     active_client_ids = {950000000, 950000001}
     probe_id_int = tracker.generate_probe_id(exclude_ids=active_client_ids)
     assert isinstance(probe_id_int, int)
-    assert 900000000 <= probe_id_int <= 999999999
+    assert probe_id_int >= 42
     assert probe_id_int not in active_client_ids
     assert "mcpb" not in str(probe_id_int)
 

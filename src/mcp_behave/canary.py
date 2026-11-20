@@ -12,11 +12,13 @@ class CanaryManager:
 
     def __init__(self, initial_canaries: Iterable[str] | None = None) -> None:
         self._canaries: Set[str] = set()
+        self._canaries_bytes: dict[str, bytes] = {}
         if initial_canaries:
             for c in initial_canaries:
                 c_clean = c.strip()
                 if c_clean:
                     self._canaries.add(c_clean)
+                    self._canaries_bytes[c_clean] = c_clean.encode("utf-8")
 
     @property
     def canaries(self) -> Set[str]:
@@ -26,6 +28,7 @@ class CanaryManager:
         """Generate and register a new random canary token."""
         token = f"{prefix}{uuid.uuid4().hex}"
         self._canaries.add(token)
+        self._canaries_bytes[token] = token.encode("utf-8")
         return token
 
     def register(self, token: str) -> None:
@@ -33,6 +36,7 @@ class CanaryManager:
         token_clean = token.strip()
         if token_clean:
             self._canaries.add(token_clean)
+            self._canaries_bytes[token_clean] = token_clean.encode("utf-8")
 
     def load_from_file(self, path: str | Path) -> int:
         """Load canary tokens from a file (one token per line). Returns count loaded."""
@@ -45,6 +49,7 @@ class CanaryManager:
                 token = line.strip()
                 if token and not token.startswith("#"):
                     self._canaries.add(token)
+                    self._canaries_bytes[token] = token.encode("utf-8")
                     count += 1
         return count
 
@@ -63,8 +68,7 @@ class CanaryManager:
         if not self._canaries or not data:
             return []
         matches: List[str] = []
-        for canary in self._canaries:
-            canary_bytes = canary.encode("utf-8")
-            if canary_bytes in data:
+        for canary, b in self._canaries_bytes.items():
+            if b in data:
                 matches.append(canary)
         return matches

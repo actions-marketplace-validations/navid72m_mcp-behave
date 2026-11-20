@@ -37,6 +37,7 @@ class TracerServer:
         self.loop = loop or asyncio.get_event_loop()
         self.rcvbuf_size = rcvbuf_size
         self._stopped = False
+        self.handshake_event = asyncio.Event()
 
         # Strictly limit socket path to /tmp to prevent exceeding Darwin's 104-byte sun_path limit
         short_id = session_id.replace("-", "")[:8]
@@ -81,6 +82,14 @@ class TracerServer:
         """Return environment variables to inject into child server."""
         return dict(self._child_env)
 
+    async def wait_for_handshake(self, timeout: float = 0.5) -> bool:
+        """Wait for initialization datagram from interposed C library."""
+        try:
+            await asyncio.wait_for(self.handshake_event.wait(), timeout=timeout)
+            return True
+        except (asyncio.TimeoutError, Exception):
+            return False
+
     def _on_socket_readable(self) -> None:
         """Callback invoked when trace socket has datagrams ready to read."""
         if self._stopped or not self._server_sock:
@@ -103,6 +112,11 @@ class TracerServer:
         for line in text.splitlines():
             s = line.strip()
             if not s:
+                continue
+
+            # Handshake datagram: T <pid> READY
+            if s.startswith("T ") and s.endswith("READY"):
+                self.handshake_event.set()
                 continue
 
             # Drop marker handling
