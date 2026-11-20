@@ -188,14 +188,15 @@ def real_port(entry: str) -> bool:
 
 
 def _is_native(sample: list[str]) -> bool:
-    """Heuristic: native lines start with 'F ', 'W ', 'U ', 'N ', 'X ', 'M ', or '! '."""
+    """Heuristic: native lines start with 'F ', 'W ', 'U ', 'N ', 'X ', 'M ', 'T ', or '! '."""
     for line in sample:
         s = line.rstrip("\n")
         if not s:
             continue
         if s.startswith("! "):
             return True
-        return len(s) >= 2 and s[0] in "FWUNXM" and s[1] == " "
+        if len(s) >= 2 and s[0] in "FWUNXMT" and s[1] == " ":
+            return True
     return False
 
 
