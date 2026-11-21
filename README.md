@@ -30,7 +30,7 @@
 </p>
 
 ---
-[white paper](docs/mcp_behave_technical_whitepaper.pdf)
+[white paper](docs/mcp_behave_technical_whitepaper.pdf) [![MCPWatch score](https://mcpwatch-zeta.vercel.app/badge/io.github.navid72m__mcp-behave.svg)](https://mcpwatch-zeta.vercel.app/servers/io.github.navid72m__mcp-behave/)
 
 **Runtime behavioral auditor & security proxy for MCP servers.** Runs an MCP server under
 a runtime tracer (macOS dylib, Linux `LD_PRELOAD`, or `strace`), exercises
