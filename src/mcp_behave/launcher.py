@@ -31,13 +31,13 @@ def get_tracer_environment(
     import platform
     from .probe import _linux_tracer_so, _macos_tracer_dylib, _target_is_hardened
 
+    # Check hardened runtime (SIP/hardened binaries refuse injection)
+    is_hardened = _target_is_hardened(resolved_binary)
+    if is_hardened:
+        return {}, "hardened_runtime"
+
     sys_name = platform.system()
     if sys_name == "Darwin":
-        # Check hardened runtime (SIP/hardened binaries refuse injection)
-        is_hardened = _target_is_hardened(resolved_binary)
-        if is_hardened:
-            return {}, "hardened_runtime"
-
         dylib_path = _macos_tracer_dylib()
         if not dylib_path or not os.path.isfile(dylib_path):
             return {}, "no_compiler"

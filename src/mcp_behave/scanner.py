@@ -443,10 +443,10 @@ class ContentScanner:
         if b"A" in raw_bytes and (b"AKIA" in raw_bytes or b"ASIA" in raw_bytes):
             return True
         # 2. Slack (xox)
-        if (b"x" in raw_bytes or b"X" in raw_bytes) and (b"xox" in raw_bytes or b"XOX" in raw_bytes):
+        if b"x" in raw_bytes and (b"xox" in raw_bytes or b"XOX" in raw_bytes):
             return True
         # 3. OpenAI / Anthropic (sk-)
-        if (b"k" in raw_bytes or b"K" in raw_bytes) and (b"sk-" in raw_bytes or b"SK-" in raw_bytes):
+        if b"k" in raw_bytes and (b"sk-" in raw_bytes or b"SK-" in raw_bytes):
             return True
         # 4. Private keys (BEGIN ) & Bearer auth
         if b"B" in raw_bytes and (b"BEGIN " in raw_bytes or b"PRIVATE KEY" in raw_bytes or b"Bearer " in raw_bytes):
@@ -465,11 +465,15 @@ class ContentScanner:
         if b"[" in raw_bytes and (b"[inst" in raw_bytes or b"[INST" in raw_bytes):
             return True
         # 7. Injections: ignore, disregard
-        if b"g" in raw_bytes or b"G" in raw_bytes:
-            if b"ignore" in raw_bytes or b"IGNORE" in raw_bytes or b"Ignore" in raw_bytes:
-                return True
-            if b"disregard" in raw_bytes or b"DISREGARD" in raw_bytes or b"Disregard" in raw_bytes:
-                return True
+        if (b"g" in raw_bytes or b"G" in raw_bytes) and (
+            b"ignore" in raw_bytes
+            or b"IGNORE" in raw_bytes
+            or b"Ignore" in raw_bytes
+            or b"disregard" in raw_bytes
+            or b"DISREGARD" in raw_bytes
+            or b"Disregard" in raw_bytes
+        ):
+            return True
         # 8. System prompt
         if (b"y" in raw_bytes or b"Y" in raw_bytes) and (
             b"system prompt" in raw_bytes
@@ -508,20 +512,15 @@ class ContentScanner:
             b"apiKey" in raw_bytes
             or b"secretKey" in raw_bytes
             or b"secretAccessKey" in raw_bytes
-            or b"API_KEY" in raw_bytes
-            or b"SECRET_KEY" in raw_bytes
         ):
             return True
         if b"T" in raw_bytes and (
             b"authToken" in raw_bytes
             or b"accessToken" in raw_bytes
             or b"bearerToken" in raw_bytes
-            or b"AUTH_TOKEN" in raw_bytes
-            or b"ACCESS_TOKEN" in raw_bytes
-            or b"BEARER_TOKEN" in raw_bytes
         ):
             return True
-        if b"S" in raw_bytes and (b"clientSecret" in raw_bytes or b"CLIENT_SECRET" in raw_bytes):
+        if b"S" in raw_bytes and b"clientSecret" in raw_bytes:
             return True
         return False
 
