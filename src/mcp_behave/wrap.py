@@ -335,7 +335,9 @@ async def run_proxy(
     )
 
     if tracer_server:
-        handshake_ok = await tracer_server.wait_for_handshake(timeout=0.5)
+        handshake_ok = await tracer_server.wait_for_pid_handshake(child_proc.pid, timeout=0.5)
+        if not handshake_ok:
+            handshake_ok = await tracer_server.wait_for_handshake(timeout=0.1)
         if handshake_ok:
             tracing_status = "active"
             tracing_reason = "handshake_confirmed"
@@ -354,7 +356,9 @@ async def run_proxy(
                 payload={
                     "status": "disabled",
                     "reason": "dylib_handshake_timeout_or_sip_stripped",
-                    "message": "Tracer handshake timed out; tracing disabled due to hardened runtime or SIP",
+                    "pid": child_proc.pid,
+                    "target": resolved_binary,
+                    "message": f"Tracer handshake timed out for PID {child_proc.pid} ({resolved_binary}); tracing disabled due to hardened runtime or SIP",
                 },
             )
             await bus.publish(blind_spot_evt)
@@ -535,10 +539,48 @@ async def run_proxy(
             pass
     await asyncio.sleep(0.05)
 
-    # Save manifest history snapshot to SQLite
-    if monitor.manifest_tracker and monitor.manifest_tracker.tools_baseline:
-        approved_state = "untrusted" if monitor.manifest_tracker.has_high_drift else "trusted"
-        snapshot = monitor.manifest_tracker.get_manifest_snapshot()
+    # Check for uninstrumented descendant processes (Item 5)
+    if tracer_server:
+        uninstrumented = tracer_server.get_uninstrumented_descendants(grace_period=0.5)
+        for u_pid, u_path in uninstrumented:
+            b_evt = BehavioralEvent(
+                event="blind_spot",
+                session_id=session_id,
+                server_id=eff_server_id,
+                kind="blind_spot",
+                timestamp=time.time(),
+                source="monitor",
+                evidence_tier="observed",
+                severity=SEVERITY_HIGH,
+                target=u_path,
+                payload={
+                    "status": "uninstrumented_child",
+                    "reason": "descendant_dylib_handshake_timeout",
+                    "pid": u_pid,
+                    "target": u_path,
+                    "message": f"Spawned child PID {u_pid} ({u_path}) did not report tracer handshake within grace period",
+                },
+            )
+            bus.publish_sync(b_evt)
+            telemetry.record(b_evt)
+            monitor._emit_alert(b_evt)
+
+    # Save manifest history snapshot to SQLite (Item 3 & Smaller Fix 1)
+    if monitor.manifest_tracker and (
+        monitor.manifest_tracker.tools_baseline
+        or monitor.manifest_tracker.baseline_is_partial
+        or monitor.manifest_tracker.last_observed_manifest
+    ):
+        if monitor.manifest_tracker.has_high_drift:
+            approved_state = "untrusted"
+            snapshot = monitor.manifest_tracker.get_observed_manifest_snapshot()
+        elif monitor.manifest_tracker.baseline_is_partial:
+            approved_state = "partial"
+            snapshot = monitor.manifest_tracker.get_observed_manifest_snapshot()
+        else:
+            approved_state = "trusted"
+            snapshot = monitor.manifest_tracker.get_manifest_snapshot()
+
         telemetry.save_manifest_history(
             eff_server_id,
             snapshot,

@@ -115,6 +115,17 @@ static void mcpbehave_init(void) {
     }
 }
 
+__attribute__((destructor))
+static void mcpbehave_fini(void) {
+    if (g_dropped_records > 0 && g_trace_fd >= 0) {
+        char drop_msg[128];
+        int dn = snprintf(drop_msg, sizeof(drop_msg), "! DROPPED %lu\n", g_dropped_records);
+        if (dn > 0) {
+            emit(drop_msg, (size_t)dn);
+        }
+    }
+}
+
 static void emit(const char *buf, size_t len) {
     if (g_trace_fd < 0) {
         mcpbehave_init_sink();
@@ -170,28 +181,6 @@ static void log_tag(char tag, const char *val) {
     g_busy = 0;
 }
 
-static void check_symlink_and_log(const char *path, int is_write) {
-    if (!path || !*path) return;
-    char resolved[MAXPATHLEN];
-    if (realpath(path, resolved)) {
-        if (strcmp(path, resolved) != 0) {
-            log_tag('F', resolved);
-            if (is_write) log_tag('W', resolved);
-        }
-    }
-}
-
-static void check_fd_and_log(int fd, const char *orig_path, int is_write) {
-    if (fd < 0 || !orig_path) return;
-    char fd_path[MAXPATHLEN];
-    if (fcntl(fd, F_GETPATH, fd_path) >= 0 && fd_path[0]) {
-        if (strcmp(orig_path, fd_path) != 0) {
-            log_tag('F', fd_path);
-            if (is_write) log_tag('W', fd_path);
-        }
-    }
-}
-
 /* ---- open / openat ---------------------------------------------------- *
  * open()/openat() are variadic (mode only present with O_CREAT). We take mode
  * via va_arg and forward it, so we never read a garbage register.           */
@@ -205,10 +194,7 @@ int my_open(const char *path, int flags, ...) {
     if (is_write) {
         log_tag('W', path);
     }
-    check_symlink_and_log(path, is_write);
-    int fd = open(path, flags, mode);
-    check_fd_and_log(fd, path, is_write);
-    return fd;
+    return open(path, flags, mode);
 }
 DYLD_INTERPOSE(my_open, open)
 
@@ -222,10 +208,7 @@ int my_openat(int dirfd, const char *path, int flags, ...) {
     if (is_write) {
         log_tag('W', path);
     }
-    check_symlink_and_log(path, is_write);
-    int fd = openat(dirfd, path, flags, mode);
-    check_fd_and_log(fd, path, is_write);
-    return fd;
+    return openat(dirfd, path, flags, mode);
 }
 DYLD_INTERPOSE(my_openat, openat)
 
@@ -381,17 +364,31 @@ DYLD_INTERPOSE(my_execvp, execvp)
 int my_posix_spawn(pid_t *pid, const char *path,
         const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *at,
         char *const argv[], char *const envp[]) {
-    log_tag('X', path);
     char **eff_env = envp ? ensure_trace_env(envp) : (char **)environ;
-    return posix_spawn(pid, path, fa, at, argv, eff_env);
+    int ret = posix_spawn(pid, path, fa, at, argv, eff_env);
+    if (ret == 0 && pid && *pid > 0) {
+        char b[1040];
+        int n = snprintf(b, sizeof(b), "X %s %d\n", path, (int)*pid);
+        if (n > 0) emit(b, (size_t)n);
+    } else {
+        log_tag('X', path);
+    }
+    return ret;
 }
 DYLD_INTERPOSE(my_posix_spawn, posix_spawn)
 
 int my_posix_spawnp(pid_t *pid, const char *path,
         const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *at,
         char *const argv[], char *const envp[]) {
-    log_tag('X', path);
     char **eff_env = envp ? ensure_trace_env(envp) : (char **)environ;
-    return posix_spawnp(pid, path, fa, at, argv, eff_env);
+    int ret = posix_spawnp(pid, path, fa, at, argv, eff_env);
+    if (ret == 0 && pid && *pid > 0) {
+        char b[1040];
+        int n = snprintf(b, sizeof(b), "X %s %d\n", path, (int)*pid);
+        if (n > 0) emit(b, (size_t)n);
+    } else {
+        log_tag('X', path);
+    }
+    return ret;
 }
 DYLD_INTERPOSE(my_posix_spawnp, posix_spawnp)

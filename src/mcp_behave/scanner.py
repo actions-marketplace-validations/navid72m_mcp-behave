@@ -448,13 +448,10 @@ class ContentScanner:
         # 3. OpenAI / Anthropic (sk-)
         if (b"k" in raw_bytes or b"K" in raw_bytes) and (b"sk-" in raw_bytes or b"SK-" in raw_bytes):
             return True
-        # 4. Private keys (BEGIN)
-        if b"B" in raw_bytes and b"BEGIN" in raw_bytes:
+        # 4. Private keys (BEGIN ) & Bearer auth
+        if b"B" in raw_bytes and (b"BEGIN " in raw_bytes or b"PRIVATE KEY" in raw_bytes or b"Bearer " in raw_bytes):
             return True
-        # 5. Default canary (mcpb_canary_)
-        if b"m" in raw_bytes and b"mcpb_canary_" in raw_bytes:
-            return True
-        # 6. XML tags (<system, <instructions, <developer, <<sys)
+        # 5. XML tags (<system, <instructions, <developer, <<sys)
         if b"<" in raw_bytes and (
             b"<sys" in raw_bytes
             or b"<SYS" in raw_bytes
@@ -464,30 +461,67 @@ class ContentScanner:
             or b"<DEV" in raw_bytes
         ):
             return True
-        # 7. Bracket tags ([inst)
+        # 6. Bracket tags ([inst)
         if b"[" in raw_bytes and (b"[inst" in raw_bytes or b"[INST" in raw_bytes):
             return True
-        # 8. GitHub tokens & phrases with 'g'/'G' (ghp_, github_pat_, ignore, disregard)
+        # 7. Injections: ignore, disregard
         if b"g" in raw_bytes or b"G" in raw_bytes:
-            if b"gh" in raw_bytes and (
-                b"ghp_" in raw_bytes
-                or b"github_pat_" in raw_bytes
-                or b"gho_" in raw_bytes
-                or b"ghu_" in raw_bytes
-                or b"ghs_" in raw_bytes
-                or b"ghr_" in raw_bytes
-            ):
-                return True
             if b"ignore" in raw_bytes or b"IGNORE" in raw_bytes or b"Ignore" in raw_bytes:
                 return True
             if b"disregard" in raw_bytes or b"DISREGARD" in raw_bytes or b"Disregard" in raw_bytes:
                 return True
-        # 9. System prompt
+        # 8. System prompt
         if (b"y" in raw_bytes or b"Y" in raw_bytes) and (
             b"system prompt" in raw_bytes
             or b"SYSTEM PROMPT" in raw_bytes
             or b"System Prompt" in raw_bytes
         ):
+            return True
+        # 9. Underscore-separated credentials (covers api_key, auth_token, secret_key, etc.)
+        if b"_" in raw_bytes:
+            if (
+                b"api_key" in raw_bytes
+                or b"API_KEY" in raw_bytes
+                or b"auth_token" in raw_bytes
+                or b"AUTH_TOKEN" in raw_bytes
+                or b"access_token" in raw_bytes
+                or b"ACCESS_TOKEN" in raw_bytes
+                or b"secret_key" in raw_bytes
+                or b"SECRET_KEY" in raw_bytes
+                or b"secret_access_key" in raw_bytes
+                or b"SECRET_ACCESS_KEY" in raw_bytes
+                or b"client_secret" in raw_bytes
+                or b"CLIENT_SECRET" in raw_bytes
+                or b"bearer_token" in raw_bytes
+                or b"BEARER_TOKEN" in raw_bytes
+                or b"ghp_" in raw_bytes
+                or b"github_pat_" in raw_bytes
+                or b"gho_" in raw_bytes
+                or b"ghu_" in raw_bytes
+                or b"ghs_" in raw_bytes
+                or b"ghr_" in raw_bytes
+                or b"mcpb_canary_" in raw_bytes
+            ):
+                return True
+        # 10. CamelCase & alternative credential markers
+        if b"K" in raw_bytes and (
+            b"apiKey" in raw_bytes
+            or b"secretKey" in raw_bytes
+            or b"secretAccessKey" in raw_bytes
+            or b"API_KEY" in raw_bytes
+            or b"SECRET_KEY" in raw_bytes
+        ):
+            return True
+        if b"T" in raw_bytes and (
+            b"authToken" in raw_bytes
+            or b"accessToken" in raw_bytes
+            or b"bearerToken" in raw_bytes
+            or b"AUTH_TOKEN" in raw_bytes
+            or b"ACCESS_TOKEN" in raw_bytes
+            or b"BEARER_TOKEN" in raw_bytes
+        ):
+            return True
+        if b"S" in raw_bytes and (b"clientSecret" in raw_bytes or b"CLIENT_SECRET" in raw_bytes):
             return True
         return False
 

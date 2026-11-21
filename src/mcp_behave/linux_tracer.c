@@ -47,7 +47,7 @@ typedef int (*fn_openat_t)(int, const char *, int, ...);
 typedef int (*fn_connect_t)(int, const struct sockaddr *, socklen_t);
 typedef ssize_t (*fn_sendto_t)(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
 typedef ssize_t (*fn_sendmsg_t)(int, const struct msghdr *, int);
-typedef int (*fn_sendmmsg_t)(int, struct mmsg_hdr *, unsigned int, int);
+typedef int (*fn_sendmmsg_t)(int, struct mmsghdr *, unsigned int, int);
 typedef int (*fn_execve_t)(const char *, char *const [], char *const []);
 typedef int (*fn_execv_t)(const char *, char *const []);
 typedef int (*fn_execvp_t)(const char *, char *const []);
@@ -213,13 +213,13 @@ static void check_fd_and_log(int fd, const char *orig_path, int is_write) {
 
 __attribute__((constructor))
 static void mcpbehave_init(void) {
-    const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
-    if (path && *path) {
-#ifdef SYS_openat
-        g_trace_fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-#else
-        g_trace_fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-#endif
+    init_sink();
+    if (g_is_socket && g_trace_fd >= 0) {
+        char msg[64];
+        int n = snprintf(msg, sizeof(msg), "T %d READY\n", getpid());
+        if (n > 0) {
+            emit(msg, (size_t)n);
+        }
     }
     real_open = (fn_open_t)dlsym(RTLD_NEXT, "open");
     real_open64 = (fn_open_t)dlsym(RTLD_NEXT, "open64");
@@ -466,7 +466,7 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
     return real_sendmsg(fd, msg, flags);
 }
 
-int sendmmsg(int fd, struct mmsg_hdr *msgvec, unsigned int vlen, int flags) {
+int sendmmsg(int fd, struct mmsghdr *msgvec, unsigned int vlen, int flags) {
     if (!g_busy && msgvec && g_trace_fd >= 0) {
         g_busy = 1;
         for (unsigned int i = 0; i < vlen; i++) {
@@ -541,12 +541,19 @@ int execvpe(const char *file, char *const argv[], char *const envp[]) {
 int posix_spawn(pid_t *pid, const char *path,
         const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *at,
         char *const argv[], char *const envp[]) {
-    log_tag('X', path);
     if (!real_posix_spawn) {
         real_posix_spawn = (fn_posix_spawn_t)dlsym(RTLD_NEXT, "posix_spawn");
     }
     if (real_posix_spawn) {
-        return real_posix_spawn(pid, path, fa, at, argv, envp);
+        int ret = real_posix_spawn(pid, path, fa, at, argv, envp);
+        if (ret == 0 && pid && *pid > 0) {
+            char b[1040];
+            int n = snprintf(b, sizeof(b), "X %s %d\n", path, (int)*pid);
+            if (n > 0) emit(b, (size_t)n);
+        } else {
+            log_tag('X', path);
+        }
+        return ret;
     }
     return -1;
 }
@@ -554,24 +561,19 @@ int posix_spawn(pid_t *pid, const char *path,
 int posix_spawnp(pid_t *pid, const char *path,
         const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *at,
         char *const argv[], char *const envp[]) {
-    log_tag('X', path);
     if (!real_posix_spawnp) {
         real_posix_spawnp = (fn_posix_spawn_t)dlsym(RTLD_NEXT, "posix_spawnp");
     }
     if (real_posix_spawnp) {
-        return real_posix_spawnp(pid, path, fa, at, argv, envp);
+        int ret = real_posix_spawnp(pid, path, fa, at, argv, envp);
+        if (ret == 0 && pid && *pid > 0) {
+            char b[1040];
+            int n = snprintf(b, sizeof(b), "X %s %d\n", path, (int)*pid);
+            if (n > 0) emit(b, (size_t)n);
+        } else {
+            log_tag('X', path);
+        }
+        return ret;
     }
     return -1;
-}
-
-__attribute__((constructor))
-static void mcpbehave_init(void) {
-    init_sink();
-    if (g_is_socket && g_trace_fd >= 0) {
-        char msg[64];
-        int n = snprintf(msg, sizeof(msg), "T %d READY\n", getpid());
-        if (n > 0) {
-            emit(msg, (size_t)n);
-        }
-    }
 }

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import random
+import re
 import time
 import uuid
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple
@@ -345,6 +346,8 @@ class ManifestTracker:
         self.initialized = False
         self.client_initialized = False
         self.has_high_drift = False
+        self.baseline_is_partial = False
+        self.last_observed_manifest: Optional[Dict[str, Any]] = None
         self._list_changed_announced: Set[str] = set()
 
         # In-flight pagination aggregation
@@ -355,6 +358,9 @@ class ManifestTracker:
         self._issued_probe_ids: Dict[Any, float] = {}  # probe_id -> issued timestamp
         self._probe_expiry: float = 600.0
         self._probe_in_flight = False
+        self._probe_generation: int = 0
+        self._active_probe_id: Optional[Any] = None
+        self._tombstoned_probe_ids: Set[Any] = set()
         self._last_probe_time: float = 0.0
         self._tool_calls_since_last_probe: int = 0
         self._seen_tools: Set[str] = set()
@@ -364,6 +370,7 @@ class ManifestTracker:
         self._client_uses_int_ids: Optional[bool] = None
         self._client_uses_uuid: Optional[bool] = None
         self._observed_client_int_ids: List[int] = []
+        self._observed_client_prefixes: Dict[str, Tuple[int, int]] = {}
 
     def _schedule_coroutine(self, coro: Coroutine[Any, Any, Any]) -> Optional[Any]:
         """Safely schedule a coroutine on the event loop from any thread context."""
@@ -428,6 +435,9 @@ class ManifestTracker:
 
     def _on_probe_timeout(self, probe_id: Any) -> None:
         """Handle timeout when synthetic probe receives no response."""
+        self._tombstoned_probe_ids.add(probe_id)
+        if self._active_probe_id == probe_id:
+            self._active_probe_id = None
         if not self._probe_in_flight:
             return
         self._probe_in_flight = False
@@ -468,6 +478,14 @@ class ManifestTracker:
                     self._client_uses_uuid = True
                 except (ValueError, AttributeError):
                     self._client_uses_uuid = False
+                    m = re.match(r"^([a-zA-Z_\-#.:/]+)(\d+)$", req_id)
+                    if m:
+                        prefix = m.group(1)
+                        num_str = m.group(2)
+                        num = int(num_str)
+                        width = len(num_str)
+                        if prefix not in self._observed_client_prefixes or num > self._observed_client_prefixes[prefix][0]:
+                            self._observed_client_prefixes[prefix] = (num, width)
 
     def generate_probe_id(self, exclude_ids: Optional[Set[Any]] = None) -> Any:
         """Generate synthetic probe ID mimicking client format while avoiding collisions."""
@@ -486,35 +504,37 @@ class ManifestTracker:
             except Exception:
                 pass
 
-        if self._client_uses_int_ids is not False:
-            # Client uses ints or unknown: generate random int adaptive to client sequence
+        if self._client_uses_int_ids is True or (
+            self._client_uses_int_ids is None
+            and not self._observed_client_prefixes
+            and not getattr(self, "_client_uses_uuid", False)
+        ):
+            # Client uses ints or unknown default: sequential int past maximum seen
             if self._observed_client_int_ids:
-                max_int = max(self._observed_client_int_ids)
-                if max_int < 1000:
-                    min_val = max(100, max_int + 50)
-                    max_val = max_int + 1000
-                else:
-                    min_val = max_int + 100
-                    max_val = max_int + 10000
+                candidate = max(self._observed_client_int_ids) + 1
             else:
-                min_val = 1000
-                max_val = 9999
-
-            attempts = 0
-            while attempts < 1000:
-                candidate = random.randint(min_val, max_val)
-                if candidate not in excluded:
-                    return candidate
-                attempts += 1
-            return random.randint(100000, 999999)
+                candidate = 1
+            while candidate in excluded:
+                candidate += 1
+            return candidate
         elif getattr(self, "_client_uses_uuid", False):
             # Client uses standard UUIDs with hyphens
             while True:
                 candidate = str(uuid.uuid4())
                 if candidate not in excluded:
                     return candidate
+        elif self._observed_client_prefixes:
+            # Client uses prefixed strings with numeric suffix, e.g. req-1 -> req-2
+            prefix, (num, width) = list(self._observed_client_prefixes.items())[-1]
+            next_num = num + 1
+            while True:
+                candidate = f"{prefix}{next_num:0{width}d}"
+                if candidate not in excluded:
+                    self._observed_client_prefixes[prefix] = (next_num, width)
+                    return candidate
+                next_num += 1
         else:
-            # Client uses strings: generate 12-char hex string
+            # Client uses strings without numeric suffix: generate 12-char hex string
             while True:
                 candidate = uuid.uuid4().hex[:12]
                 if candidate not in excluded:
@@ -579,8 +599,10 @@ class ManifestTracker:
         self._probe_in_flight = True
         self._last_probe_time = now
         self._tool_calls_since_last_probe = 0
+        self._probe_generation += 1
 
         probe_id = self.generate_probe_id()
+        self._active_probe_id = probe_id
         self._issued_probe_ids[probe_id] = now
         self._probe_pagination_tools.clear()
 
@@ -614,6 +636,18 @@ class ManifestTracker:
         self.capabilities = result.get("capabilities") or {}
         old_instructions = self.instructions
         self.instructions = result.get("instructions")
+
+        if self.last_observed_manifest is None:
+            self.last_observed_manifest = {
+                "serverInfo": self.server_info,
+                "capabilities": self.capabilities,
+                "instructions": self.instructions,
+                "tools": [],
+            }
+        else:
+            self.last_observed_manifest["serverInfo"] = self.server_info
+            self.last_observed_manifest["capabilities"] = self.capabilities
+            self.last_observed_manifest["instructions"] = self.instructions
 
         events: List[BehavioralEvent] = []
 
@@ -681,6 +715,11 @@ class ManifestTracker:
         """
         is_probe = self.is_probe_response(resp_id)
 
+        # Item 2: Probe generation isolation & tombstoning
+        # If response belongs to a tombstoned or inactive probe, drop it immediately
+        if resp_id in self._tombstoned_probe_ids or (self._active_probe_id is not None and resp_id != self._active_probe_id):
+            return [], True
+
         if is_error or not isinstance(result, dict):
             if is_probe:
                 if self._probe_timer:
@@ -690,6 +729,7 @@ class ManifestTracker:
                         pass
                     self._probe_timer = None
                 self._probe_in_flight = False
+                self._active_probe_id = None
                 # Proxy probe error is logged as info and ignored
                 evt = BehavioralEvent(
                     event="probe_error",
@@ -721,8 +761,9 @@ class ManifestTracker:
             if next_cursor:
                 # Keep probe in flight during multi-page pagination
                 self._probe_in_flight = True
-                # Follow nextCursor until exhausted
+                self._probe_generation += 1
                 next_id = self.generate_probe_id()
+                self._active_probe_id = next_id
                 self._issued_probe_ids[next_id] = time.time()
                 if self.loop and self.loop.is_running():
                     self._probe_timer = self.loop.call_later(
@@ -741,6 +782,7 @@ class ManifestTracker:
                 return [], True
             else:
                 self._probe_in_flight = False
+                self._active_probe_id = None
                 completed_tools = list(self._probe_pagination_tools)
                 self._probe_pagination_tools.clear()
                 events = self._evaluate_tools_manifest(completed_tools, drift_origin="proxy_observed")
@@ -862,6 +904,33 @@ class ManifestTracker:
             t["name"]: t for t in tools_list if isinstance(t, dict) and "name" in t
         }
 
+        # Track the actual observed snapshot (Smaller Fix 1)
+        self.last_observed_manifest = {
+            "serverInfo": self.server_info,
+            "capabilities": self.capabilities,
+            "instructions": self.instructions,
+            "tools": list(current_map.values()),
+        }
+
+        if is_partial:
+            self.baseline_is_partial = True
+            evt = BehavioralEvent(
+                event="manifest_baseline",
+                session_id=self.session_id,
+                server_id=self.server_id,
+                kind=KIND_MANIFEST_BASELINE,
+                source="monitor",
+                evidence_tier=EVIDENCE_TIER_OBSERVED,
+                timestamp=time.time(),
+                payload={
+                    "tools": list(current_map.keys()),
+                    "tool_count": len(current_map),
+                    "is_partial": True,
+                    "drift_origin": drift_origin,
+                },
+            )
+            return [evt]
+
         # 1. First observation establishes the session TOFU baseline
         if self.tools_baseline is None:
             self.tools_baseline = copy.deepcopy(current_map)
@@ -876,7 +945,7 @@ class ManifestTracker:
                 payload={
                     "tools": list(current_map.keys()),
                     "tool_count": len(current_map),
-                    "is_partial": is_partial,
+                    "is_partial": False,
                     "drift_origin": drift_origin,
                 },
             )
@@ -1202,3 +1271,9 @@ class ManifestTracker:
             "instructions": self.instructions,
             "tools": list(self.tools_baseline.values()) if self.tools_baseline else [],
         }
+
+    def get_observed_manifest_snapshot(self) -> Dict[str, Any]:
+        """Export observed manifest snapshot (including unapproved/drifted/partial state)."""
+        if self.last_observed_manifest is not None:
+            return self.last_observed_manifest
+        return self.get_manifest_snapshot()

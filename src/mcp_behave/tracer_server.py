@@ -16,6 +16,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .events import (
     BehavioralEvent,
+    EVENT_FILE_OPEN,
+    EVENT_FILE_WRITE,
     KIND_TELEMETRY_DROP,
     SEVERITY_INFO,
     parse_native_line,
@@ -38,6 +40,8 @@ class TracerServer:
         self.rcvbuf_size = rcvbuf_size
         self._stopped = False
         self.handshake_event = asyncio.Event()
+        self.instrumented_pids: Set[int] = set()
+        self.spawned_pids: Dict[int, Tuple[str, float]] = {}  # pid -> (path, timestamp)
 
         # Strictly limit socket path to /tmp to prevent exceeding Darwin's 104-byte sun_path limit
         short_id = session_id.replace("-", "")[:8]
@@ -90,6 +94,48 @@ class TracerServer:
         except (asyncio.TimeoutError, Exception):
             return False
 
+    async def wait_for_pid_handshake(self, pid: int, timeout: float = 0.5) -> bool:
+        """Wait up to timeout seconds for a specific child PID to report READY."""
+        if pid in self.instrumented_pids:
+            return True
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if pid in self.instrumented_pids:
+                return True
+            await asyncio.sleep(0.02)
+        return pid in self.instrumented_pids
+
+    def get_uninstrumented_descendants(self, grace_period: float = 0.5) -> List[Tuple[int, str]]:
+        """Return list of (pid, path) for spawned child processes that never reported READY."""
+        now = time.time()
+        uninstrumented = []
+        for pid, (path, spawn_time) in list(self.spawned_pids.items()):
+            if pid not in self.instrumented_pids and (now - spawn_time) >= grace_period:
+                uninstrumented.append((pid, path))
+        return uninstrumented
+
+    def _check_single_descendant(self, pid: int, path: str) -> None:
+        """Check whether a single descendant PID reported READY within grace period."""
+        if pid not in self.instrumented_pids and not self._stopped:
+            b_evt = BehavioralEvent(
+                event="blind_spot",
+                session_id=self.session_id,
+                kind="blind_spot",
+                timestamp=time.time(),
+                source="monitor",
+                evidence_tier="observed",
+                severity=SEVERITY_HIGH,
+                target=path,
+                payload={
+                    "status": "uninstrumented_child",
+                    "reason": "descendant_dylib_handshake_timeout",
+                    "pid": pid,
+                    "target": path,
+                    "message": f"Spawned child PID {pid} ({path}) did not report tracer handshake within grace period",
+                },
+            )
+            self.on_event_fn(b_evt)
+
     def _on_socket_readable(self) -> None:
         """Callback invoked when trace socket has datagrams ready to read."""
         if self._stopped or not self._server_sock:
@@ -116,8 +162,21 @@ class TracerServer:
 
             # Handshake datagram: T <pid> READY
             if s.startswith("T ") and s.endswith("READY"):
+                parts = s.split()
+                if len(parts) >= 3 and parts[1].isdigit():
+                    self.instrumented_pids.add(int(parts[1]))
                 self.handshake_event.set()
                 continue
+
+            # Process spawn tracking: X <path> <child_pid>
+            if s.startswith("X "):
+                x_parts = s[2:].strip().split()
+                if len(x_parts) >= 2 and x_parts[-1].isdigit():
+                    child_pid = int(x_parts[-1])
+                    child_path = " ".join(x_parts[:-1])
+                    self.spawned_pids[child_pid] = (child_path, time.time())
+                    if self.loop and self.loop.is_running():
+                        self.loop.call_later(0.5, self._check_single_descendant, child_pid, child_path)
 
             # Drop marker handling
             if s.startswith("! DROPPED "):
@@ -153,6 +212,26 @@ class TracerServer:
                     event.payload["destination_ip"] = event.destination_ip
                     event.payload["destination_port"] = event.destination_port
                 self.on_event_fn(event)
+
+                # Deferred symlink resolution outside C hooks
+                if event.target and event.event in (EVENT_FILE_OPEN, EVENT_FILE_WRITE):
+                    try:
+                        if os.path.islink(event.target):
+                            real = os.path.realpath(event.target)
+                            if real != event.target:
+                                sym_evt = BehavioralEvent(
+                                    event=event.event,
+                                    session_id=self.session_id,
+                                    target=real,
+                                    kind=event.kind,
+                                    source=event.source,
+                                    current_tool=event.current_tool,
+                                    timestamp=event.timestamp,
+                                    payload={**event.payload, "target": real, "symlink_source": event.target},
+                                )
+                                self.on_event_fn(sym_evt)
+                    except (OSError, ValueError):
+                        pass
 
     def close(self) -> None:
         """Close socket and clean up filesystem artifacts."""

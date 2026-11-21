@@ -219,7 +219,11 @@ Because MCP clients usually cache `tools/list` after initialization, passive TOF
 - **Probe ID Mimicry**:
   - Probe IDs match responses by the exact issued dictionary (`_issued_probe_ids`) retained for 600s to cleanly capture and drop late or duplicate responses without forwarding.
   - No fixed prefix (e.g. no `"mcpb-"`).
-  - Mimics client format: random high integers (`[900000000, 999999999]`) if client uses integers; standard formatted UUID strings if client uses UUIDs; 12-char hex strings for general string IDs. Excludes in-flight client request IDs to prevent collision.
+  - Mimics client format: sequential integers (`max_int + 1`, dynamically advancing past active collisions) if client uses integers; prefixed strings (`req-1` $\to$ `req-2`, `msg_002` $\to$ `msg_003`) preserving zero-padded width; standard formatted UUIDv4 strings if client uses UUIDs; 12-char hex strings for generic string IDs.
+- **Probe Generation Isolation & Tombstoning**:
+  - Each probe round advances `_probe_generation` and sets `_active_probe_id`.
+  - When a probe times out, its ID is added to `_tombstoned_probe_ids` and `_active_probe_id` is cleared.
+  - Stale responses arriving for tombstoned or non-active probes are safely dropped immediately: they never cancel successor probe timers, never contaminate successor pagination buffers, and never reset in-flight state.
 - **Response Demuxing**:
   - In `server_to_client_pump`, any incoming message matching an issued probe ID within the 600s retention window is intercepted, processed by `ManifestTracker`, and **never forwarded to client stdout**. Late-arriving probe responses are dropped silently.
 
@@ -266,17 +270,27 @@ Shared heuristics in `src/mcp_behave/heuristics.py` check server `instructions` 
 - Keyword cues (`jailbreak`).
 Violations in instructions or descriptions are tagged `HIGH` with `would_block: True`.
 
-### 5.7 Cross-Session Drift & Untrusted State Isolation
+### 5.7 Cross-Session Drift & Untrusted/Partial State Isolation
 - SQLite table `manifest_history (id, server_id, ts, manifest_json, approved_state)` stores append-only session snapshots.
-- On session exit, if the session experienced high-severity drift (`has_high_drift=True`), the snapshot is saved as `approved_state='untrusted'`.
-- Next session retrieves `WHERE server_id = ? AND approved_state = 'trusted' ORDER BY ts DESC LIMIT 1`. Thus, a rug pull in Session 1 cannot poison the trusted baseline for Session 2.
+- On session exit:
+  - If the session experienced high-severity drift (`has_high_drift=True`), the actual newly observed manifest is saved as `approved_state='untrusted'` (while the in-session proxy retained the prior trusted baseline to block covert attacks).
+  - If client pagination timed out mid-stream (`baseline_is_partial=True`), the partial snapshot is saved as `approved_state='partial'` and never establishes a trusted baseline.
+  - If un-drifted and complete, the baseline is saved as `approved_state='trusted'`.
+- Next session queries `WHERE server_id = ? AND approved_state = 'trusted' ORDER BY ts DESC LIMIT 1`. Thus, neither rug pulls nor partial pagination timeouts can poison future baselines.
 - Cross-session drift against the trusted baseline is evaluated on the first tools list. If `serverInfo.version` bumped and changes are purely additive, findings are classified as `SEVERITY_MEDIUM`.
 
-### 5.8 Residual Fingerprinting Risk
-While probe IDs avoid fixed string markers like `mcpb-` and mimic client ID style, an adversarial MCP server could detect runtime monitoring through:
+### 5.8 User-Space Interposition & Blind Spot Threat Model
+- User-space dynamic library interposition (`DYLD_INSERT_LIBRARIES` on macOS, `LD_PRELOAD` on Linux) constitutes **cooperative behavioral telemetry**, not kernel-level tamper-proof confinement against an active adversary with same-UID process execution capabilities.
+- To detect evasions (e.g. hardened binaries, macOS System Integrity Protection stripping environment variables, statically-linked binaries, or intermediary wrappers like `npx`/`uvx`), `mcp-behave` implements per-PID handshake tracking:
+  - Spawned child and descendant PIDs are tracked via `posix_spawn` / `exec` interposition tags (`X <path> <child_pid>`).
+  - Each PID must report ready via `T <pid> READY` within a 500 ms grace period (`wait_for_pid_handshake`).
+  - Any uninstrumented child process triggers a high-severity `blind_spot` behavioral event (`reason="descendant_dylib_handshake_timeout"`), preventing uninstrumented sessions from appearing clean.
+  - Heavy canonicalization operations (`realpath()`, `fcntl(F_GETPATH)`) are strictly deferred outside C interposition hooks to asynchronous Python processing, maintaining $<0.5$ ms child open latency.
+
+### 5.9 Residual Fingerprinting Risk
+While probe IDs avoid fixed string markers like `mcpb-` and mimic client ID style (sequential integer increments, prefixed string counters, or UUIDs), an adversarial MCP server could detect runtime monitoring through:
 1. **Unsolicited list requests**: If the client application never sends unsolicited `tools/list` after initialization, server-side request logging could infer active re-verification.
-2. **High integer range**: When the client uses integer IDs, probe IDs are chosen from the high range `[900000000, 999999999]` to guarantee non-collision with typical sequential client counters (e.g. 1, 2, 3). This partition is a known residual fingerprint.
-3. **Timing correlation**: Injections occurring on first tool call or periodically.
+2. **Timing correlation**: Injections occurring on first tool call or periodically.
 Mitigations include random timing jitter ($\pm 10-20\%$), minimum 10s cooldown, probe coalescing, and the `--no-reverify` opt-out flag.
 
 ### 5.9 Scope Boundary (Pre-M3)

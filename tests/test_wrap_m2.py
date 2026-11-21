@@ -231,9 +231,9 @@ def test_non_fingerprintable_probe_ids():
     assert probe_id_int not in active_client_ids
     assert "mcpb" not in str(probe_id_int)
 
-    # Case 2: Client uses string IDs
+    # Case 2: Client uses string IDs (non-numeric suffix)
     tracker_str = ManifestTracker("s2", "srv2", send_probe_fn=None, enable_reverify=False)
-    tracker_str.record_client_id_style("req-abc-001")
+    tracker_str.record_client_id_style("req-abc-generic")
     probe_id_str = tracker_str.generate_probe_id()
     assert isinstance(probe_id_str, str)
     assert len(probe_id_str) == 12
@@ -836,9 +836,11 @@ def test_client_pagination_timeout_finalizes_partial():
             # Wait for pagination timeout (50ms) to fire
             await asyncio.sleep(0.1)
 
-            # Baseline must now be finalized with is_partial=True
-            assert monitor.manifest_tracker.tools_baseline is not None
-            assert "tool_page1" in monitor.manifest_tracker.tools_baseline
+            # Baseline must now be finalized with is_partial=True (never trusted as baseline, Item 3)
+            assert monitor.manifest_tracker.baseline_is_partial is True
+            assert monitor.manifest_tracker.tools_baseline is None
+            assert monitor.manifest_tracker.last_observed_manifest is not None
+            assert "tool_page1" in [t["name"] for t in monitor.manifest_tracker.last_observed_manifest["tools"]]
 
             baseline_events = [e for e in events if e.kind == KIND_MANIFEST_BASELINE]
             assert len(baseline_events) == 1
