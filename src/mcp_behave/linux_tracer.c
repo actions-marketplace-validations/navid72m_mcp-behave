@@ -30,6 +30,7 @@
 #include <spawn.h>
 #include <dlfcn.h>
 #include <sys/syscall.h>
+#include <errno.h>
 
 extern char **environ;
 
