@@ -1,0 +1,15 @@
+{
+  "name": "IntegSec VulnerableMCP",
+  "category": "known_vulnerable",
+  "command": ["node", "/tmp/mcp_benchmark_repos/VulnerableMCP/dist/index.js", "--transport", "stdio"],
+  "expected_status": "FAILED",
+  "max_score": 60,
+  "expected_findings": [
+    ".env",
+    "/bin/sh",
+    "terminal escape sequences",
+    "zero-width",
+    "secret://"
+  ],
+  "expected_privilege": "CRITICAL"
+}

@@ -29,10 +29,82 @@ EVENT_NETWORK_CONNECT = "network_connect"
 EVENT_UNIX_CONNECT = "unix_socket_connect"
 EVENT_TOOL_MARKER = "tool_marker"
 
+# Runtime monitor evidence tiers
+EVIDENCE_TIER_OBSERVED = "observed"
+EVIDENCE_TIER_CORRELATED = "correlated"
+EVIDENCE_TIER_STRUCTURAL = "structural"
+EVIDENCE_TIER_HEURISTIC = "heuristic"
+
+# Mapping between scorecard classifications and monitor evidence tiers
+TIER_SCORECARD_TO_MONITOR = {
+    "CONFIRMED": EVIDENCE_TIER_OBSERVED,
+    "STRONG_EVIDENCE": EVIDENCE_TIER_STRUCTURAL,
+    "HEURISTIC": EVIDENCE_TIER_HEURISTIC,
+    "INFORMATIONAL": "informational",
+}
+
+TIER_MONITOR_TO_SCORECARD = {
+    EVIDENCE_TIER_OBSERVED: "CONFIRMED",
+    EVIDENCE_TIER_CORRELATED: "STRONG_EVIDENCE",
+    EVIDENCE_TIER_STRUCTURAL: "STRONG_EVIDENCE",
+    EVIDENCE_TIER_HEURISTIC: "HEURISTIC",
+    "informational": "INFORMATIONAL",
+}
+
+# Runtime monitor event severities
+SEVERITY_INFO = "INFO"
+SEVERITY_MEDIUM = "MEDIUM"
+SEVERITY_HIGH = "HIGH"
+SEVERITY_CRITICAL = "CRITICAL"
+
+# Runtime monitor event kinds
+KIND_PROTOCOL_REQUEST = "protocol_request"
+KIND_PROTOCOL_RESPONSE = "protocol_response"
+KIND_PROTOCOL_NOTIFICATION = "protocol_notification"
+KIND_PROTOCOL_ANOMALY = "protocol_anomaly"
+KIND_STDOUT_POLLUTION = "stdout_pollution"
+KIND_OS_TRACING = "os_tracing"
+KIND_TELEMETRY_DROP = "telemetry_drop"
+KIND_SESSION_START = "session_start"
+KIND_SESSION_END = "session_end"
+KIND_BLIND_SPOT = "blind_spot"
+KIND_MANIFEST_BASELINE = "manifest_baseline"
+KIND_MANIFEST_DRIFT = "manifest_drift"
+KIND_CROSS_SESSION_DRIFT = "cross_session_drift"
+
+# Content inspection event kinds (Milestone 2b)
+KIND_SECRET_LEAK = "secret_leak"
+KIND_SECRET_EXPOSURE = "secret_exposure"
+KIND_CANARY_EXFILTRATION = "canary_exfiltration"
+KIND_INDIRECT_INJECTION = "indirect_injection"
+KIND_ARGUMENT_HEURISTIC = "argument_heuristic"
+
+# Lockfile & package identity event kinds (Milestone 3)
+KIND_LOCKFILE_DRIFT = "lockfile_drift"
+KIND_PACKAGE_DRIFT = "package_drift"
+KIND_PACKAGE_TAMPER = "package_tamper"
+
+# Active enforcement & sandboxing event kinds (Milestone 5)
+KIND_ENFORCEMENT_ACTION = "enforcement_action"
+KIND_SANDBOX_STATUS = "sandbox_status"
+
+# Manifest drift categories
+DRIFT_COVERT_ADDITION = "covert_addition"
+DRIFT_ANNOUNCED_ADDITION = "announced_addition"
+DRIFT_REMOVAL_OR_RENAME = "removal_or_rename"
+DRIFT_CAPABILITY_EXPANSION = "capability_expansion"
+DRIFT_CONSTRAINT_RELAXATION = "constraint_relaxation"
+DRIFT_ANNOTATION_RELAXATION = "annotation_relaxation"
+DRIFT_TRUSTED_TOOL_ESCALATION = "trusted_tool_escalation"
+DRIFT_DESCRIPTION_MUTATION = "description_mutation"
+DRIFT_DESCRIPTION_INJECTION = "description_injection"
+DRIFT_INSTRUCTIONS_MUTATION = "instructions_mutation"
+DRIFT_INSTRUCTIONS_INJECTION = "instructions_injection"
+
 
 @dataclass
 class BehavioralEvent:
-    """Normalized runtime observation event emitted by any tracer backend."""
+    """Normalized runtime observation event emitted by any tracer backend or monitor proxy."""
 
     event: str
     pid: int | None = None
@@ -42,10 +114,17 @@ class BehavioralEvent:
     destination_ip: str | None = None
     destination_port: int | None = None
     timestamp: float | None = None
-    source: str = "interposition"          # "ebpf", "preload", "dylib", "strace", "mock"
+    source: str = "interposition"          # "ebpf", "preload", "dylib", "strace", "mock", "monitor"
     current_tool: str | None = None        # Correlated active MCP tool
     flags: str | None = None
     return_code: int | None = None
+    session_id: str | None = None          # Monitor session UUID
+    server_id: str | None = None           # Monitored server ID
+    kind: str | None = None                # Monitor event kind (e.g. protocol_request, stdout_pollution)
+    request_id: str | int | None = None    # Correlated JSON-RPC request ID
+    evidence_tier: str | None = None       # "observed" | "correlated" | "structural" | "heuristic"
+    severity: str | None = None            # "INFO" | "MEDIUM" | "HIGH" | "CRITICAL"
+    payload: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

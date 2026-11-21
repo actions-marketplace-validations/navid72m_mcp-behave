@@ -30,6 +30,7 @@
 #include <spawn.h>
 #include <dlfcn.h>
 #include <sys/syscall.h>
+#include <errno.h>
 
 extern char **environ;
 
@@ -47,7 +48,7 @@ typedef int (*fn_openat_t)(int, const char *, int, ...);
 typedef int (*fn_connect_t)(int, const struct sockaddr *, socklen_t);
 typedef ssize_t (*fn_sendto_t)(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
 typedef ssize_t (*fn_sendmsg_t)(int, const struct msghdr *, int);
-typedef int (*fn_sendmmsg_t)(int, struct mmsg_hdr *, unsigned int, int);
+typedef int (*fn_sendmmsg_t)(int, struct mmsghdr *, unsigned int, int);
 typedef int (*fn_execve_t)(const char *, char *const [], char *const []);
 typedef int (*fn_execv_t)(const char *, char *const []);
 typedef int (*fn_execvp_t)(const char *, char *const []);
@@ -71,43 +72,99 @@ static fn_posix_spawn_t real_posix_spawnp = NULL;
 
 /* ---- trace sink ------------------------------------------------------- */
 static int g_trace_fd = -1;
+static int g_is_socket = 0;
 /* Reentrancy guard: our logging path must never itself be logged. */
 static __thread int g_busy = 0;
+static __thread unsigned long g_dropped_records = 0;
+
+static void init_sink(void) {
+    if (g_trace_fd >= 0) return;
+
+    // 1. Inherited file descriptor (socketpair or non-blocking pipe)
+    const char *fd_env = getenv("MCP_BEHAVE_TRACE_FD");
+    if (fd_env && *fd_env) {
+        int fd = atoi(fd_env);
+        if (fd >= 0) {
+            int fl = fcntl(fd, F_GETFL, 0);
+            if (fl >= 0) {
+                fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+                g_trace_fd = fd;
+                g_is_socket = 1;
+                return;
+            }
+        }
+    }
+
+    // 2. UNIX domain datagram socket
+    const char *sock_path = getenv("MCP_BEHAVE_TRACE_SOCK");
+    if (sock_path && *sock_path) {
+        int s = socket(AF_UNIX, SOCK_DGRAM, 0);
+        if (s >= 0) {
+            struct sockaddr_un un;
+            memset(&un, 0, sizeof(un));
+            un.sun_family = AF_UNIX;
+            strncpy(un.sun_path, sock_path, sizeof(un.sun_path) - 1);
+            fcntl(s, F_SETFL, O_NONBLOCK);
+            if (connect(s, (struct sockaddr *)&un, sizeof(un)) == 0) {
+                g_trace_fd = s;
+                g_is_socket = 1;
+                return;
+            }
+            close(s);
+        }
+    }
+
+    // 3. Fallback to trace file (used by audit)
+    const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
+    if (path && *path) {
+#ifdef SYS_openat
+        g_trace_fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_WRONLY | O_APPEND | O_CREAT, 0600);
+#else
+        g_trace_fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
+#endif
+        g_is_socket = 0;
+    }
+}
 
 static void emit(const char *buf, size_t len) {
     if (g_trace_fd < 0) {
-        const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
-        if (path && *path) {
-#ifdef SYS_openat
-            g_trace_fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-#else
-            g_trace_fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-#endif
-        }
+        init_sink();
     }
-    if (g_trace_fd < 0) return;
+    if (g_trace_fd < 0 || !buf || len == 0) return;
+
+    ssize_t w;
+    if (g_is_socket) {
+        w = send(g_trace_fd, buf, len, MSG_DONTWAIT | MSG_NOSIGNAL);
+    } else {
 #ifdef SYS_write
-    ssize_t w = (ssize_t)syscall(SYS_write, g_trace_fd, buf, len);
+        w = (ssize_t)syscall(SYS_write, g_trace_fd, buf, len);
 #else
-    ssize_t w = write(g_trace_fd, buf, len);
+        w = write(g_trace_fd, buf, len);
 #endif
+    }
+
     if (w < 0) {
-        const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
-        if (path && *path) {
-#ifdef SYS_openat
-            int fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-#else
-            int fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-#endif
-            if (fd >= 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            g_dropped_records++;
+            return;
+        }
+        g_trace_fd = -1;
+        init_sink();
+    } else if (g_dropped_records > 0) {
+        char drop_msg[128];
+        int dn = snprintf(drop_msg, sizeof(drop_msg), "! DROPPED %lu\n", g_dropped_records);
+        if (dn > 0) {
+            if (g_is_socket) {
+                (void)!send(g_trace_fd, drop_msg, (size_t)dn, MSG_DONTWAIT | MSG_NOSIGNAL);
+            } else {
 #ifdef SYS_write
-                (void)!syscall(SYS_write, fd, buf, len);
+                (void)!syscall(SYS_write, g_trace_fd, drop_msg, (size_t)dn);
 #else
-                (void)!write(fd, buf, len);
+                (void)!write(g_trace_fd, drop_msg, (size_t)dn);
 #endif
-                g_trace_fd = fd;
             }
         }
+        g_dropped_records = 0;
     }
 }
 
@@ -157,13 +214,13 @@ static void check_fd_and_log(int fd, const char *orig_path, int is_write) {
 
 __attribute__((constructor))
 static void mcpbehave_init(void) {
-    const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
-    if (path && *path) {
-#ifdef SYS_openat
-        g_trace_fd = (int)syscall(SYS_openat, AT_FDCWD, path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-#else
-        g_trace_fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-#endif
+    init_sink();
+    if (g_is_socket && g_trace_fd >= 0) {
+        char msg[64];
+        int n = snprintf(msg, sizeof(msg), "T %d READY\n", getpid());
+        if (n > 0) {
+            emit(msg, (size_t)n);
+        }
     }
     real_open = (fn_open_t)dlsym(RTLD_NEXT, "open");
     real_open64 = (fn_open_t)dlsym(RTLD_NEXT, "open64");
@@ -410,7 +467,7 @@ ssize_t sendmsg(int fd, const struct msghdr *msg, int flags) {
     return real_sendmsg(fd, msg, flags);
 }
 
-int sendmmsg(int fd, struct mmsg_hdr *msgvec, unsigned int vlen, int flags) {
+int sendmmsg(int fd, struct mmsghdr *msgvec, unsigned int vlen, int flags) {
     if (!g_busy && msgvec && g_trace_fd >= 0) {
         g_busy = 1;
         for (unsigned int i = 0; i < vlen; i++) {
@@ -485,12 +542,19 @@ int execvpe(const char *file, char *const argv[], char *const envp[]) {
 int posix_spawn(pid_t *pid, const char *path,
         const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *at,
         char *const argv[], char *const envp[]) {
-    log_tag('X', path);
     if (!real_posix_spawn) {
         real_posix_spawn = (fn_posix_spawn_t)dlsym(RTLD_NEXT, "posix_spawn");
     }
     if (real_posix_spawn) {
-        return real_posix_spawn(pid, path, fa, at, argv, envp);
+        int ret = real_posix_spawn(pid, path, fa, at, argv, envp);
+        if (ret == 0 && pid && *pid > 0) {
+            char b[1040];
+            int n = snprintf(b, sizeof(b), "X %s %d\n", path, (int)*pid);
+            if (n > 0) emit(b, (size_t)n);
+        } else {
+            log_tag('X', path);
+        }
+        return ret;
     }
     return -1;
 }
@@ -498,12 +562,19 @@ int posix_spawn(pid_t *pid, const char *path,
 int posix_spawnp(pid_t *pid, const char *path,
         const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *at,
         char *const argv[], char *const envp[]) {
-    log_tag('X', path);
     if (!real_posix_spawnp) {
         real_posix_spawnp = (fn_posix_spawn_t)dlsym(RTLD_NEXT, "posix_spawnp");
     }
     if (real_posix_spawnp) {
-        return real_posix_spawnp(pid, path, fa, at, argv, envp);
+        int ret = real_posix_spawnp(pid, path, fa, at, argv, envp);
+        if (ret == 0 && pid && *pid > 0) {
+            char b[1040];
+            int n = snprintf(b, sizeof(b), "X %s %d\n", path, (int)*pid);
+            if (n > 0) emit(b, (size_t)n);
+        } else {
+            log_tag('X', path);
+        }
+        return ret;
     }
     return -1;
 }

@@ -1,0 +1,420 @@
+"""Telemetry storage and background writer for mcp-behave runtime monitor.
+
+Logs observation events to structured JSONL sessions and SQLite database.
+Respects XDG_STATE_HOME (~/.local/state/mcp-behave/) and never blocks forwarding.
+Employs a bounded queue; on overflow drops events and records a `telemetry_drop` event.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import queue
+import sqlite3
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from .events import BehavioralEvent, KIND_TELEMETRY_DROP
+
+
+def get_default_state_dir() -> Path:
+    """Return default state directory adhering to XDG_STATE_HOME (~/.local/state/mcp-behave)."""
+    xdg_state = os.environ.get("XDG_STATE_HOME")
+    if xdg_state:
+        base = Path(xdg_state)
+    else:
+        base = Path.home() / ".local" / "state"
+    return base / "mcp-behave"
+
+
+def hash_content(val: Any) -> Dict[str, Any]:
+    """Hash content safely: returns sha256 + first 4 characters + length."""
+    if val is None:
+        return {"sha256": None, "prefix": "", "length": 0}
+    if isinstance(val, str):
+        b = val.encode("utf-8")
+        h = hashlib.sha256(b).hexdigest()
+        prefix = val[:4]
+        return {
+            "sha256": h,
+            "prefix": prefix,
+            "length": len(val),
+        }
+    if isinstance(val, (dict, list)):
+        serialized = json.dumps(val, separators=(",", ":"))
+        b = serialized.encode("utf-8")
+        h = hashlib.sha256(b).hexdigest()
+        prefix = serialized[:4] if len(serialized) >= 4 else serialized
+        return {
+            "sha256": h,
+            "prefix": prefix,
+            "length": len(serialized),
+        }
+    serialized = str(val)
+    b = serialized.encode("utf-8")
+    h = hashlib.sha256(b).hexdigest()
+    prefix = serialized[:4] if len(serialized) >= 4 else serialized
+    return {
+        "sha256": h,
+        "prefix": prefix,
+        "length": len(serialized),
+    }
+
+
+class TelemetryStore:
+    """Non-blocking background telemetry writer for JSONL and SQLite."""
+
+    def __init__(
+        self,
+        session_id: str,
+        server_id: str,
+        state_dir: Optional[Path | str] = None,
+        log_content: bool = False,
+        queue_size: int = 10000,
+        retention_days: int = 14,
+    ):
+        self.session_id = session_id
+        self.server_id = server_id
+        self.state_dir = Path(state_dir) if state_dir else get_default_state_dir()
+        self.log_content = log_content
+        self.retention_days = retention_days
+
+        # Create state subdirectories with mode 0o700
+        self.sessions_dir = self.state_dir / "sessions"
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self.state_dir, 0o700)
+            os.chmod(self.sessions_dir, 0o700)
+        except OSError:
+            pass
+
+        self.jsonl_file = self.sessions_dir / f"{self.session_id}.jsonl"
+        self.db_file = self.state_dir / "telemetry.db"
+
+        # Bounded event queue and drop tracking
+        self._queue: queue.Queue[Optional[BehavioralEvent]] = queue.Queue(maxsize=queue_size)
+        self._dropped_count = 0
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+
+        # Initialize SQLite schema with mode 0o600
+        self._init_sqlite()
+
+        # Auto-clean expired sessions and telemetry records on startup
+        try:
+            self.cleanup_retention(self.retention_days)
+        except Exception:
+            pass
+
+        # Start background writer thread
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop,
+            name=f"telemetry-writer-{session_id[:8]}",
+            daemon=True,
+        )
+        self._writer_thread.start()
+
+    def cleanup_retention(self, retention_days: Optional[int] = None) -> int:
+        """Purge JSONL session files and SQLite events older than retention_days (default 14 days).
+
+        Returns the number of purged session files.
+        """
+        days = retention_days if retention_days is not None else self.retention_days
+        if days <= 0:
+            return 0
+        cutoff = time.time() - (days * 86400.0)
+        purged = 0
+
+        # 1. Purge old JSONL session logs
+        if self.sessions_dir.exists():
+            for p in self.sessions_dir.glob("*.jsonl"):
+                try:
+                    if p.stat().st_mtime < cutoff:
+                        p.unlink(missing_ok=True)
+                        purged += 1
+                except OSError:
+                    pass
+
+        # 2. Purge old SQLite records
+        if self.db_file.exists():
+            try:
+                with sqlite3.connect(self.db_file, timeout=30.0) as conn:
+                    conn.execute("PRAGMA busy_timeout = 30000")
+                    conn.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+                    conn.commit()
+            except Exception:
+                pass
+
+        return purged
+
+    def _init_sqlite(self) -> None:
+        """Create telemetry database table and indices if they do not exist."""
+        for attempt in range(10):
+            try:
+                with sqlite3.connect(self.db_file, timeout=30.0) as conn:
+                    conn.execute("PRAGMA busy_timeout = 30000")
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA synchronous=NORMAL")
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS events (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            ts REAL NOT NULL,
+                            session_id TEXT NOT NULL,
+                            server_id TEXT NOT NULL,
+                            kind TEXT,
+                            pid INTEGER,
+                            ppid INTEGER,
+                            request_id TEXT,
+                            evidence_tier TEXT,
+                            payload_json TEXT
+                        )
+                        """
+                    )
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_server ON events(server_id)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
+
+                    # Append-only cross-session manifest history
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS manifest_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            server_id TEXT NOT NULL,
+                            ts REAL NOT NULL,
+                            manifest_json TEXT NOT NULL,
+                            approved_state TEXT NOT NULL
+                        )
+                        """
+                    )
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_manifest_hist ON manifest_history(server_id, approved_state, ts)")
+                    conn.commit()
+
+                if self.db_file.exists():
+                    try:
+                        os.chmod(self.db_file, 0o600)
+                    except OSError:
+                        pass
+                break
+            except sqlite3.OperationalError as exc:
+                if ("locked" in str(exc).lower() or "busy" in str(exc).lower()) and attempt < 9:
+                    time.sleep(0.02 * (attempt + 1))
+                    continue
+                break
+            except Exception:
+                break
+
+    def get_last_trusted_manifest(self, server_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve the most recent trusted manifest for a server_id, or None if never seen."""
+        if not self.db_file.exists():
+            return None
+        try:
+            with sqlite3.connect(self.db_file, timeout=15.0) as conn:
+                conn.execute("PRAGMA busy_timeout = 15000")
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT manifest_json FROM manifest_history
+                    WHERE server_id = ? AND approved_state = 'trusted'
+                    ORDER BY ts DESC LIMIT 1
+                    """,
+                    (server_id,),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    return json.loads(row[0])
+        except Exception:
+            pass
+        return None
+
+    def save_manifest_history(
+        self,
+        server_id: str,
+        manifest: Dict[str, Any],
+        approved_state: str = "trusted",
+    ) -> None:
+        """Append a manifest snapshot to manifest_history with its approved_state ('trusted' | 'untrusted')."""
+        try:
+            with sqlite3.connect(self.db_file, timeout=15.0) as conn:
+                conn.execute("PRAGMA busy_timeout = 15000")
+                conn.execute(
+                    """
+                    INSERT INTO manifest_history (server_id, ts, manifest_json, approved_state)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (server_id, time.time(), json.dumps(manifest), approved_state),
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+    def record(self, event: BehavioralEvent) -> bool:
+        """Enqueue an event for background recording without blocking.
+
+        Returns True if enqueued, False if dropped due to queue overflow.
+        """
+        # Ensure session_id and server_id are attached
+        if not event.session_id:
+            event.session_id = self.session_id
+        if not event.server_id:
+            event.server_id = self.server_id
+        if event.timestamp is None:
+            event.timestamp = time.time()
+
+        try:
+            self._queue.put_nowait(event)
+            return True
+        except queue.Full:
+            with self._lock:
+                self._dropped_count += 1
+            return False
+
+    def get_dropped_count(self) -> int:
+        """Return the number of events dropped due to queue overflow."""
+        with self._lock:
+            return self._dropped_count
+
+    def _writer_loop(self) -> None:
+        """Background thread loop consuming events and writing to JSONL and SQLite."""
+        db_conn: Optional[sqlite3.Connection] = None
+        try:
+            db_conn = sqlite3.connect(self.db_file, timeout=30.0)
+            db_conn.execute("PRAGMA busy_timeout = 30000")
+            db_conn.execute("PRAGMA journal_mode = WAL")
+            db_conn.execute("PRAGMA synchronous = NORMAL")
+        except Exception:
+            db_conn = None
+
+        jsonl_fp = None
+        try:
+            fd = os.open(self.jsonl_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            jsonl_fp = open(fd, "a", encoding="utf-8")
+            try:
+                os.chmod(self.jsonl_file, 0o600)
+            except OSError:
+                pass
+        except Exception:
+            jsonl_fp = None
+
+        batch_events = []
+        last_flush = time.time()
+
+        while not self._stop_event.is_set() or not self._queue.empty():
+            try:
+                # Check if drops need to be emitted
+                with self._lock:
+                    pending_drops = self._dropped_count
+                    if pending_drops > 0:
+                        self._dropped_count = 0
+                if pending_drops > 0:
+                    drop_event = BehavioralEvent(
+                        event="telemetry_drop",
+                        session_id=self.session_id,
+                        server_id=self.server_id,
+                        kind=KIND_TELEMETRY_DROP,
+                        timestamp=time.time(),
+                        payload={"dropped_count": pending_drops},
+                    )
+                    batch_events.append(drop_event)
+
+                item = self._queue.get(timeout=0.2)
+                if item is None:
+                    # Sentinel for shutdown
+                    break
+                batch_events.append(item)
+            except queue.Empty:
+                pass
+
+            now = time.time()
+            if batch_events and (len(batch_events) >= 100 or now - last_flush >= 1.0 or self._stop_event.is_set()):
+                self._flush_batch(batch_events, jsonl_fp, db_conn)
+                batch_events.clear()
+                last_flush = now
+
+        # Final drain
+        while not self._queue.empty():
+            try:
+                item = self._queue.get_nowait()
+                if item:
+                    batch_events.append(item)
+            except queue.Empty:
+                break
+
+        if batch_events:
+            self._flush_batch(batch_events, jsonl_fp, db_conn)
+
+        if jsonl_fp:
+            try:
+                jsonl_fp.close()
+            except Exception:
+                pass
+        if db_conn:
+            try:
+                db_conn.close()
+            except Exception:
+                pass
+
+    def _flush_batch(
+        self,
+        events: list[BehavioralEvent],
+        jsonl_fp,
+        db_conn: Optional[sqlite3.Connection],
+    ) -> None:
+        """Write a batch of events to JSONL and SQLite."""
+        # 1. JSONL
+        if jsonl_fp:
+            try:
+                for evt in events:
+                    jsonl_fp.write(evt.to_json() + "\n")
+                jsonl_fp.flush()
+            except Exception:
+                pass
+
+        # 2. SQLite
+        if db_conn:
+            for attempt in range(10):
+                try:
+                    db_rows = []
+                    for evt in events:
+                        payload_json = json.dumps(evt.payload) if evt.payload else json.dumps(evt.extra or {})
+                        req_id_str = str(evt.request_id) if evt.request_id is not None else None
+                        db_rows.append((
+                            evt.timestamp or time.time(),
+                            evt.session_id or self.session_id,
+                            evt.server_id or self.server_id,
+                            evt.kind,
+                            evt.pid,
+                            evt.ppid,
+                            req_id_str,
+                            evt.evidence_tier,
+                            payload_json,
+                        ))
+                    db_conn.executemany(
+                        """
+                        INSERT INTO events (
+                            ts, session_id, server_id, kind, pid, ppid, request_id, evidence_tier, payload_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        db_rows,
+                    )
+                    db_conn.commit()
+                    break
+                except sqlite3.OperationalError as exc:
+                    if ("locked" in str(exc).lower() or "busy" in str(exc).lower()) and attempt < 9:
+                        time.sleep(0.02 * (attempt + 1))
+                        continue
+                    break
+                except Exception:
+                    break
+
+    def close(self, timeout: float = 2.0) -> None:
+        """Signal worker to finish and wait for queue drain."""
+        self._stop_event.set()
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            pass
+        self._writer_thread.join(timeout=timeout)

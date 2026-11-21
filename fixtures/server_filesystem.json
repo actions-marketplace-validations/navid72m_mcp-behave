@@ -1,0 +1,8 @@
+{
+  "name": "@modelcontextprotocol/server-filesystem",
+  "category": "clean_reference",
+  "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp/scratch"],
+  "expected_status": "PASSED",
+  "min_score": 80,
+  "forbidden_findings": ["CRITICAL", "STRONG_EVIDENCE", "CONFIRMED"]
+}

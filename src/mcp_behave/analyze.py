@@ -113,7 +113,14 @@ def is_sensitive_path(path: str) -> tuple[bool, str]:
 
     # Generic private key file extensions
     base = Path(norm).name.lower()
-    if base.endswith((".pem", ".key")) and any(s in base for s in ("private", "id_", "secret", "server", "cert")):
+    norm_lower = norm.lower()
+    is_public_ca = (
+        base in ("cacert.pem", "ca-certificates.crt", "ca-bundle.crt", "cert.pem")
+        or base.startswith(("ca-", "cacert"))
+        or "certifi" in norm_lower
+        or "mozilla" in norm_lower
+    )
+    if not is_public_ca and base.endswith((".pem", ".key")) and any(s in base for s in ("private", "priv", "id_", "secret")):
         return True, base
 
     return False, ""
@@ -181,14 +188,15 @@ def real_port(entry: str) -> bool:
 
 
 def _is_native(sample: list[str]) -> bool:
-    """Heuristic: native lines start with 'F ', 'W ', 'U ', 'N ', 'X ', 'M ', or '! '."""
+    """Heuristic: native lines start with 'F ', 'W ', 'U ', 'N ', 'X ', 'M ', 'T ', or '! '."""
     for line in sample:
         s = line.rstrip("\n")
         if not s:
             continue
         if s.startswith("! "):
             return True
-        return len(s) >= 2 and s[0] in "FWUNXM" and s[1] == " "
+        if len(s) >= 2 and s[0] in "FWUNXMT" and s[1] == " ":
+            return True
     return False
 
 

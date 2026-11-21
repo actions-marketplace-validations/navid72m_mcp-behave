@@ -30,14 +30,19 @@
 </p>
 
 ---
+[white paper](docs/mcp_behave_technical_whitepaper.pdf) [![MCPWatch score](https://mcpwatch-zeta.vercel.app/badge/io.github.navid72m__mcp-behave.svg)](https://mcpwatch-zeta.vercel.app/servers/io.github.navid72m__mcp-behave/)
 
-**Runtime behavioral auditor for MCP servers.** Runs an MCP server under
+**Runtime behavioral auditor & security proxy for MCP servers.** Runs an MCP server under
 a runtime tracer (macOS dylib, Linux `LD_PRELOAD`, or `strace`), exercises
 every tool / resource / prompt it advertises, and audits both system-level activity
 (network egress, sensitive file access, subprocess execution) and CSA threat vectors
 (metadata prompt injection, covert Unicode channels, client-side Markdown exfiltration).
 
-Static scanners only read tool descriptions. `mcp-behave` observes what servers actually execute and return.
+In addition to pre-deployment auditing, `mcp-behave wrap` acts as an **inline transparent security proxy**
+between AI clients (Claude Desktop, Cursor, Claude Code) and MCP servers to enforce behavioral lockfiles,
+redact leaked secrets, block canary exfiltration, and sandbox OS syscalls at sub-2ms latency.
+
+Static scanners only read tool descriptions. `mcp-behave` observes, monitors, and enforces what servers actually execute and return.
 
 ![mcp-behave demo](demo.gif)
 
@@ -92,6 +97,128 @@ npm install -g mcp-behave
 - **Linux**: Works natively without `strace` or `SYS_PTRACE` using an `LD_PRELOAD` shared library. Built automatically on first use with `cc` (e.g. `gcc`). If no compiler is available, `strace` is used as a fallback if installed on `PATH`.
 - **Untraced mode**: Run on any platform with `--no-trace` for manifest inspection and rug-pull checks without any runtime tracer.
 
+## 🛡️ Inline Transparent Security Proxy (`mcp-behave wrap`)
+
+`mcp-behave wrap` acts as an inline, zero-overhead, transparent stdio proxy between your AI client (Claude Desktop, Cursor, Claude Code, Cline) and target MCP servers. It inspects JSON-RPC messages and OS syscalls on-the-fly, enforcing behavioral lockfiles, redacting leaked secrets, and isolating server execution.
+
+```mermaid
+flowchart LR
+    Client["AI Client\n(Claude / Cursor)"] <-->|"stdio NDJSON\n(<1.5ms overhead)"| Proxy["mcp-behave wrap\n(Policy & Redaction)"]
+    Proxy <-->|"stdio NDJSON\n(Serialized Queue)"| Server["MCP Server\n(Target Process)"]
+    Proxy -. "OS Tracing & Sandbox" .-> Kernel["Darwin Seatbelt /\nDYLD Tracer"]
+```
+
+### Key Proxy Capabilities
+
+- **Zero Hot-Path Overhead**: Paired per-message overhead $p99 < \mathbf{1.55\text{ ms}}$ (well under the $5.0\text{ ms}$ budget). Clean traffic forwards byte-for-byte immediately.
+- **Active Covert Drift Detection**: Employs non-fingerprintable synthetic re-verification probes with jittered intervals (`--reverify-interval 20`, `--reverify-period 300`) to detect mid-session rug pulls that bypass client startup caches.
+- **Canary Tracking & Anti-Exfiltration**: Tracks in-memory and parameter canaries (`--canary`), instantly blocking unauthorized exfiltration (`code: -32004`).
+- **Inline Payload Redaction (`--redact`)**: Intercepts server responses and automatically replaces detected secrets (AWS, OpenAI, Slack, GitHub tokens, SSH private keys) and canaries with `[REDACTED: <type>]` before reaching the LLM client.
+- **Active Policy Enforcement (`--enforce`)**: Rejects calls to unapproved tools (`code: -32003`) and drops covert schema relaxations.
+- **OS-Layer Kernel Sandboxing (`--sandbox auto`)**: Dynamically compiles and applies Darwin Seatbelt (`.sb`) profiles to restrict unauthorized filesystem writes outside `/tmp` and block non-loopback network egress.
+- **Desktop Alerts (`--notify`)**: Displays native macOS notification alerts when high-severity drift or policy violations occur.
+
+### Running the Proxy
+
+```bash
+# 1. Passive monitoring (observation, canary detection & drift tracking)
+mcp-behave wrap --server my-server -- python -m my_mcp_server
+
+# 2. Strict policy enforcement & inline credential redaction with behavioral lockfile
+mcp-behave wrap \
+  --server my-server \
+  --lockfile mcp-behave.lock.json \
+  --enforce \
+  --redact \
+  --sandbox auto \
+  -- python -m my_mcp_server
+
+# 3. Track canary tokens to catch unauthorized data exfiltration
+mcp-behave wrap \
+  --server my-server \
+  --canary "mcpb_canary_supersecret_xyz" \
+  --enforce \
+  -- python -m my_mcp_server
+```
+
+---
+
+## 🔌 Automated AI Client Integration (`install`, `status`, `uninstall`)
+
+Instead of manually editing JSON configuration files, `mcp-behave` automates integration with your local AI developer clients:
+
+```bash
+# Automatically discover installed clients and wrap their MCP servers:
+mcp-behave install
+
+# Non-destructive install: wraps commands using explicit '--' delimiters
+# Supports Claude Desktop, Cursor (global & workspace), and Claude Code.
+
+# Inspect wrapping status, lockfile association, and blind spots:
+mcp-behave status
+
+# Safely unwrap servers and restore pristine configuration (with .bak rollback safety):
+mcp-behave uninstall
+```
+
+### Manual Configuration Example (Claude Desktop / Cursor)
+
+You can also wrap servers directly in `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "fetch": {
+      "command": "mcp-behave",
+      "args": [
+        "wrap",
+        "--server", "fetch",
+        "--enforce",
+        "--redact",
+        "--lockfile", "/path/to/mcp-behave.lock.json",
+        "--",
+        "uvx", "mcp-server-fetch"
+      ]
+    }
+  }
+}
+```
+
+---
+
+## 🔒 Multi-Server Behavioral Lockfiles (`mcp-behave.lock.json` & `approve`)
+
+While `mcp-behave.lock` pinned single-server audit baselines, **Lockfile V2** (`mcp-behave.lock.json`) establishes multi-server behavioral baselines across your entire workspace:
+
+- **Canonical Schema Hashing**: Computes normalized SHA-256 digests over tool definitions, parameter types, enums, and safety annotations.
+- **Concurrency Safety**: Employs cross-process `flock` locking to support concurrent multi-server wrapping.
+- **Interactive Drift Approval**: When an MCP server updates its tools or schemas, review changes through an interactive terminal diff:
+
+```bash
+# Review drifted manifests and approve or reject behavioral changes:
+mcp-behave approve
+
+# Approve a specific server:
+mcp-behave approve --server fetch
+```
+
+---
+
+## 🏛️ Enterprise MCP Security Gateway Architecture
+
+Milestone 7 extends `mcp-behave` from single developer workstations to distributed enterprise networks with the **Enterprise MCP Security Gateway** ([Full Architecture Specification](docs/gateway_architecture.md)):
+
+- **Multi-Transport Multiplexing**: Translates downstream HTTP/SSE, WebSockets, and Unix Domain Sockets to worker stdio NDJSON streams.
+- **Tiered Worker Isolation**:
+  - *Tier 1 (Host Process)*: Linux Landlock + cgroups v2 / macOS Seatbelt for internal low-risk tools ($< 15\text{ ms}$).
+  - *Tier 2 (MicroVM)*: Firecracker / gVisor (`runsc`) for untrusted community packages ($100 - 250\text{ ms}$).
+  - *Tier 3 (Container)*: Kubernetes rootless Pods / Podman for persistent agent workloads.
+- **Zero-Trust Credential Brokering**: Just-in-Time (JIT) short-lived token injection from HashiCorp Vault / AWS Secrets Manager immediately before tool dispatch; workers never access ambient cloud credentials.
+- **Fleet-Wide GitOps Governance**: Synchronizes `mcp-behave.lock.json` policies across gateway clusters via OCI registries with zero-downtime hot reloading.
+- **SIEM & OTel Streaming**: Real-time export of correlated eBPF kernel syscalls and enforcement events to OpenTelemetry, Splunk, Datadog, and ClickHouse.
+
+---
+
 ## Behavioral Regression Testing (`mcp-behave.lock`)
 
 Just like dependency lockfiles pin package versions, `mcp-behave.lock` pins **runtime behavior**:
@@ -126,7 +253,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run MCP-Behave Check
-        uses: navid72m/mcp-behave@v0.4.4
+        uses: navid72m/mcp-behave@v0.5.0
         with:
           command: "python -m my_server"
           lockfile: "mcp-behave.lock"

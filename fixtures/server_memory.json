@@ -1,0 +1,9 @@
+{
+  "name": "@modelcontextprotocol/server-memory",
+  "category": "clean_reference",
+  "command": ["npx", "-y", "@modelcontextprotocol/server-memory"],
+  "expected_status": "PASSED",
+  "min_score": 90,
+  "forbidden_findings": ["CRITICAL", "STRONG_EVIDENCE", "CONFIRMED"],
+  "expected_privilege": "MINIMAL"
+}

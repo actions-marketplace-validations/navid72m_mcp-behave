@@ -1,0 +1,8 @@
+{
+  "name": "mcp-server-git",
+  "category": "clean_reference",
+  "command": ["uvx", "mcp-server-git", "--repository", "/tmp/scratch-repo"],
+  "expected_status": "PASSED",
+  "min_score": 90,
+  "forbidden_findings": ["CRITICAL", "STRONG_EVIDENCE", "CONFIRMED"]
+}

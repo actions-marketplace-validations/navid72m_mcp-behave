@@ -32,12 +32,15 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <errno.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/param.h>
 #include <spawn.h>
+
+extern char **environ;
 
 /* ---- dyld interpose table macro (Apple-specific) ---------------------- */
 typedef struct { const void *replacement; const void *original; } interpose_t;
@@ -48,37 +51,115 @@ typedef struct { const void *replacement; const void *original; } interpose_t;
 
 /* ---- trace sink ------------------------------------------------------- */
 static int g_trace_fd = -1;
+static int g_is_socket = 0;
 /* Reentrancy guard: our logging path must never itself be logged. */
 static __thread int g_busy = 0;
+static __thread unsigned long g_dropped_records = 0;
+
+static void mcpbehave_init_sink(void) {
+    if (g_trace_fd >= 0) return;
+
+    // 1. Inherited file descriptor (socketpair or non-blocking pipe)
+    const char *fd_env = getenv("MCP_BEHAVE_TRACE_FD");
+    if (fd_env && *fd_env) {
+        int fd = atoi(fd_env);
+        if (fd >= 0) {
+            int fl = fcntl(fd, F_GETFL, 0);
+            if (fl >= 0) {
+                fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+                g_trace_fd = fd;
+                g_is_socket = 1;
+                return;
+            }
+        }
+    }
+
+    // 2. UNIX domain datagram socket in /tmp (strict <= 104-byte sun_path)
+    const char *sock_path = getenv("MCP_BEHAVE_TRACE_SOCK");
+    if (sock_path && *sock_path) {
+        int s = socket(AF_UNIX, SOCK_DGRAM, 0);
+        if (s >= 0) {
+            struct sockaddr_un un;
+            memset(&un, 0, sizeof(un));
+            un.sun_family = AF_UNIX;
+            strncpy(un.sun_path, sock_path, sizeof(un.sun_path) - 1);
+            fcntl(s, F_SETFL, O_NONBLOCK);
+            if (connect(s, (struct sockaddr *)&un, sizeof(un)) == 0) {
+                g_trace_fd = s;
+                g_is_socket = 1;
+                return;
+            }
+            close(s);
+        }
+    }
+
+    // 3. Fallback to file for audit mode
+    const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
+    if (path && *path) {
+        g_trace_fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
+        g_is_socket = 0;
+    }
+}
+
+static void emit(const char *buf, size_t len);
 
 __attribute__((constructor))
 static void mcpbehave_init(void) {
-    const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
-    if (!path || !*path) return;
-    /* Direct call to open() -> the REAL open (interpose does not redirect this
-     * library's own calls). This open is therefore never self-logged. */
-    g_trace_fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
+    mcpbehave_init_sink();
+    if (g_is_socket && g_trace_fd >= 0) {
+        char msg[64];
+        int n = snprintf(msg, sizeof(msg), "T %d READY\n", getpid());
+        if (n > 0) {
+            emit(msg, (size_t)n);
+        }
+    }
+}
+
+__attribute__((destructor))
+static void mcpbehave_fini(void) {
+    if (g_dropped_records > 0 && g_trace_fd >= 0) {
+        char drop_msg[128];
+        int dn = snprintf(drop_msg, sizeof(drop_msg), "! DROPPED %lu\n", g_dropped_records);
+        if (dn > 0) {
+            emit(drop_msg, (size_t)dn);
+        }
+    }
 }
 
 static void emit(const char *buf, size_t len) {
     if (g_trace_fd < 0) {
-        const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
-        if (path && *path) {
-            g_trace_fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-        }
+        mcpbehave_init_sink();
     }
-    if (g_trace_fd < 0) return;
-    ssize_t w = write(g_trace_fd, buf, len);
+    if (g_trace_fd < 0 || !buf || len == 0) return;
+
+    ssize_t w;
+    if (g_is_socket) {
+        w = send(g_trace_fd, buf, len, MSG_DONTWAIT);
+    } else {
+        w = write(g_trace_fd, buf, len);
+    }
+
     if (w < 0) {
-        /* If write fails (e.g. child process closed fds before exec), reopen */
-        const char *path = getenv("MCP_BEHAVE_TRACE_FILE");
-        if (path && *path) {
-            int fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0600);
-            if (fd >= 0) {
-                (void)!write(fd, buf, len);
-                g_trace_fd = fd;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            // Buffer full: drop record without blocking child process
+            g_dropped_records++;
+            return;
+        }
+        // If file descriptor was closed or invalidated, attempt reopen/reconnect
+        g_trace_fd = -1;
+        mcpbehave_init_sink();
+    } else if (g_dropped_records > 0) {
+        // Emit drop alert marker upon buffer recovery
+        char drop_msg[128];
+        int dn = snprintf(drop_msg, sizeof(drop_msg), "! DROPPED %lu\n", g_dropped_records);
+        if (dn > 0) {
+            if (g_is_socket) {
+                (void)!send(g_trace_fd, drop_msg, (size_t)dn, MSG_DONTWAIT);
+            } else {
+                (void)!write(g_trace_fd, drop_msg, (size_t)dn);
             }
         }
+        g_dropped_records = 0;
     }
 }
 
@@ -100,28 +181,6 @@ static void log_tag(char tag, const char *val) {
     g_busy = 0;
 }
 
-static void check_symlink_and_log(const char *path, int is_write) {
-    if (!path || !*path) return;
-    char resolved[MAXPATHLEN];
-    if (realpath(path, resolved)) {
-        if (strcmp(path, resolved) != 0) {
-            log_tag('F', resolved);
-            if (is_write) log_tag('W', resolved);
-        }
-    }
-}
-
-static void check_fd_and_log(int fd, const char *orig_path, int is_write) {
-    if (fd < 0 || !orig_path) return;
-    char fd_path[MAXPATHLEN];
-    if (fcntl(fd, F_GETPATH, fd_path) >= 0 && fd_path[0]) {
-        if (strcmp(orig_path, fd_path) != 0) {
-            log_tag('F', fd_path);
-            if (is_write) log_tag('W', fd_path);
-        }
-    }
-}
-
 /* ---- open / openat ---------------------------------------------------- *
  * open()/openat() are variadic (mode only present with O_CREAT). We take mode
  * via va_arg and forward it, so we never read a garbage register.           */
@@ -135,10 +194,7 @@ int my_open(const char *path, int flags, ...) {
     if (is_write) {
         log_tag('W', path);
     }
-    check_symlink_and_log(path, is_write);
-    int fd = open(path, flags, mode);
-    check_fd_and_log(fd, path, is_write);
-    return fd;
+    return open(path, flags, mode);
 }
 DYLD_INTERPOSE(my_open, open)
 
@@ -152,10 +208,7 @@ int my_openat(int dirfd, const char *path, int flags, ...) {
     if (is_write) {
         log_tag('W', path);
     }
-    check_symlink_and_log(path, is_write);
-    int fd = openat(dirfd, path, flags, mode);
-    check_fd_and_log(fd, path, is_write);
-    return fd;
+    return openat(dirfd, path, flags, mode);
 }
 DYLD_INTERPOSE(my_openat, openat)
 
@@ -227,9 +280,72 @@ ssize_t my_sendmsg(int fd, const struct msghdr *msg, int flags) {
 DYLD_INTERPOSE(my_sendmsg, sendmsg)
 
 /* ---- subprocess launch (posix_spawn, execve, execv, execvp) --- */
+static char **ensure_trace_env(char *const envp[]) {
+    if (!envp) return NULL;
+    const char *dyld = getenv("DYLD_INSERT_LIBRARIES");
+    const char *sock = getenv("MCP_BEHAVE_TRACE_SOCK");
+    const char *fd_env = getenv("MCP_BEHAVE_TRACE_FD");
+    const char *file_env = getenv("MCP_BEHAVE_TRACE_FILE");
+
+    int has_dyld = 0, has_sock = 0, has_fd = 0, has_file = 0;
+    int count = 0;
+    for (int i = 0; envp[i] != NULL; i++) {
+        count++;
+        if (dyld && strncmp(envp[i], "DYLD_INSERT_LIBRARIES=", 22) == 0) has_dyld = 1;
+        if (sock && strncmp(envp[i], "MCP_BEHAVE_TRACE_SOCK=", 22) == 0) has_sock = 1;
+        if (fd_env && strncmp(envp[i], "MCP_BEHAVE_TRACE_FD=", 20) == 0) has_fd = 1;
+        if (file_env && strncmp(envp[i], "MCP_BEHAVE_TRACE_FILE=", 22) == 0) has_file = 1;
+    }
+
+    int to_add = (!has_dyld && dyld ? 1 : 0) +
+                 (!has_sock && sock ? 1 : 0) +
+                 (!has_fd && fd_env ? 1 : 0) +
+                 (!has_file && file_env ? 1 : 0);
+    if (to_add == 0) return (char **)envp;
+
+    char **new_env = malloc((count + to_add + 1) * sizeof(char *));
+    if (!new_env) return (char **)envp;
+
+    int idx = 0;
+    for (int i = 0; i < count; i++) {
+        new_env[idx++] = envp[i];
+    }
+    if (!has_dyld && dyld) {
+        char *entry = malloc(strlen(dyld) + 24);
+        if (entry) {
+            snprintf(entry, strlen(dyld) + 24, "DYLD_INSERT_LIBRARIES=%s", dyld);
+            new_env[idx++] = entry;
+        }
+    }
+    if (!has_sock && sock) {
+        char *entry = malloc(strlen(sock) + 24);
+        if (entry) {
+            snprintf(entry, strlen(sock) + 24, "MCP_BEHAVE_TRACE_SOCK=%s", sock);
+            new_env[idx++] = entry;
+        }
+    }
+    if (!has_fd && fd_env) {
+        char *entry = malloc(strlen(fd_env) + 22);
+        if (entry) {
+            snprintf(entry, strlen(fd_env) + 22, "MCP_BEHAVE_TRACE_FD=%s", fd_env);
+            new_env[idx++] = entry;
+        }
+    }
+    if (!has_file && file_env) {
+        char *entry = malloc(strlen(file_env) + 24);
+        if (entry) {
+            snprintf(entry, strlen(file_env) + 24, "MCP_BEHAVE_TRACE_FILE=%s", file_env);
+            new_env[idx++] = entry;
+        }
+    }
+    new_env[idx] = NULL;
+    return new_env;
+}
+
 int my_execve(const char *path, char *const argv[], char *const envp[]) {
     log_tag('X', path);
-    return execve(path, argv, envp);
+    char **eff_env = envp ? ensure_trace_env(envp) : (char **)environ;
+    return execve(path, argv, eff_env);
 }
 DYLD_INTERPOSE(my_execve, execve)
 
@@ -248,15 +364,31 @@ DYLD_INTERPOSE(my_execvp, execvp)
 int my_posix_spawn(pid_t *pid, const char *path,
         const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *at,
         char *const argv[], char *const envp[]) {
-    log_tag('X', path);
-    return posix_spawn(pid, path, fa, at, argv, envp);
+    char **eff_env = envp ? ensure_trace_env(envp) : (char **)environ;
+    int ret = posix_spawn(pid, path, fa, at, argv, eff_env);
+    if (ret == 0 && pid && *pid > 0) {
+        char b[1040];
+        int n = snprintf(b, sizeof(b), "X %s %d\n", path, (int)*pid);
+        if (n > 0) emit(b, (size_t)n);
+    } else {
+        log_tag('X', path);
+    }
+    return ret;
 }
 DYLD_INTERPOSE(my_posix_spawn, posix_spawn)
 
 int my_posix_spawnp(pid_t *pid, const char *path,
         const posix_spawn_file_actions_t *fa, const posix_spawnattr_t *at,
         char *const argv[], char *const envp[]) {
-    log_tag('X', path);
-    return posix_spawnp(pid, path, fa, at, argv, envp);
+    char **eff_env = envp ? ensure_trace_env(envp) : (char **)environ;
+    int ret = posix_spawnp(pid, path, fa, at, argv, eff_env);
+    if (ret == 0 && pid && *pid > 0) {
+        char b[1040];
+        int n = snprintf(b, sizeof(b), "X %s %d\n", path, (int)*pid);
+        if (n > 0) emit(b, (size_t)n);
+    } else {
+        log_tag('X', path);
+    }
+    return ret;
 }
 DYLD_INTERPOSE(my_posix_spawnp, posix_spawnp)

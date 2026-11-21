@@ -1,0 +1,8 @@
+{
+  "name": "@upstash/context7-mcp",
+  "category": "legitimate_powerful",
+  "command": ["npx", "-y", "@upstash/context7-mcp"],
+  "expected_status": "PASSED",
+  "min_score": 90,
+  "forbidden_findings": ["CRITICAL", "STRONG_EVIDENCE", "CONFIRMED"]
+}

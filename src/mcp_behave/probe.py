@@ -374,6 +374,9 @@ def synth_args(schema: dict | None, round_idx: int = 0, harvested_pool: dict[str
         ("query", ["system status overview", "service health check", "operational metrics"]),
         ("search", ["system status overview", "service health check", "operational metrics"]),
         ("text", ["sample input text", "verified operational data", "standard test request"]),
+        ("time", ["12:00", "14:30", "09:15", "00:00"]),
+        ("timezone", ["UTC", "America/New_York", "Europe/London"]),
+        ("tz", ["UTC", "America/New_York", "Europe/London"]),
         ("name", ["primary_test_item", "worker_node", "default_cluster"]),
         ("id", ["item-101", "node-402", "task-803"]),
     )
@@ -435,6 +438,12 @@ def synth_args(schema: dict | None, round_idx: int = 0, harvested_pool: dict[str
                         "target": ["target", "target_id", "targets", "name"],
                         "report": ["report", "report_id", "reports", "id"],
                         "table": ["table", "table_name", "tables", "name"],
+                        "repo": ["repo", "repository", "repo_path", "path", "dir", "directory"],
+                        "repository": ["repository", "repo", "repo_path", "path", "dir", "directory"],
+                        "path": ["path", "file", "allowed_directories", "directory", "dir", "repo_path", "repo"],
+                        "file": ["file", "path", "filename", "filepath"],
+                        "dir": ["dir", "directory", "allowed_directories", "path", "repo_path", "repo"],
+                        "directory": ["directory", "dir", "allowed_directories", "path", "repo_path", "repo"],
                         "id": ["id", "name"],
                     }
                     for entity_type, cand_keys in aliases.items():
@@ -656,13 +665,16 @@ def _harvest_entities_from_output(text: str, pool: dict[str, list[Any]], tname: 
         if sval not in pool[k]:
             pool[k].append(sval)
 
-    # Derive entity hint from tool name (e.g., list_services -> service, db_list -> db)
+    # Derive entity hint from tool name (e.g., list_services -> service, db_list -> db, list_allowed_directories -> path)
     tool_entity_hint = ""
-    for prefix in ("list_", "get_", "db_", "gitlab_", "deploy_"):
-        if tname.startswith(prefix):
-            raw_suffix = tname[len(prefix):]
-            tool_entity_hint = raw_suffix[:-1] if raw_suffix.endswith("s") else raw_suffix
-            break
+    if "director" in tname.lower():
+        tool_entity_hint = "path"
+    else:
+        for prefix in ("list_", "get_", "db_", "gitlab_", "deploy_"):
+            if tname.startswith(prefix):
+                raw_suffix = tname[len(prefix):]
+                tool_entity_hint = raw_suffix[:-1] if raw_suffix.endswith("s") else raw_suffix
+                break
 
     def _walk(obj, parent_key: str = ""):
         if isinstance(obj, dict):
@@ -678,6 +690,10 @@ def _harvest_entities_from_output(text: str, pool: dict[str, list[Any]], tname: 
                 if isinstance(item, (str, int)) and not isinstance(item, bool):
                     target_key = parent_key or tool_entity_hint or "id"
                     _add_entity(target_key, item)
+                    if "director" in target_key or target_key in ("path", "dir"):
+                        _add_entity("path", item)
+                        _add_entity("dir", item)
+                        _add_entity("directory", item)
                 else:
                     _walk(item, parent_key or tool_entity_hint)
 
@@ -685,8 +701,60 @@ def _harvest_entities_from_output(text: str, pool: dict[str, list[Any]], tname: 
         _walk(data)
     else:
         # Fallback regex extraction for common key-value or table patterns in plain text
-        for match in re.finditer(r'\b(service|name|db|database|job|project|target|id|host|table)\b\s*[:=]\s*([a-zA-Z0-9_\-\.]+)', text, re.IGNORECASE):
+        for match in re.finditer(r'\b(service|name|db|database|job|project|target|id|host|table|path|dir|directory)\b\s*[:=]\s*([a-zA-Z0-9_\-\./]+)', text, re.IGNORECASE):
             _add_entity(match.group(1), match.group(2))
+
+        # Extract any explicit filesystem paths in plain text output
+        for line in text.splitlines():
+            line_clean = line.strip().strip("'\"- ")
+            if line_clean.startswith("/") and len(line_clean) < 256:
+                if not line_clean.startswith(("/usr", "/bin", "/sbin", "/lib")):
+                    _add_entity("path", line_clean)
+                    _add_entity("dir", line_clean)
+                    _add_entity("directory", line_clean)
+                    _add_entity("file", f"{line_clean.rstrip('/')}/test.txt")
+
+
+def _seed_pool_from_cmd(server_cmd: list[str] | None, pool: dict[str, list[Any]]):
+    """Extract candidate filesystem paths or repository targets from CLI command arguments to seed entity pool."""
+    if not server_cmd:
+        return
+    for i, arg in enumerate(server_cmd):
+        val = None
+        key = None
+        if arg in ("--repository", "--repo", "-r") and i + 1 < len(server_cmd):
+            val = server_cmd[i + 1]
+            key = "repo"
+        elif arg.startswith(("--repository=", "--repo=")):
+            val = arg.split("=", 1)[1]
+            key = "repo"
+        elif arg in ("--path", "--dir", "--directory", "--folder", "--workspace", "--root") and i + 1 < len(server_cmd):
+            val = server_cmd[i + 1]
+            key = "path"
+        elif any(arg.startswith(f"{k}=") for k in ("--path", "--dir", "--directory", "--folder", "--workspace", "--root")):
+            val = arg.split("=", 1)[1]
+            key = "path"
+        elif arg.startswith("/") and len(arg) < 256:
+            # Check if this positional arg is a directory or path and not an executable / script
+            if i > 0 and not arg.endswith((".js", ".py", ".sh", ".ts", ".mjs", ".cjs", ".bin")):
+                val = arg
+                key = "path"
+
+        if val:
+            val_clean = val.strip().strip("'\"")
+            keys_to_seed = (
+                ["repo", "repository", "repo_path", "path", "dir", "directory"]
+                if key == "repo"
+                else ["path", "dir", "directory", "folder", "workspace", "repo_path", "repo"]
+            )
+            for k in keys_to_seed:
+                pool.setdefault(k, [])
+                if val_clean not in pool[k]:
+                    pool[k].append(val_clean)
+            pool.setdefault("file", [])
+            test_file = f"{val_clean.rstrip('/')}/test.txt"
+            if test_file not in pool["file"]:
+                pool["file"].append(test_file)
 
 
 def _emit_trace_marker(trace_file: str | None, tag: str, val: str = ""):
@@ -700,7 +768,8 @@ def _emit_trace_marker(trace_file: str | None, tag: str, val: str = ""):
 
 
 async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = False,
-                    trace_file: str | None = None, rounds: int = 1):
+                    trace_file: str | None = None, rounds: int = 1,
+                    server_cmd: list[str] | None = None):
     """Shared logic: discover + exercise tools, resources, prompts on a live session."""
     stats = {
         "tools": {
@@ -720,6 +789,7 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
     tool_history = {}
     executed_tools = set()
     harvested_pool: dict[str, list[Any]] = {}
+    _seed_pool_from_cmd(server_cmd, harvested_pool)
 
     def _eval_tool_call(ok: bool, res: Any, tname: str = "") -> tuple[bool, str]:
         if not ok or res is None:
@@ -853,8 +923,25 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
 
     print(f"[probe] discovered {len(prompts_meta)} prompt(s)")
     for p in prompts_meta:
-        args = {a["name"]: "valid-input" for a in (p.get("arguments") or [])
-                if a.get("required")}
+        args = {}
+        for a in (p.get("arguments") or []):
+            if a.get("required"):
+                aname = a.get("name", "")
+                val = None
+                if harvested_pool:
+                    val_list = harvested_pool.get(aname)
+                    if not val_list:
+                        for ek, cks in (("repo", ["repo", "repo_path", "path"]), ("path", ["path", "dir", "repo_path"])):
+                            if ek in aname:
+                                for ck in cks:
+                                    if ck in harvested_pool and harvested_pool[ck]:
+                                        val_list = harvested_pool[ck]
+                                        break
+                                if val_list:
+                                    break
+                    if val_list:
+                        val = val_list[0]
+                args[aname] = val or "valid-input"
         print(f"[probe] getting prompt {p['name']}({json.dumps(args)})")
         stats["prompts"]["called"] += 1
         _emit_trace_marker(trace_file, "PR_START", p["name"])
@@ -961,7 +1048,8 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 tools_meta, resources_meta, prompts_meta, stats, tool_outputs, tool_history = await _exercise(
-                    session, call_timeout, fuzz=fuzz, trace_file=target_trace_file, rounds=rounds)
+                    session, call_timeout, fuzz=fuzz, trace_file=target_trace_file, rounds=rounds,
+                    server_cmd=server_cmd)
 
         stats["rounds"] = rounds
         stats["tracer"] = tracer_name or ("stdio" if syscalls_available else "none")
@@ -1012,14 +1100,15 @@ async def run_remote(url: str, *, transport: str,
         # streamable_http returns (read, write, _); sse returns (read, write)
         read, write = conn[0], conn[1]
         async with ClientSession(read, write) as session:
-            tools_meta, resources_meta, prompts_meta, stats, tool_outputs = await _exercise(
+            tools_meta, resources_meta, prompts_meta, stats, tool_outputs, tool_history = await _exercise(
                 session, call_timeout, fuzz=fuzz, trace_file=target_trace_file, rounds=rounds)
     stats["rounds"] = rounds
     stats["tracer"] = "remote"
     _write_manifest([url], tools_meta, resources_meta, prompts_meta, stats,
                     tool_outputs=tool_outputs,
                     transport=transport, syscalls_available=False,
-                    manifest_file=target_manifest_file, trace_file=target_trace_file)
+                    manifest_file=target_manifest_file, trace_file=target_trace_file,
+                    tool_history=tool_history)
 
 
 async def fetch_manifest(server_cmd: list[str], *, transport: str = "stdio",

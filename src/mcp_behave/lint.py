@@ -73,6 +73,19 @@ def _match_verb(verbs, text: str | None) -> str | None:
             # Avoid matching noun 'set' (e.g., 'a ranked set', 'result set')
             if re.search(r'\bset(?:s|ting)?\s+(?:the\s+)?[a-z0-9_]+\s*(?:to|=)\b', text, re.IGNORECASE) or re.search(r'\bto\s+set\b', text, re.IGNORECASE):
                 return "set"
+        elif v_clean == "clear":
+            # Match destructive clear actions (e.g. 'clear cache', 'clear data', 'clear all', 'clears history')
+            # Avoid matching adjective 'clear' ('be clear', 'not clear', 'clear steps', 'clear thinking', etc.)
+            if re.search(r'\bclear(?:s|ed|ing)?\s+(?:the\s+|all\s+|entire\s+)?[a-z0-9_]*\s*(?:cache|history|data|buffer|logs?|tables?|state|session|storage|memory|records?|screen|disk|queue)\b|\bclear\s+all\b|\bto\s+clear\b', text, re.IGNORECASE):
+                return "clear"
+            continue
+        elif v_clean == "update":
+            # Avoid matching noun 'updates' (e.g., 'progress updates', 'status updates', 'subscriber updates')
+            if re.search(r'\b(?:progress|status|periodic|regular|subscriber|notification|firmware|software)\s+updates?\b', text, re.IGNORECASE):
+                if not re.search(r'\b(?:to\s+update|updates?\s+(?:the\s+)?[a-z0-9_]+\s*(?:in|to|=)|updating\s+[a-z0-9_]+)\b', text, re.IGNORECASE):
+                    continue
+            if re.search(r'\bupdate(?:s|d|ing)?\b', text, re.IGNORECASE):
+                return "update"
         else:
             if re.search(r'\b' + re.escape(v_clean) + r'(?:s|ed|ing|d|es)?\b', text, re.IGNORECASE):
                 return v_clean
