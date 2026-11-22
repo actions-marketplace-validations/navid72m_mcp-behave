@@ -11,6 +11,7 @@
 [![npm](https://img.shields.io/npm/v/mcp-behave.svg)](https://www.npmjs.com/package/mcp-behave)
 [![MCP Registry](https://img.shields.io/badge/MCP%20Registry-listed-blue)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.navid72m/mcp-behave)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/mcp-behave)](https://pypistats.org/packages/mcp-behave)
 
 mcp-behave is a **CLI-first security tool** for checking what an MCP server actually does—not only what its tool descriptions say it can do. It actively exercises a server's advertised capabilities, observes selected runtime activity, checks protocol metadata and responses, and compares behavior with saved baselines.
 
