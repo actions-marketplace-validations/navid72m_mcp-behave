@@ -13,7 +13,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/mcp-behave?period=total&units=ABBREVIATION&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/mcp-behave)
 
-[![npm downloads](https://img.shields.io/npm/dm/mcp-behave)](https://www.npmjs.com/package/mcp-behave)
+[![npm downloads](https://img.shields.io/npm/dw/mcp-behave)](https://www.npmjs.com/package/mcp-behave)
+
+<a href="https://www.producthunt.com/products/mcp-behave?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-mcp-behave" target="_blank" rel="noopener noreferrer"><img alt="mcp-behave - it audits mcp servers for undeclared and malicious behaviour | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1325928&amp;theme=light&amp;t=1795337645415"></a>
 
 mcp-behave is a **CLI-first security tool** for checking what an MCP server actually does—not only what its tool descriptions say it can do. It actively exercises a server's advertised capabilities, observes selected runtime activity, checks protocol metadata and responses, and compares behavior with saved baselines.
 
