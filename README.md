@@ -24,6 +24,7 @@ It also provides `mcp-behave wrap`, a stdio proxy for monitoring MCP traffic whi
     <img src="demo.gif" alt="mcp-behave demo" width="100%">
   </a>
 </p>
+
 ## Why mcp-behave?
 
 An MCP server can advertise a harmless tool while its implementation performs unexpected operations. For example, a tool described as a local document formatter might also read a credential file or attempt an outbound network connection.
