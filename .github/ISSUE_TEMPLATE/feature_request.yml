@@ -1,0 +1,57 @@
+name: Feature request
+description: Propose an improvement or new capability.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Focus on the problem and the outcome you are trying to achieve; implementation details can be discussed together.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What limitation or user need does this address?
+      placeholder: I am trying to ... but currently ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you would like to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you considered a workaround or a different approach?
+    validations:
+      required: false
+
+  - type: textarea
+    id: security-impact
+    attributes:
+      label: Security, privacy, or compatibility considerations
+      description: Could this change affect trust boundaries, data collection, host access, tracing coverage, performance, or backward compatibility?
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Examples, references, diagrams, or use cases that help explain the request.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions for a similar request.
+          required: true
