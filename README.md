@@ -19,8 +19,10 @@
 mcp-behave is a **CLI-first security tool** for checking what an MCP server actually does—not only what its tool descriptions say it can do. It actively exercises a server's advertised capabilities, observes selected runtime activity, checks protocol metadata and responses, and compares behavior with saved baselines.
 
 It also provides `mcp-behave wrap`, a stdio proxy for monitoring MCP traffic while an AI client uses a server. mcp-behave is CLI-first: it provides terminal, JSON, and SARIF output and does not ship a built-in graphical dashboard.
-<p align = "center">
-![mcp-behave demo](demo.gif)
+<p align="center">
+  <a href="demo.gif">
+    <img src="demo.gif" alt="mcp-behave demo" width="100%">
+  </a>
 </p>
 ## Why mcp-behave?
 
