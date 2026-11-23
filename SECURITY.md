@@ -22,7 +22,7 @@ Please report suspected vulnerabilities privately. Examples include sandbox esca
 You can report a vulnerability through either of these channels:
 
 1. **GitHub Private Vulnerability Reporting:** [Submit a private report](https://github.com/navid72m/mcp-behave/security/advisories/new).
-2. **Email:** `security@navidmirnouri.com`.
+2. **Email:** `navid72m@gmail.com`.
 
 Please include, where possible:
 
