@@ -1,0 +1,63 @@
+name: Usage question
+description: Ask for help using or understanding mcp-behave.
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for using mcp-behave. Search existing issues first, and remove secrets, credentials, personal data, and sensitive local paths from anything you share. For suspected vulnerabilities, use the private reporting process in SECURITY.md instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: mcp-behave version
+      placeholder: "e.g. 0.5.3"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What are you trying to do?
+      description: Describe the goal and what is unclear.
+    validations:
+      required: true
+
+  - type: textarea
+    id: command-output
+    attributes:
+      label: Command and relevant output
+      description: Include a minimal, redacted example if possible.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for a similar question.
+          required: true
+        - label: I removed secrets and sensitive information.
+          required: true

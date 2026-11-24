@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing to `mcp-behave`! We welcome contributions that improve observation trustworthiness, expand behavioral regression testing, harden sandbox defenses, and reduce false positives.
 
+Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before participating. For security vulnerabilities, follow the private reporting process in [SECURITY.md](SECURITY.md) rather than opening a public issue.
+
 ---
 
 ## 1. Development Setup
@@ -9,11 +11,13 @@ Thank you for your interest in contributing to `mcp-behave`! We welcome contribu
 `mcp-behave` uses [`uv`](https://github.com/astral-sh/uv) for fast, deterministic Python environment management.
 
 ### Prerequisites
+
 - Python 3.10, 3.11, or 3.12
 - C compiler (`clang` on macOS; `gcc` or `clang` on Linux)
 - `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh` or `brew install uv`)
 
 ### Clone and Install
+
 ```bash
 git clone https://github.com/navid72m/mcp-behave.git
 cd mcp-behave
@@ -27,11 +31,13 @@ uv sync
 ## 2. Running Tests
 
 Run the full test suite using `pytest`:
+
 ```bash
 uv run pytest
 ```
 
 Run tests matching specific keywords or files:
+
 ```bash
 uv run pytest tests/test_production_hardening.py
 uv run pytest -k "lockfile or canary"
@@ -55,6 +61,7 @@ uv run pytest -k "lockfile or canary"
 ## 4. Behavioral Lockfiles in Development
 
 When testing server targets:
+
 ```bash
 # Generate baseline lockfile
 uv run mcp-behave init python targets/honest_server.py --lockfile test.lock
@@ -68,6 +75,7 @@ uv run mcp-behave check python targets/honest_server.py --lockfile test.lock
 ## 5. Adding Evasion & Test Targets
 
 When adding new test servers to `targets/`:
+
 1. Keep fixtures minimal and dependency-free.
 2. Honest targets must score **100% clean with zero findings**.
 3. Malicious/evasive targets must clearly demonstrate a specific behavior (e.g. symlink traversal, delayed network beacon, secret harvesting).
@@ -81,3 +89,9 @@ When adding new test servers to `targets/`:
 2. **Preserve comments & docs:** Maintain existing docstrings and explanatory comments.
 3. **No host contamination:** New tests must never access real user credentials or host files. Always rely on canary isolation or `tmp_path`.
 4. **Clean commits:** Use conventional commit messages (`feat:`, `fix:`, `docs:`, `test:`).
+5. **Explain behavior changes:** Include the threat scenario or user-facing behavior your change addresses, plus any known limitations.
+6. **Keep changes focused:** Prefer a small pull request that is straightforward to review.
+
+You do not need to open an issue before every contribution. For substantial changes, opening an issue first can help agree on the approach before investing in implementation.
+
+Thank you for helping make `mcp-behave` more reliable and useful.
