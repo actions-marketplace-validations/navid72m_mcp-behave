@@ -256,7 +256,11 @@ def main(argv=None):
         if args.sandbox and args.sandbox != "none":
             tracer_label = f"sandbox ({args.sandbox})"
         else:
-            active_tracer = probe_mod.detect_tracer(tracer_choice)
+            try:
+                active_tracer = probe_mod.detect_tracer(tracer_choice)
+            except RuntimeError as exc:
+                print(f"mcp-behave: {exc}", file=sys.stderr)
+                return 2
             tracer_label = {
                 "ebpf": "linux-ebpf",
                 "dylib": "macos-dylib",

@@ -10,6 +10,7 @@ import asyncio
 import copy
 import random
 import re
+import threading
 import time
 import uuid
 from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple
@@ -309,6 +310,7 @@ class ManifestTracker:
         live_identity: Optional[Dict[str, Any]] = None,
         prior_manifest: Optional[Dict[str, Any]] = None,
         probe_timeout: float = 30.0,
+        clock: Optional[Callable[[], float]] = None,
     ):
         self.session_id = session_id
         self.server_id = server_id
@@ -354,13 +356,17 @@ class ManifestTracker:
         self._client_pending_tools: List[Dict[str, Any]] = []
         self._client_pagination_timer: Optional[asyncio.TimerHandle] = None
 
-        # Active re-verification state with 600s probe expiry retention
+        # Active re-verification state with bounded 600s probe & tombstone retention
+        self._clock: Callable[[], float] = clock or time.time
+        self._probe_lock = threading.RLock()
         self._issued_probe_ids: Dict[Any, float] = {}  # probe_id -> issued timestamp
         self._probe_expiry: float = 600.0
+        self._tombstone_expiry: float = 600.0
+        self._max_tracked_probes: int = 1000
         self._probe_in_flight = False
         self._probe_generation: int = 0
         self._active_probe_id: Optional[Any] = None
-        self._tombstoned_probe_ids: Set[Any] = set()
+        self._tombstoned_probe_ids: Dict[Any, float] = {}  # probe_id -> tombstoned timestamp
         self._last_probe_time: float = 0.0
         self._tool_calls_since_last_probe: int = 0
         self._seen_tools: Set[str] = set()
@@ -433,16 +439,53 @@ class ManifestTracker:
                 pass
             self._probe_timer = None
 
+    def _prune_probe_tracking(self, now: float) -> None:
+        """Prune expired and excess probe IDs and tombstones (caller holds _probe_lock)."""
+        expired_issued = [
+            pid for pid, ts in self._issued_probe_ids.items()
+            if (now - ts) > self._probe_expiry
+        ]
+        for pid in expired_issued:
+            self._issued_probe_ids.pop(pid, None)
+
+        expired_tombstones = [
+            pid for pid, ts in self._tombstoned_probe_ids.items()
+            if (now - ts) > self._tombstone_expiry
+        ]
+        for pid in expired_tombstones:
+            self._tombstoned_probe_ids.pop(pid, None)
+
+        if len(self._issued_probe_ids) > self._max_tracked_probes:
+            overflow = len(self._issued_probe_ids) - self._max_tracked_probes
+            oldest = sorted(self._issued_probe_ids.items(), key=lambda kv: kv[1])[:overflow]
+            for pid, _ in oldest:
+                self._issued_probe_ids.pop(pid, None)
+
+        if len(self._tombstoned_probe_ids) > self._max_tracked_probes:
+            overflow = len(self._tombstoned_probe_ids) - self._max_tracked_probes
+            oldest = sorted(self._tombstoned_probe_ids.items(), key=lambda kv: kv[1])[:overflow]
+            for pid, _ in oldest:
+                self._tombstoned_probe_ids.pop(pid, None)
+
+    def _tombstone_probe_id(self, probe_id: Any, now: Optional[float] = None) -> None:
+        """Consume and tombstone a probe ID with bounded retention."""
+        ts = self._clock() if now is None else now
+        with self._probe_lock:
+            self._issued_probe_ids.pop(probe_id, None)
+            self._tombstoned_probe_ids[probe_id] = ts
+            self._prune_probe_tracking(ts)
+
     def _on_probe_timeout(self, probe_id: Any) -> None:
         """Handle timeout when synthetic probe receives no response."""
-        self._tombstoned_probe_ids.add(probe_id)
-        if self._active_probe_id == probe_id:
-            self._active_probe_id = None
-        if not self._probe_in_flight:
-            return
-        self._probe_in_flight = False
-        self._probe_pagination_tools.clear()
-        self._probe_timer = None
+        with self._probe_lock:
+            self._tombstone_probe_id(probe_id)
+            if self._active_probe_id == probe_id:
+                self._active_probe_id = None
+            if not self._probe_in_flight:
+                return
+            self._probe_in_flight = False
+            self._probe_pagination_tools.clear()
+            self._probe_timer = None
 
         evt = BehavioralEvent(
             event="probe_timeout",
@@ -489,13 +532,10 @@ class ManifestTracker:
 
     def generate_probe_id(self, exclude_ids: Optional[Set[Any]] = None) -> Any:
         """Generate synthetic probe ID mimicking client format while avoiding collisions."""
-        now = time.time()
-        # Purge expired probe IDs
-        expired = [pid for pid, ts in self._issued_probe_ids.items() if (now - ts) > self._probe_expiry]
-        for pid in expired:
-            self._issued_probe_ids.pop(pid, None)
-
-        excluded = set(self._issued_probe_ids.keys())
+        now = self._clock()
+        with self._probe_lock:
+            self._prune_probe_tracking(now)
+            excluded = set(self._issued_probe_ids.keys()) | set(self._tombstoned_probe_ids.keys())
         if exclude_ids:
             excluded |= set(exclude_ids)
         if self.get_active_ids_fn:
@@ -541,12 +581,33 @@ class ManifestTracker:
                     return candidate
 
     def is_probe_response(self, resp_id: Any) -> bool:
-        """Check if response ID matches an issued probe ID within the 600s retention window."""
-        now = time.time()
-        expired = [pid for pid, ts in self._issued_probe_ids.items() if (now - ts) > self._probe_expiry]
-        for pid in expired:
-            self._issued_probe_ids.pop(pid, None)
-        return resp_id in self._issued_probe_ids
+        """Check if response ID matches an issued probe ID within the retention window."""
+        now = self._clock()
+        with self._probe_lock:
+            self._prune_probe_tracking(now)
+            return resp_id in self._issued_probe_ids
+
+    def is_tombstoned_probe_id(self, resp_id: Any) -> bool:
+        """Check if response ID is a tombstoned probe ID within the late-response window."""
+        now = self._clock()
+        with self._probe_lock:
+            self._prune_probe_tracking(now)
+            return resp_id in self._tombstoned_probe_ids
+
+    def has_tracked_probes(self) -> bool:
+        """Return True if any issued or tombstoned probe IDs are currently tracked."""
+        with self._probe_lock:
+            return bool(self._issued_probe_ids or self._tombstoned_probe_ids)
+
+    def retire_probe_if_tombstoned(self, client_msg_id: Any) -> bool:
+        """Retire a tombstoned probe ID if a legitimate client request reuses it."""
+        if client_msg_id is None or isinstance(client_msg_id, bool):
+            return False
+        with self._probe_lock:
+            if client_msg_id in self._tombstoned_probe_ids and client_msg_id != self._active_probe_id:
+                self._tombstoned_probe_ids.pop(client_msg_id, None)
+                return True
+            return False
 
     def mark_list_changed(self, primitive: str) -> None:
         """Record server-emitted notifications/*_changed."""
@@ -589,22 +650,23 @@ class ManifestTracker:
         if not self.enable_reverify or not self.initialized or not self.client_initialized:
             return False
 
-        now = time.time()
-        # Coalesce: at most 1 probe in flight, minimum interval 10s
-        if self._probe_in_flight:
-            return False
-        if (now - self._last_probe_time) < self.min_probe_interval:
-            return False
+        now = self._clock()
+        with self._probe_lock:
+            # Coalesce: at most 1 probe in flight, minimum interval 10s
+            if self._probe_in_flight:
+                return False
+            if (now - self._last_probe_time) < self.min_probe_interval:
+                return False
 
-        self._probe_in_flight = True
-        self._last_probe_time = now
-        self._tool_calls_since_last_probe = 0
-        self._probe_generation += 1
+            self._probe_in_flight = True
+            self._last_probe_time = now
+            self._tool_calls_since_last_probe = 0
+            self._probe_generation += 1
 
-        probe_id = self.generate_probe_id()
-        self._active_probe_id = probe_id
-        self._issued_probe_ids[probe_id] = now
-        self._probe_pagination_tools.clear()
+            probe_id = self.generate_probe_id()
+            self._active_probe_id = probe_id
+            self._issued_probe_ids[probe_id] = now
+            self._probe_pagination_tools.clear()
 
         # Arm probe timeout timer (default 30s)
         if self._probe_timer:
@@ -713,82 +775,100 @@ class ManifestTracker:
         Returns:
             (events_to_emit, is_probe_response)
         """
-        is_probe = self.is_probe_response(resp_id)
+        now = self._clock()
+        with self._probe_lock:
+            self._prune_probe_tracking(now)
 
-        # Item 2: Probe generation isolation & tombstoning
-        # If response belongs to a tombstoned or inactive probe, drop it immediately
-        if resp_id in self._tombstoned_probe_ids or (self._active_probe_id is not None and resp_id != self._active_probe_id):
-            return [], True
+            # Item 1: Drop tombstoned probe IDs unconditionally
+            if resp_id in self._tombstoned_probe_ids:
+                return [], True
 
-        if is_error or not isinstance(result, dict):
+            is_probe = resp_id in self._issued_probe_ids
+
+            # 1. Handle synthetic proxy probe response
             if is_probe:
+                if self._active_probe_id is None and self._probe_in_flight:
+                    self._active_probe_id = resp_id
+
+                # Strictly single-use probe IDs: tombstone and drop stale/out-of-order arrivals
+                if self._active_probe_id is None or resp_id != self._active_probe_id:
+                    self._tombstone_probe_id(resp_id, now)
+                    return [], True
+
+                # Immediately consume and tombstone this valid single-use probe ID
+                self._tombstone_probe_id(resp_id, now)
+
+                if is_error or not isinstance(result, dict):
+                    if self._probe_timer:
+                        try:
+                            self._probe_timer.cancel()
+                        except Exception:
+                            pass
+                        self._probe_timer = None
+                    self._probe_in_flight = False
+                    self._active_probe_id = None
+                    # Proxy probe error is logged as info and ignored
+                    evt = BehavioralEvent(
+                        event="probe_error",
+                        session_id=self.session_id,
+                        server_id=self.server_id,
+                        kind=KIND_MANIFEST_DRIFT,
+                        severity=SEVERITY_INFO,
+                        source="monitor",
+                        evidence_tier=EVIDENCE_TIER_OBSERVED,
+                        timestamp=self._clock(),
+                        payload={"message": "Server returned error on synthetic probe; ignored", "would_block": False},
+                    )
+                    return [evt], True
+
+                raw_tools = result.get("tools") or []
+                next_cursor = result.get("nextCursor")
+
                 if self._probe_timer:
                     try:
                         self._probe_timer.cancel()
                     except Exception:
                         pass
                     self._probe_timer = None
-                self._probe_in_flight = False
-                self._active_probe_id = None
-                # Proxy probe error is logged as info and ignored
-                evt = BehavioralEvent(
-                    event="probe_error",
-                    session_id=self.session_id,
-                    server_id=self.server_id,
-                    kind=KIND_MANIFEST_DRIFT,
-                    severity=SEVERITY_INFO,
-                    source="monitor",
-                    evidence_tier=EVIDENCE_TIER_OBSERVED,
-                    timestamp=time.time(),
-                    payload={"message": "Server returned error on synthetic probe; ignored", "would_block": False},
-                )
-                return [evt], True
+
+                self._probe_pagination_tools.extend(raw_tools)
+                if next_cursor:
+                    # Keep probe in flight during multi-page pagination
+                    self._probe_in_flight = True
+                    self._probe_generation += 1
+                    next_id = self.generate_probe_id()
+                    self._active_probe_id = next_id
+                    self._issued_probe_ids[next_id] = self._clock()
+                    if self.loop and self.loop.is_running():
+                        self._probe_timer = self.loop.call_later(
+                            self.probe_timeout, self._on_probe_timeout, next_id
+                        )
+                    req_obj = {
+                        "jsonrpc": "2.0",
+                        "id": next_id,
+                        "method": "tools/list",
+                        "params": {"cursor": next_cursor},
+                    }
+                    import json
+                    probe_line = json.dumps(req_obj).encode("utf-8") + b"\n"
+                    if self.send_probe_fn:
+                        self._schedule_coroutine(self.send_probe_fn(probe_line))
+                    return [], True
+                else:
+                    self._probe_in_flight = False
+                    self._active_probe_id = None
+                    completed_tools = list(self._probe_pagination_tools)
+                    self._probe_pagination_tools.clear()
+                    events = self._evaluate_tools_manifest(completed_tools, drift_origin="proxy_observed")
+                    return events, True
+
+        # 2. Handle client-initiated tools/list response
+        if is_error or not isinstance(result, dict):
             return [], False
 
         raw_tools = result.get("tools") or []
         next_cursor = result.get("nextCursor")
 
-        # 1. Handle synthetic proxy probe response
-        if is_probe:
-            if self._probe_timer:
-                try:
-                    self._probe_timer.cancel()
-                except Exception:
-                    pass
-                self._probe_timer = None
-
-            self._probe_pagination_tools.extend(raw_tools)
-            if next_cursor:
-                # Keep probe in flight during multi-page pagination
-                self._probe_in_flight = True
-                self._probe_generation += 1
-                next_id = self.generate_probe_id()
-                self._active_probe_id = next_id
-                self._issued_probe_ids[next_id] = time.time()
-                if self.loop and self.loop.is_running():
-                    self._probe_timer = self.loop.call_later(
-                        self.probe_timeout, self._on_probe_timeout, next_id
-                    )
-                req_obj = {
-                    "jsonrpc": "2.0",
-                    "id": next_id,
-                    "method": "tools/list",
-                    "params": {"cursor": next_cursor},
-                }
-                import json
-                probe_line = json.dumps(req_obj).encode("utf-8") + b"\n"
-                if self.send_probe_fn:
-                    self._schedule_coroutine(self.send_probe_fn(probe_line))
-                return [], True
-            else:
-                self._probe_in_flight = False
-                self._active_probe_id = None
-                completed_tools = list(self._probe_pagination_tools)
-                self._probe_pagination_tools.clear()
-                events = self._evaluate_tools_manifest(completed_tools, drift_origin="proxy_observed")
-                return events, True
-
-        # 2. Handle client-initiated tools/list response
         self._client_pending_tools.extend(raw_tools)
         if next_cursor:
             # Start client pagination timeout (default 30s)
@@ -930,6 +1010,9 @@ class ManifestTracker:
                 },
             )
             return [evt]
+
+        # Complete manifest observation: promote/reset partial flag
+        self.baseline_is_partial = False
 
         # 1. First observation establishes the session TOFU baseline
         if self.tools_baseline is None:

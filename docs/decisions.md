@@ -325,3 +325,11 @@ This document records key architectural and design decisions made across milesto
   - Consolidate initialization into a single constructor in `linux_tracer.c`.
   - Add `__attribute__((destructor))` in `macos_tracer.c` to emit final `! DROPPED <count>` datagrams upon process exit.
 - **Status**: Implemented & verified (`src/mcp_behave/linux_tracer.c`, `src/mcp_behave/macos_tracer.c`).
+
+### ADR-041: Same-UID Tracer Trust Boundary and Per-PID Coverage Tracking
+- **Context**: In `wrap.py`, if direct child process handshake timed out, accepting a handshake from any descendant PID and marking `tracing_status="active"` masked launcher blind spots. Furthermore, the security boundary between user-space interposition and monitored processes executing under the same UID required clear threat model specification.
+- **Decision**:
+  - In `wrap.py`, strictly check `tracer_server.wait_for_pid_handshake(child_proc.pid)`. If the direct launcher fails to handshake, emit a high-severity `blind_spot` event (`reason="launcher_dylib_handshake_timeout"`).
+  - If descendants subsequently handshook via `tracer_server.has_any_handshake()`, set `tracing_status="partial"` (`tracing_reason="descendant_only"`). If no PID handshook, set `tracing_status="disabled"`.
+  - Formally document the Same-UID Tracer Trust Boundary: User-space interposition (`LD_PRELOAD` / `DYLD_INSERT_LIBRARIES`) runs within the monitored process address space under the same UID. It provides lightweight behavioral observability and audit logging, but does not provide kernel-enforced sandboxing against an active adversary modifying user-space memory or syscalls.
+- **Status**: Implemented & verified (`src/mcp_behave/wrap.py`, `tests/test_remediation_v054.py`).

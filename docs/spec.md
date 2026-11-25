@@ -279,11 +279,12 @@ Violations in instructions or descriptions are tagged `HIGH` with `would_block: 
 - Next session queries `WHERE server_id = ? AND approved_state = 'trusted' ORDER BY ts DESC LIMIT 1`. Thus, neither rug pulls nor partial pagination timeouts can poison future baselines.
 - Cross-session drift against the trusted baseline is evaluated on the first tools list. If `serverInfo.version` bumped and changes are purely additive, findings are classified as `SEVERITY_MEDIUM`.
 
-### 5.8 User-Space Interposition & Blind Spot Threat Model
-- User-space dynamic library interposition (`DYLD_INSERT_LIBRARIES` on macOS, `LD_PRELOAD` on Linux) constitutes **cooperative behavioral telemetry**, not kernel-level tamper-proof confinement against an active adversary with same-UID process execution capabilities.
-- To detect evasions (e.g. hardened binaries, macOS System Integrity Protection stripping environment variables, statically-linked binaries, or intermediary wrappers like `npx`/`uvx`), `mcp-behave` implements per-PID handshake tracking:
+### 5.8 User-Space Interposition & Same-UID Tracer Trust Boundary
+- **Same-UID Boundary Definition**: User-space dynamic library interposition (`DYLD_INSERT_LIBRARIES` on macOS, `LD_PRELOAD` on Linux) runs within the monitored process address space under the same UID. It provides lightweight behavioral observability and audit logging, but does not provide kernel-enforced sandboxing against an active adversary modifying user-space memory or issuing direct un-interposed syscalls.
+- To detect evasions and blind spots (e.g. hardened binaries, macOS System Integrity Protection (SIP) stripping environment variables, statically-linked binaries, or intermediary launchers like `npx`/`uvx`), `mcp-behave` implements per-PID handshake tracking:
   - Spawned child and descendant PIDs are tracked via `posix_spawn` / `exec` interposition tags (`X <path> <child_pid>`).
-  - Each PID must report ready via `T <pid> READY` within a 500 ms grace period (`wait_for_pid_handshake`).
+  - Direct child launcher must report ready via `T <pid> READY` within 500 ms (`wait_for_pid_handshake`). If it fails, a high-severity `blind_spot` event (`reason="launcher_dylib_handshake_timeout"`) is emitted.
+  - If direct launcher times out but descendants report ready, tracing status is classified as `partial` (`reason="descendant_only"`).
   - Any uninstrumented child process triggers a high-severity `blind_spot` behavioral event (`reason="descendant_dylib_handshake_timeout"`), preventing uninstrumented sessions from appearing clean.
   - Heavy canonicalization operations (`realpath()`, `fcntl(F_GETPATH)`) are strictly deferred outside C interposition hooks to asynchronous Python processing, maintaining $<0.5$ ms child open latency.
 

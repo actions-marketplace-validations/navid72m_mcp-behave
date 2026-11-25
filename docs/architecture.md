@@ -281,3 +281,49 @@ Mitigations include random timing jitter ($\pm 10-20\%$), minimum 10s cooldown, 
 
 ### 5.9 Scope Boundary (Pre-M3)
 Milestone 2 strictly focuses on protocol monitoring, manifest tracking, prompt injection detection, and drift alerting. No Milestone 3 behavioral lockfile schemas (`mcp-behave.lock.json`), filesystem enforcement, or network enforcement hooks are introduced in this phase.
+
+### Stdio proxy shutdown
+
+On client EOF, `wrap` gives the child stdin writer up to one second
+to flush queued input, then closes child stdin. The configured
+`--grace-period` (three seconds by default) is shared between relaying final
+stdout and allowing the child to exit. Cancellation and exceptions skip the
+remaining grace period. Cleanup gives cancelled proxy tasks one second to stop
+and allows up to one second to recover ownership of a spawn still in progress.
+
+The target starts in a new session, and group signals use the group ID assigned
+at spawn. A root exit can start shutdown even when descendants still hold
+subprocess pipes open. Cleanup checks the group after root exit, gives SIGTERM
+one second, then sends SIGKILL if needed and checks the group for another second.
+If root status is still missing, cleanup gives the subprocess watcher one more
+second. The proxy preserves an available root status and uses 137 when the root
+status is unavailable. Cancellation and runtime exceptions still propagate.
+
+Cleanup closes owned subprocess and client transports. The client stdout
+transport gets one second to flush before it is aborted. The tracer socket is
+closed without a final drain so a sender cannot extend shutdown by refilling
+the socket. The proxy reports possible loss of unread tracer datagrams on
+stderr. Recorded events represent partial observation when datagrams are lost.
+The protocol monitor can wait up to
+two seconds to enqueue its stop marker and two seconds to join its worker.
+Telemetry can wait up to two seconds to join its writer. A worker can continue
+running after the join deadline, and the proxy reports workers still running
+when close returns. These deadlines bound the shutdown waits. Session
+finalization can also write an observed manifest
+snapshot, which uses the telemetry store's existing 15-second SQLite busy
+timeout.
+
+The proxy reports observed cleanup errors and expired deadlines on stderr and
+continues closing independent resources. Group-existence checks can include
+zombies awaiting reaping by another process. POSIX group signaling does not
+cover descendants that moved to a different group or session, and offers no
+stable group handle to rule out numeric ID reuse. If spawn ownership arrives
+after its deadline, late cleanup requires the event loop to remain running.
+
+### Message Framing and Buffering Limits
+
+- **Maximum framed message size**: `StreamingFramer` enforces a `16 MiB` (`max_line_bytes`) limit per newline-delimited JSON-RPC message and raises `ValueError` if exceeded.
+- **Client-to-server queue byte budget**: `_BoundedByteQueue` enforces a `16 MiB` (`STDIN_QUEUE_MAX_BYTES`) queued byte budget; when empty, one valid message up to `16 MiB` is still accepted so large messages do not deadlock.
+- **Queue item capacity**: `_BoundedByteQueue` caps queued messages at `256` items (`STDIN_QUEUE_MAX_ITEMS`).
+- **Observational telemetry buffering**: `ProtocolMonitor._line_queue` and `TelemetryStore._queue` are independently bounded at `10,000` items each (loss-tolerant, emitting `telemetry_drop` on overflow), and `ProtocolMonitor._active_requests` is capped at `10,000` entries.
+- **Total process memory consumption**: Total proxy RSS includes the Python runtime, OS pipe buffers, SQLite/JSONL state, and in-flight objects, and is not strictly bounded to `32 MiB`.

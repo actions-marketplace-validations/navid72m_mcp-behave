@@ -38,17 +38,27 @@ from .scanner import ContentScanner
 from .telemetry import TelemetryStore, hash_content
 
 
+MAX_MESSAGE_BYTES = 16 * 1024 * 1024  # 16 MiB
+
+
 class StreamingFramer:
     """Chunked streaming framer for newline-delimited JSON-RPC messages.
 
     Reads in chunks (default 1 MB) to avoid StreamReader.readline() limits,
-    buffering arbitrary message sizes (>1 MB) and yielding complete line bytes immediately.
-    On EOF, any trailing partial line is flushed as-is.
+    buffering messages up to max_line_bytes (default 16 MiB) and yielding complete
+    line bytes immediately. On EOF, any trailing partial line is flushed as-is.
+    Raises ValueError if an incoming line exceeds max_line_bytes.
     """
 
-    def __init__(self, reader: asyncio.StreamReader, chunk_size: int = 1048576):
+    def __init__(
+        self,
+        reader: asyncio.StreamReader,
+        chunk_size: int = 1048576,
+        max_line_bytes: int = MAX_MESSAGE_BYTES,
+    ):
         self.reader = reader
         self.chunk_size = chunk_size
+        self.max_line_bytes = max_line_bytes
         self.buffer = bytearray()
 
     async def __aiter__(self) -> AsyncIterator[Tuple[bytes, bool]]:
@@ -72,6 +82,11 @@ class StreamingFramer:
             while True:
                 nl_idx = self.buffer.find(b"\n", search_start)
                 if nl_idx == -1:
+                    if len(self.buffer) > self.max_line_bytes:
+                        self.buffer.clear()
+                        raise ValueError(
+                            f"JSON-RPC message exceeded maximum supported size ({self.max_line_bytes} bytes)"
+                        )
                     search_start = len(self.buffer)
                     break
                 if nl_idx == len(self.buffer) - 1:
@@ -136,6 +151,8 @@ class ProtocolMonitor:
 
         # Active request tracking: request_id -> {"start_ts": float, "method": str, "tool_name": Optional[str]}
         self._active_requests: Dict[Any, Dict[str, Any]] = {}
+        self._translated_ids: Dict[str, Any] = {}  # proxy_id -> original_client_id
+        self._translation_seq: int = 0
         self._lock = threading.Lock()
 
         # TOFU Manifest and Active Re-verification Tracker
@@ -196,22 +213,96 @@ class ProtocolMonitor:
                     pass
 
     def is_synthetic_probe_response(self, line_bytes: bytes) -> bool:
-        """Check if incoming server message is a response to an active proxy probe."""
-        if not self.manifest_tracker:
+        """Check if incoming server message is a response to an active/recent proxy probe."""
+        if not self.manifest_tracker or not self.manifest_tracker.has_tracked_probes():
             return False
-        header = line_bytes[:2048]
-        id_m = re.search(rb'"id"\s*:\s*([0-9]+|"[^"]+")', header)
-        if not id_m:
+        if b'"id"' not in line_bytes and b'"\\u' not in line_bytes:
             return False
-        raw_id = id_m.group(1).decode("utf-8", errors="replace")
-        if raw_id.startswith('"') and raw_id.endswith('"'):
-            msg_id = raw_id[1:-1]
-        else:
-            try:
-                msg_id = int(raw_id)
-            except ValueError:
-                msg_id = raw_id
-        return self.manifest_tracker.is_probe_response(msg_id)
+        try:
+            msg = json.loads(line_bytes.decode("utf-8", errors="replace"))
+        except Exception:
+            return False
+        if not isinstance(msg, dict):
+            return False
+        # Must be a JSON-RPC response (result or error), not a server-initiated request
+        if "result" not in msg and "error" not in msg:
+            return False
+        msg_id = msg.get("id")
+        if msg_id is None or isinstance(msg_id, (bool, dict, list)):
+            return False
+        return (
+            self.manifest_tracker.is_probe_response(msg_id)
+            or self.manifest_tracker.is_tombstoned_probe_id(msg_id)
+        )
+
+    def translate_colliding_client_request(self, line_bytes: bytes) -> bytes:
+        """Translate a client request ID if it collides with an issued or tombstoned probe ID.
+
+        Prevents both Case A (in-flight probe collision) and Case B (delayed probe
+        response arriving after client reused a tombstoned ID) without rewriting
+        non-colliding traffic.
+        """
+        if not self.manifest_tracker or not self.manifest_tracker.has_tracked_probes():
+            return line_bytes
+        if b'"id"' not in line_bytes and b'"\\u' not in line_bytes:
+            return line_bytes
+        try:
+            msg = json.loads(line_bytes.decode("utf-8", errors="replace"))
+        except Exception:
+            return line_bytes
+        if not isinstance(msg, dict) or "method" not in msg or "id" not in msg:
+            return line_bytes
+        orig_id = msg.get("id")
+        if orig_id is None or isinstance(orig_id, (bool, dict, list)):
+            return line_bytes
+        if not (
+            self.manifest_tracker.is_probe_response(orig_id)
+            or self.manifest_tracker.is_tombstoned_probe_id(orig_id)
+        ):
+            return line_bytes
+        with self._lock:
+            if len(self._translated_ids) >= 10000:
+                raise RuntimeError(
+                    "Too many concurrent colliding request ID translations (10000 limit)"
+                )
+            self._translation_seq += 1
+            proxy_id = f"mcpb-c-{self._translation_seq}"
+            while (
+                proxy_id in self._active_requests
+                or proxy_id in self._translated_ids
+                or self.manifest_tracker.is_probe_response(proxy_id)
+                or self.manifest_tracker.is_tombstoned_probe_id(proxy_id)
+            ):
+                self._translation_seq += 1
+                proxy_id = f"mcpb-c-{self._translation_seq}"
+            self._translated_ids[proxy_id] = orig_id
+        msg["id"] = proxy_id
+        return json.dumps(msg, ensure_ascii=False).encode("utf-8") + b"\n"
+
+    def restore_translated_server_response(self, line_bytes: bytes) -> bytes:
+        """Restore original client request ID on a server response if it was translated."""
+        with self._lock:
+            if not self._translated_ids:
+                return line_bytes
+        if b'"id"' not in line_bytes and b'"\\u' not in line_bytes:
+            return line_bytes
+        try:
+            msg = json.loads(line_bytes.decode("utf-8", errors="replace"))
+        except Exception:
+            return line_bytes
+        if not isinstance(msg, dict) or "id" not in msg:
+            return line_bytes
+        if "result" not in msg and "error" not in msg:
+            return line_bytes
+        msg_id = msg.get("id")
+        if not isinstance(msg_id, str):
+            return line_bytes
+        with self._lock:
+            orig_id = self._translated_ids.pop(msg_id, None)
+        if orig_id is None:
+            return line_bytes
+        msg["id"] = orig_id
+        return json.dumps(msg, ensure_ascii=False).encode("utf-8") + b"\n"
 
     def get_active_request_ids(self) -> List[Any]:
         """Return list of currently active request IDs (for M4 attribution)."""
@@ -411,8 +502,11 @@ class ProtocolMonitor:
                         self.manifest_tracker.schedule_client_tool_call(tool_name)
 
                 if msg_id is not None:
-                    # Request with ID
+                    # Request with ID (bounded tracking to prevent unbounded growth)
                     with self._lock:
+                        if len(self._active_requests) >= 10000 and msg_id not in self._active_requests:
+                            oldest_key = next(iter(self._active_requests))
+                            self._active_requests.pop(oldest_key, None)
                         self._active_requests[msg_id] = {
                             "start_ts": now,
                             "method": method,
@@ -474,7 +568,10 @@ class ProtocolMonitor:
             if (
                 msg_id is not None
                 and self.manifest_tracker
-                and self.manifest_tracker.is_probe_response(msg_id)
+                and (
+                    self.manifest_tracker.is_probe_response(msg_id)
+                    or self.manifest_tracker.is_tombstoned_probe_id(msg_id)
+                )
             ):
                 is_error = "error" in msg
                 content_obj = msg.get("error") if is_error else msg.get("result")
