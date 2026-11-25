@@ -79,8 +79,8 @@ MCP client (Claude Desktop / Cursor)
 │ mcp-behave wrap                                                        │
 │                                                                        │
 │   ┌────────────────────┐          ┌────────────────────────────────┐   │
-│   │  ProtocolMonitor   │◀────────▶│         PolicyEngine           │   │
-│   │ (Framing / Parser) │          │ (Lockfile, Drift, Invariants)  │   │
+│   │  ProtocolMonitor   │◀────────▶│         Policy checks         │   │
+│   │     (Parser)       │          │ (Drift, Inline, OS alerts)     │   │
 │   └─────────┬──────────┘          └────────────────┬───────────────┘   │
 │             │                                      │                   │
 │             ▼                                      ▼                   │
@@ -94,43 +94,42 @@ MCP client (Claude Desktop / Cursor)
 │   │  (Unix Domain Sock)│                                               │
 │   └────────────────────┘                                               │
 └────────────────────────────────────────────────────────────────────────┘
-       │  stdio (byte-faithful JSON-RPC forwarding)
+       │  stdio (forwarding with optional inline checks)
        ▼
-Target Server Process (child, DYLD dylib injected, optional Seatbelt sandbox)
+Target Server Process (child, optional native tracing and OS sandbox)
 ```
 
 ### 2.3 Component Responsibilities
 
 1. **Stdio Transparent Forwarder (`wrap.py` / `launcher.py`)**:
-   - Manages child process lifecycle: propagates signals (`SIGINT`, `SIGTERM`), forwards child stderr directly to parent stderr, avoids zombies, and ensures clean shutdown.
+   - Manages child process lifecycle and forwards child stderr directly to parent stderr. See [Stdio proxy shutdown](#stdio-proxy-shutdown) for cleanup behavior and limits.
    - Forwards client stdin $\to$ child and child stdout $\to$ client.
-   - Guarantees **stdout purity**: stdout is reserved exclusively for JSON-RPC messages intended for the client.
+   - Uses stdout for server-to-client forwarding. Server stdout pollution can pass through when inline enforcement is disabled.
 2. **ProtocolMonitor (`protocol.py`)**:
    - Handles robust newline-delimited framing with streaming buffers.
    - Intercepts requests (`tools/call`, `tools/list`, `initialize`) and responses/notifications (`tools/list_changed`).
    - Tracks active `request_id` execution windows for per-tool OS attribution.
    - Detects `stdout_pollution` when non-JSON data is emitted by the target server on stdout.
-3. **OsEventReceiver (`os_events.py`)**:
-   - Listens on a dedicated non-blocking UNIX domain socket for compact binary/fixed-size events emitted by the injected C tracer.
-   - Correlates syscalls (file open/write, network connect, process exec) with the active tool call window.
-4. **PolicyEngine (`policy.py`)**:
-   - Compares live events against the approved behavioral lockfile (`mcp-behave.lock.json`).
-   - Evaluates:
-     - Manifest drift (tool hash or schema changes).
-     - Network egress allowlists (`host:port`).
-     - Filesystem read/write path globs.
-     - Subprocess exec allowlists.
-     - Secret detection & canary leakage in tool outputs.
-   - Decision modes: `observe`, `alert`, `block`.
-   - Protocol-level blocking: synthesizes JSON-RPC error response with reason, keeping client communication intact.
+3. **OS event receiver (`tracer_server.py`)**:
+   - Receives native tracer records on a dedicated non-blocking Unix datagram socket.
+   - Passes OS events to the attribution engine for correlation with active tool call windows.
+4. **Policy checks (`manifest.py`, `attribution.py`, `enforce.py`)**:
+   - Reports manifest drift and policy findings on observed OS activity.
+   - Applies configured inline request and response checks before forwarding.
 5. **EventBus (`bus.py`)**:
    - Decoupled in-memory asynchronous pub/sub.
    - Namespaced with `server_id` and `session_id`, ensuring readiness for future multi-backend gateway multiplexing (M7).
 6. **TelemetryStore (`telemetry.py`)**:
    - Writes event streams to local JSONL and SQLite under `~/.local/state/mcp-behave/` (`XDG_STATE_HOME`).
-   - Uses a bounded in-memory queue to a background writer thread; drops events and emits `telemetry_drop` without blocking the forwarding hot path.
+   - Uses a bounded in-memory queue and a background writer thread. See [Message Framing and Buffering Limits](#message-framing-and-buffering-limits) for overflow behavior.
    - Hashes sensitive argument and result payloads (`sha256` + prefix + length) unless explicit `--log-content` is enabled.
-   - Never logs raw secrets.
+
+### 2.4 Runtime security boundaries in v0.5.5
+
+- **Audit and wrap.** [Audit](../README.md#quick-start-audit-an-mcp-server) actively exercises advertised MCP capabilities in selected scenarios. Starting a local target and calling tools, reading resources, or fetching prompts can execute server code and cause side effects, even without tracing. [Wrap](../README.md#runtime-monitoring-with-wrap) monitors live stdio traffic and can send synthetic `tools/list` requests to recheck the manifest.
+- **Enforcement.** Wrap's OS-event alerts report observed activity. With `--enforce` and `fail-closed`, inline checks can reject unapproved tool calls and covered invalid messages before forwarding, or replace covered responses containing detected canaries or critical secrets with JSON-RPC errors. `fail-open` skips these blocks. Optional `--redact` masks detected values in inspected responses. Filtering and redaction leave earlier OS side effects in place. OS actions can be prevented by the restrictions of the selected sandbox when it is in use.
+- **Trace coverage and attribution.** Native interposers observe selected dynamically linked calls. Direct syscalls, statically linked targets, uninstrumented operations, and processes without the tracer can escape observation. On macOS, hardened or specially signed targets can reject DYLD injection. A wrap handshake establishes readiness for the reporting process only. Tool labels reflect correlation with active request windows. Overlapping calls can make attribution ambiguous, and background activity can lack a matching request. Observations and heuristic findings describe activity or matching patterns and cannot establish intent.
+- **Telemetry and findings.** Bounded queues can drop records. At shutdown the tracer socket closes without a final drain, and expired worker waits can leave events unwritten. See [Stdio proxy shutdown](#stdio-proxy-shutdown) and [Message Framing and Buffering Limits](#message-framing-and-buffering-limits). Event loss makes the recorded stream partial. Zero findings means no covered issue was reported under the exercised inputs, observed conditions, enabled checks, and available telemetry. It cannot establish that the server is safe.
 
 ---
 
@@ -140,7 +139,7 @@ Target Server Process (child, DYLD dylib injected, optional Seatbelt sandbox)
 Every finding and event carries an explicit `evidence_tier`:
 - `observed`: Direct runtime observation of ground-truth execution (file open/write syscalls, network connects, process execution, literal leaked tokens). Maps to scorecard classification `CONFIRMED`.
 - `structural`: Direct inspection of protocol metadata and static capabilities (manifest schemas, annotations, declared scopes). Maps to scorecard classification `STRONG_EVIDENCE`.
-- `correlated`: Runtime events causally attributed to a specific active `tools/call` request window (e.g., read-only tool active during a file write). Maps to scorecard classification `STRONG_EVIDENCE`.
+- `correlated`: Runtime events associated with active `tools/call` request windows (e.g., a read-only tool active during a file write). The association is temporal and can be ambiguous.
 - `heuristic`: Pattern-matching, regex keyword scanning, prompt-injection heuristics. Maps to scorecard classification `HEURISTIC`. Cannot exceed `MEDIUM` severity and can never trigger blocking on its own.
 
 ### 3.2 Severity Model Roadmap
@@ -198,7 +197,7 @@ Claude Desktop is a GUI app launched by `launchd`, which has a minimal `$PATH` (
 
 ## 5. Milestone 2 (M2): Manifest Pinning, Active Re-Verification & Cross-Session Drift
 
-Milestone 2 adds Trust-On-First-Use (TOFU) manifest integrity enforcement, covert drift detection via synthetic active re-verification, bidirectional annotation evaluation, and append-only cross-session tracking.
+Milestone 2 adds Trust-On-First-Use (TOFU) manifest tracking, covert drift detection via synthetic active re-verification, bidirectional annotation evaluation, and append-only cross-session tracking.
 
 ### 5.1 Single Serialized Child Stdin Writer
 To eliminate any possibility of byte-level interleaving or splicing when synthetic probes are injected while client streaming occurs (e.g. 1 MB large tool payloads):
@@ -302,8 +301,10 @@ status is unavailable. Cancellation and runtime exceptions still propagate.
 Cleanup closes owned subprocess and client transports. The client stdout
 transport gets one second to flush before it is aborted. The tracer socket is
 closed without a final drain so a sender cannot extend shutdown by refilling
-the socket. The proxy reports possible loss of unread tracer datagrams on
-stderr. Recorded events represent partial observation when datagrams are lost.
+the socket. If the child exit status is available, the proxy first makes a
+separate bounded drain attempt. The proxy reports possible loss of unread
+tracer datagrams on stderr. Recorded events represent partial observation
+when datagrams are lost.
 The protocol monitor can wait up to
 two seconds to enqueue its stop marker and two seconds to join its worker.
 Telemetry can wait up to two seconds to join its writer. A worker can continue
@@ -325,5 +326,5 @@ after its deadline, late cleanup requires the event loop to remain running.
 - **Maximum framed message size**: `StreamingFramer` enforces a `16 MiB` (`max_line_bytes`) limit per newline-delimited JSON-RPC message and raises `ValueError` if exceeded.
 - **Client-to-server queue byte budget**: `_BoundedByteQueue` enforces a `16 MiB` (`STDIN_QUEUE_MAX_BYTES`) queued byte budget; when empty, one valid message up to `16 MiB` is still accepted so large messages do not deadlock.
 - **Queue item capacity**: `_BoundedByteQueue` caps queued messages at `256` items (`STDIN_QUEUE_MAX_ITEMS`).
-- **Observational telemetry buffering**: `ProtocolMonitor._line_queue` and `TelemetryStore._queue` are independently bounded at `10,000` items each (loss-tolerant, emitting `telemetry_drop` on overflow), and `ProtocolMonitor._active_requests` is capped at `10,000` entries.
+- **Observational telemetry buffering**: `ProtocolMonitor._line_queue` and `TelemetryStore._queue` are independently bounded at `10,000` items each, and `ProtocolMonitor._active_requests` is capped at `10,000` entries. On line queue overflow the monitor attempts to record a `telemetry_drop` event. The telemetry store counts its own queue drops and can report them when its writer runs.
 - **Total process memory consumption**: Total proxy RSS includes the Python runtime, OS pipe buffers, SQLite/JSONL state, and in-flight objects, and is not strictly bounded to `32 MiB`.
