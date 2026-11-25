@@ -56,8 +56,10 @@ def test_cancel_during_spawn_handoff(tmp_path, monkeypatch):
         await asyncio.sleep(0)
         task.cancel("second request")
         release.set()
-        with pytest.raises(asyncio.CancelledError, match="caller cancelled"):
+        with pytest.raises(asyncio.CancelledError) as exc_info:
             await asyncio.wait_for(task, 2)
+        if sys.version_info >= (3, 11):
+            assert "caller cancelled" in str(exc_info.value)
         assert proc.returncode is not None
         assert proc._transport.is_closing()
 

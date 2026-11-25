@@ -41,19 +41,37 @@ def get_test_python() -> str:
 
     Official python.org Python binaries on macOS are signed with Hardened Runtime
     (flags=0x10000(runtime)), which instructs macOS dyld to reject DYLD_INSERT_LIBRARIES.
-    Virtualenv and conda/miniforge binaries are adhoc-signed without the runtime flag,
-    allowing clean interposition.
+    Homebrew, virtualenv, and conda/miniforge binaries are adhoc-signed without the
+    runtime flag, allowing clean interposition.
     """
+    import shutil
+
+    if sys.platform != "darwin":
+        return sys.executable
+
     repo_root = Path(__file__).resolve().parent.parent
     candidates = [
+        Path(sys.executable),
         repo_root / ".venv" / "bin" / "python3",
         repo_root / ".venv" / "bin" / "python",
-        Path("/Users/seyednavidmirnourilangeroudi/miniforge3/bin/python3"),
+        Path("/opt/homebrew/bin/python3"),
+        Path("/usr/local/bin/python3"),
     ]
+    for name in ("python3", "python"):
+        which = shutil.which(name)
+        if which:
+            candidates.append(Path(which))
+
+    seen = set()
     for c in candidates:
-        if c.exists() and not _target_is_hardened(str(c)):
-            return str(c)
-    return sys.executable
+        resolved = str(c)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if c.exists() and not _target_is_hardened(resolved):
+            return resolved
+
+    pytest.skip("No unhardened Python interpreter available on macOS for DYLD_INSERT_LIBRARIES interposition")
 
 
 class MockWriter:
