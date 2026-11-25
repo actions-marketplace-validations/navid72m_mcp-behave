@@ -255,62 +255,78 @@ async def spawn_child_server(
     return proc, resolved_binary, resolved_sha256
 
 
+PROCESS_POLL_INTERVAL = 0.02
+TERM_TIMEOUT = 1.0
+KILL_TIMEOUT = 1.0
+
+
+async def wait_for_root_exit(proc: asyncio.subprocess.Process) -> None:
+    """Observe root exit even when a descendant holds a subprocess pipe open."""
+    while proc.returncode is None:
+        await asyncio.sleep(PROCESS_POLL_INTERVAL)
+
+
 async def terminate_process_group(
     proc: asyncio.subprocess.Process,
     grace_period: float = 3.0,
     close_stdin: bool = True,
 ) -> int:
-    """Terminate the child and its entire process group cleanly.
+    """Close stdin and escalate against the session created by spawn_child_server.
 
-    Order:
-    1. Close child stdin (if open)
-    2. Wait for child to exit within grace_period (default 3s)
-    3. If not exited, SIGTERM process group (os.killpg(proc.pid, signal.SIGTERM))
-    4. Wait up to 1s
-    5. If still not exited, SIGKILL process group (os.killpg(proc.pid, signal.SIGKILL))
-    6. Return exit code.
+    Preserves the root's original exit code if it already exited, while still
+    signaling and reaping any surviving process-group members.
     """
-    if proc.returncode is not None:
-        return proc.returncode
+    original_exit_code: Optional[int] = proc.returncode
 
-    # 1. Close child stdin
-    if close_stdin and proc.stdin:
+    if close_stdin and proc.stdin and original_exit_code is None:
         try:
             proc.stdin.close()
-            await proc.stdin.wait_closed()
-        except (BrokenPipeError, ConnectionResetError, Exception):
-            pass
+        except Exception as exc:
+            print(f"mcp-behave wrap: incomplete cleanup of child stdin: {exc}", file=sys.stderr)
 
-    # 2. Wait for graceful exit
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=grace_period)
-        return proc.returncode if proc.returncode is not None else 0
-    except asyncio.TimeoutError:
-        pass
+    # start_new_session establishes PGID == pid. Looking up a departed root
+    # cannot tell us whether the original group still has members.
+    pgid = proc.pid
+    loop = asyncio.get_running_loop()
 
-    # 3. SIGTERM process group
-    pid = proc.pid
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        pass
+    def signal_group(sig: int) -> bool:
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return False
+        except OSError as exc:
+            print(f"mcp-behave wrap: cannot signal owned group {pgid}: {exc}", file=sys.stderr)
+        return True
 
-    # 4. Wait up to 1.0s for SIGTERM
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=1.0)
-        return proc.returncode if proc.returncode is not None else 0
-    except asyncio.TimeoutError:
-        pass
+    async def wait_until_gone(timeout: float) -> bool:
+        deadline = loop.time() + timeout
+        while True:
+            if not signal_group(0):
+                # Once the group is absent, never signal that numeric ID again.
+                return True
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(PROCESS_POLL_INTERVAL, remaining))
 
-    # 5. SIGKILL process group
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
+    gone = await wait_until_gone(grace_period if original_exit_code is None else 0)
+    for sig, timeout in ((signal.SIGTERM, TERM_TIMEOUT), (signal.SIGKILL, KILL_TIMEOUT)):
+        if gone:
+            break
+        if not signal_group(sig):
+            gone = True
+            break
+        gone = await wait_until_gone(timeout)
 
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=1.0)
-    except asyncio.TimeoutError:
-        pass
-
+    if not gone:
+        print(f"mcp-behave wrap: incomplete cleanup: group {pgid} still exists after SIGKILL",
+              file=sys.stderr)
+    if proc.returncode is None:
+        try:
+            await asyncio.wait_for(wait_for_root_exit(proc), timeout=KILL_TIMEOUT)
+        except asyncio.TimeoutError:
+            print(f"mcp-behave wrap: incomplete cleanup: root status unavailable for {pgid}",
+                  file=sys.stderr)
+    if original_exit_code is not None:
+        return original_exit_code
     return proc.returncode if proc.returncode is not None else 137

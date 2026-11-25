@@ -135,3 +135,29 @@ def test_static_binary_bypass_contrast():
     ebpf_profile = events_to_profile(ebpf_events)
     assert "/etc/passwd" in ebpf_profile["files_opened"]
     assert "198.51.100.2:443" in ebpf_profile["network_connects"]
+
+
+def test_explicit_unavailable_tracer_fails_before_launching_target(tmp_path, capsys):
+    """Verify --tracer ebpf fails with exit code 2 without launching the server when unsupported."""
+    import platform
+    import pytest
+    from mcp_behave import cli, probe
+
+    if platform.system() == "Linux":
+        supported, _ = is_ebpf_supported()
+        if supported:
+            pytest.skip("eBPF is supported on this host")
+
+    marker = tmp_path / "should_not_exist"
+    rc = cli.main([
+        "--tracer", "ebpf",
+        "python3", "-c", f"import pathlib; pathlib.Path({str(marker)!r}).touch()",
+    ])
+    assert rc == 2
+    assert not marker.exists()
+    err = capsys.readouterr().err
+    assert "unavailable" in err.lower()
+    assert "--tracer auto" in err
+
+    with pytest.raises(RuntimeError, match="unavailable"):
+        probe.detect_tracer("ebpf")

@@ -41,28 +41,68 @@ def get_test_python() -> str:
 
     Official python.org Python binaries on macOS are signed with Hardened Runtime
     (flags=0x10000(runtime)), which instructs macOS dyld to reject DYLD_INSERT_LIBRARIES.
-    Virtualenv and conda/miniforge binaries are adhoc-signed without the runtime flag,
-    allowing clean interposition.
+    Homebrew, virtualenv, and conda/miniforge binaries are adhoc-signed without the
+    runtime flag, allowing clean interposition.
     """
+    import shutil
+
+    if sys.platform != "darwin":
+        return sys.executable
+
     repo_root = Path(__file__).resolve().parent.parent
     candidates = [
+        Path(sys.executable),
         repo_root / ".venv" / "bin" / "python3",
         repo_root / ".venv" / "bin" / "python",
-        Path("/Users/seyednavidmirnourilangeroudi/miniforge3/bin/python3"),
+        Path("/opt/homebrew/bin/python3"),
+        Path("/usr/local/bin/python3"),
     ]
+    for name in ("python3", "python"):
+        which = shutil.which(name)
+        if which:
+            candidates.append(Path(which))
+
+    seen = set()
     for c in candidates:
-        if c.exists() and not _target_is_hardened(str(c)):
-            return str(c)
-    return sys.executable
+        resolved = str(c)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if c.exists() and not _target_is_hardened(resolved):
+            return resolved
+
+    pytest.skip("No unhardened Python interpreter available on macOS for DYLD_INSERT_LIBRARIES interposition")
 
 
 class MockWriter:
-    """Collects written stdout bytes without polluting terminal."""
+    """Collects written stdout bytes without polluting terminal and supports response synchronization."""
     def __init__(self):
         self.buffer = bytearray()
+        self._seen_ids: set[Any] = set()
+        self._waiters: Dict[Any, asyncio.Event] = {}
 
     def write(self, data: bytes):
         self.buffer.extend(data)
+        for line in data.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            try:
+                msg = json.loads(s.decode("utf-8", errors="replace"))
+                if isinstance(msg, dict) and "id" in msg:
+                    msg_id = msg["id"]
+                    self._seen_ids.add(msg_id)
+                    ev = self._waiters.get(msg_id)
+                    if ev is not None:
+                        ev.set()
+            except Exception:
+                pass
+
+    async def wait_for_response(self, req_id: Any, timeout: float = 5.0) -> None:
+        if req_id in self._seen_ids:
+            return
+        ev = self._waiters.setdefault(req_id, asyncio.Event())
+        await asyncio.wait_for(ev.wait(), timeout=timeout)
 
     async def drain(self):
         pass
@@ -189,12 +229,15 @@ def test_wrap_m4_tool_read_only_violation(tmp_path):
 
     async def run():
         client_reader = asyncio.StreamReader()
+        writer = MockWriter()
 
         async def feed_client():
             init_req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}).encode() + b"\n"
             list_req = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}).encode() + b"\n"
             client_reader.feed_data(init_req + list_req)
-            await asyncio.sleep(0.1)
+            await writer.wait_for_response(2, timeout=5.0)
+            # Yield briefly so ProtocolMonitor's background worker commits tools_baseline
+            await asyncio.sleep(0.02)
             call_req = json.dumps({
                 "jsonrpc": "2.0",
                 "id": 3,
@@ -202,7 +245,7 @@ def test_wrap_m4_tool_read_only_violation(tmp_path):
                 "params": {"name": "read_doc", "arguments": {"action": "write_file", "target": target_write_file}},
             }).encode() + b"\n"
             client_reader.feed_data(call_req)
-            await asyncio.sleep(0.1)
+            await writer.wait_for_response(3, timeout=5.0)
             client_reader.feed_eof()
 
         feeder = asyncio.create_task(feed_client())
@@ -212,7 +255,7 @@ def test_wrap_m4_tool_read_only_violation(tmp_path):
             server_id="m4_ro_server",
             state_dir=str(tmp_path),
             stdin_reader_override=client_reader,
-            stdout_writer_override=MockWriter(),
+            stdout_writer_override=writer,
             enable_reverify=False,
             enable_trace=True,
         )
