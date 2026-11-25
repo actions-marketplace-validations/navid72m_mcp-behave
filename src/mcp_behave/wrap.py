@@ -808,8 +808,13 @@ async def run_proxy(
         return exit_code
     finally:
         if tracer_server is not None:
-            # Readable callbacks already collect events during the session. Stop
-            # reading here so a sender cannot prolong close by refilling the socket.
+            if (
+                child_proc is not None
+                and child_proc.returncode is not None
+                and hasattr(tracer_server, "drain_once")
+            ):
+                _close("tracer drain", tracer_server.drain_once)
+            # Stop reading before close so a sender cannot prolong close by refilling the socket.
             tracer_server._stopped = True
             _close("tracer", tracer_server.close)
             _incomplete("tracer telemetry", "possible loss of unread datagrams at shutdown")

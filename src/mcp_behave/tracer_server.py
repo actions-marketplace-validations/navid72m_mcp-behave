@@ -237,6 +237,21 @@ class TracerServer:
                     except (OSError, ValueError):
                         pass
 
+    def drain_once(self, max_packets: int = 256) -> None:
+        """Non-blocking bounded drain of already-queued datagrams before shutdown."""
+        if self._stopped or not self._server_sock:
+            return
+        for _ in range(max_packets):
+            try:
+                data, _ = self._server_sock.recvfrom(65536)
+                if not data:
+                    break
+                self._handle_raw_data(data)
+            except (BlockingIOError, InterruptedError):
+                break
+            except Exception:
+                break
+
     def close(self) -> None:
         """Close socket and clean up filesystem artifacts."""
         if self._server_sock and not self._stopped:
