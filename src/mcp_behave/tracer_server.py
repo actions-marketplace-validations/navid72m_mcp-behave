@@ -86,6 +86,10 @@ class TracerServer:
         """Return environment variables to inject into child server."""
         return dict(self._child_env)
 
+    def has_any_handshake(self) -> bool:
+        """Return True if any process (child or descendant) has reported READY."""
+        return len(self.instrumented_pids) > 0 or self.handshake_event.is_set()
+
     async def wait_for_handshake(self, timeout: float = 0.5) -> bool:
         """Wait for initialization datagram from interposed C library."""
         try:
@@ -232,6 +236,21 @@ class TracerServer:
                                 self.on_event_fn(sym_evt)
                     except (OSError, ValueError):
                         pass
+
+    def drain_once(self, max_packets: int = 256) -> None:
+        """Non-blocking bounded drain of already-queued datagrams before shutdown."""
+        if self._stopped or not self._server_sock:
+            return
+        for _ in range(max_packets):
+            try:
+                data, _ = self._server_sock.recvfrom(65536)
+                if not data:
+                    break
+                self._handle_raw_data(data)
+            except (BlockingIOError, InterruptedError):
+                break
+            except Exception:
+                break
 
     def close(self) -> None:
         """Close socket and clean up filesystem artifacts."""

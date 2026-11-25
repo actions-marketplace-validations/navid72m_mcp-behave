@@ -3,14 +3,129 @@ prompts) with synthesized inputs, and record both the server's self-declared
 manifest and the raw syscall trace of what it actually did.
 
 No judgements here -- that's report.py."""
-import asyncio, hashlib, json, os, platform, re, shutil, sys, tempfile
-from typing import Any
+import asyncio, hashlib, json, os, platform, re, shutil, signal, sys, tempfile
+from contextlib import asynccontextmanager
+from typing import Any, AsyncGenerator, Optional, Tuple
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 OUT_DIR    = os.environ.get("OUT_DIR", "/tmp/mcp_behave_out")
 TRACE_FILE = os.path.join(OUT_DIR, "trace.log")
 MANIFEST   = os.path.join(OUT_DIR, "manifest.json")
+
+
+# Sentinel values for audit_status recorded in manifest.json
+AUDIT_STATUS_COMPLETE = "complete"
+AUDIT_STATUS_PARTIAL  = "partial"
+AUDIT_STATUS_FAILED   = "failed"
+
+
+@asynccontextmanager
+async def supervised_stdio_client(
+    server_cmd: list[str],
+    env: dict | None = None,
+    grace_period: float = 3.0,
+) -> AsyncGenerator[Tuple[asyncio.StreamReader, asyncio.StreamWriter, int], None]:
+    """Launch an MCP server subprocess in its own process group and yield
+    (stdout_reader, stdin_writer, pid).  On exit (normal, exception, or
+    cancellation) the entire process group is terminated safely.
+
+    This provides equivalent lifecycle guarantees to the ``wrap`` path:
+    - ``start_new_session=True`` creates a dedicated process group.
+    - ``terminate_process_group_by_pid`` cleans up surviving descendants
+      even when the root server has already crashed.
+    - stdin / stdout are piped; stderr inherits from the parent.
+
+    Unlike the MCP SDK's ``stdio_client`` context manager this implementation
+    exposes the process handle so callers can detect premature exit, capture
+    the exit code, and guarantee that no grandchild process survives audit
+    cleanup.
+    """
+    if not server_cmd:
+        raise ValueError("supervised_stdio_client: empty server command")
+
+    child_env = dict(os.environ)
+    if env:
+        child_env.update(env)
+
+    proc = await asyncio.create_subprocess_exec(
+        *server_cmd,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=None,            # inherit parent stderr (matches wrap behaviour)
+        start_new_session=True, # own process group for clean descendant reaping
+        env=child_env,
+    )
+
+    # Adapt raw asyncio StreamWriter/Reader to the objects expected by
+    # mcp.ClientSession (which accepts any object with read/write interfaces).
+    stdout_reader: asyncio.StreamReader = proc.stdout  # type: ignore[assignment]
+    stdin_writer: asyncio.StreamWriter  = proc.stdin   # type: ignore[assignment]
+    pid: int = proc.pid
+
+    try:
+        yield stdout_reader, stdin_writer, pid
+    finally:
+        await _terminate_process_group_by_pid(proc, grace_period=grace_period)
+
+
+async def _terminate_process_group_by_pid(
+    proc: asyncio.subprocess.Process,
+    grace_period: float = 3.0,
+) -> int:
+    """Terminate the process group identified by proc.pid.
+
+    Safe when the root has already exited.  Always returns the root's
+    original exit code, never a cleanup sentinel.
+    """
+    original_exit_code: Optional[int] = proc.returncode
+    pid = proc.pid
+
+    # Close stdin only while root is still alive
+    if proc.stdin and original_exit_code is None:
+        try:
+            proc.stdin.close()
+            await proc.stdin.wait_closed()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
+    # Give root a grace period to exit on its own
+    if original_exit_code is None:
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=grace_period)
+            original_exit_code = proc.returncode
+        except asyncio.TimeoutError:
+            pass
+
+    # SIGTERM the whole process group regardless of root status
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+    if original_exit_code is None:
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1.0)
+            original_exit_code = proc.returncode
+        except asyncio.TimeoutError:
+            pass
+    else:
+        await asyncio.sleep(0.05)
+
+    # SIGKILL as final backstop
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+    if original_exit_code is None:
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1.0)
+            original_exit_code = proc.returncode
+        except asyncio.TimeoutError:
+            pass
+
+    return original_exit_code if original_exit_code is not None else 137
 
 
 def set_out_dir(path: str):
@@ -245,19 +360,28 @@ def _tracer_setup(server_cmd: list[str], trace_file: str,
         from .ebpf import is_ebpf_supported
         supported, reason = is_ebpf_supported()
         if not supported and os.environ.get("MCP_BEHAVE_MOCK_EBPF") != "1":
-            print(f"[probe] WARNING: eBPF tracer unavailable: {reason}", file=sys.stderr)
-            print("[probe] Falling back to default system tracer (use --tracer auto).", file=sys.stderr)
-        else:
-            return server_cmd, "ebpf", {
-                "MCP_BEHAVE_TRACE_FILE": trace_file,
-                "MCP_BEHAVE_TRACER": "ebpf",
-            }
+            raise RuntimeError(
+                f"Requested tracer 'ebpf' is unavailable: {reason}. "
+                "Use --tracer auto or --no-trace."
+            )
+        return server_cmd, "ebpf", {
+            "MCP_BEHAVE_TRACE_FILE": trace_file,
+            "MCP_BEHAVE_TRACER": "ebpf",
+        }
 
     if platform.system() == "Darwin":
         if tracer_override and tracer_override not in ("dylib", "native", "auto"):
-            return server_cmd, "", {}
+            raise RuntimeError(
+                f"Requested tracer '{tracer_override}' is not supported on macOS. "
+                "Use --tracer auto, --tracer dylib, or --no-trace."
+            )
         dylib = _macos_tracer_dylib()
         if not dylib:
+            if tracer_override in ("dylib", "native"):
+                raise RuntimeError(
+                    "Requested tracer 'dylib' is unavailable (could not build macOS interposer; "
+                    "ensure a C compiler is installed)."
+                )
             return server_cmd, "", {}
         # Warn BEFORE launch: if the target interpreter is hardened, dyld will
         # abort it on inject and the failure looks like "connection closed".
@@ -279,6 +403,11 @@ def _tracer_setup(server_cmd: list[str], trace_file: str,
         }
 
     if platform.system() == "Linux":
+        if tracer_override == "dylib":
+            raise RuntimeError(
+                "Requested tracer 'dylib' is not supported on Linux. "
+                "Use --tracer auto, --tracer preload, --tracer strace, or --no-trace."
+            )
         # 1. Try LD_PRELOAD native tracer first (no root / SYS_PTRACE / strace needed)
         if tracer_override in (None, "auto", "preload", "native"):
             so = _linux_tracer_so()
@@ -288,12 +417,25 @@ def _tracer_setup(server_cmd: list[str], trace_file: str,
                     "MCP_BEHAVE_TRACE_FILE": trace_file,
                 }
             if tracer_override in ("preload", "native"):
-                return server_cmd, "", {}
+                raise RuntimeError(
+                    "Requested tracer 'preload' is unavailable (could not build Linux interposer; "
+                    "ensure a C compiler is installed)."
+                )
 
         # 2. Fall back to strace if available or requested
-        if (tracer_override in (None, "auto", "strace")) and shutil.which("strace"):
-            return (["strace", "-f", "-qq", "-e", f"trace={SYSCALLS}",
-                     "-o", trace_file, *server_cmd], "strace", {})
+        if tracer_override in (None, "auto", "strace"):
+            if shutil.which("strace"):
+                return (["strace", "-f", "-qq", "-e", f"trace={SYSCALLS}",
+                         "-o", trace_file, *server_cmd], "strace", {})
+            if tracer_override == "strace":
+                raise RuntimeError(
+                    "Requested tracer 'strace' is unavailable (strace not found on PATH)."
+                )
+
+    if tracer_override and tracer_override not in ("auto",):
+        raise RuntimeError(
+            f"Requested tracer '{tracer_override}' is not supported on {platform.system()}."
+        )
 
     return server_cmd, "", {}
 
@@ -958,7 +1100,15 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
                     tool_outputs: dict | None = None,
                     *, transport: str, syscalls_available: bool,
                     manifest_file: str | None = None, trace_file: str | None = None,
-                    sandbox: str | None = None, tool_history: dict | None = None):
+                    sandbox: str | None = None, tool_history: dict | None = None,
+                    audit_status: str = AUDIT_STATUS_COMPLETE,
+                    failure_reason: str | None = None):
+    """Write the manifest JSON to disk.
+
+    audit_status must be one of AUDIT_STATUS_COMPLETE, AUDIT_STATUS_PARTIAL,
+    or AUDIT_STATUS_FAILED.  Only AUDIT_STATUS_COMPLETE manifests may be used
+    to update a trusted behavioral lockfile.
+    """
     m_file = manifest_file or MANIFEST
     t_file = trace_file or TRACE_FILE
     manifest = {
@@ -966,6 +1116,8 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
         "transport": transport,
         "syscalls_available": syscalls_available,
         "sandbox": sandbox,
+        "audit_status": audit_status,
+        "failure_reason": failure_reason,
         "tools": tools_meta,
         "resources": resources_meta,
         "prompts": prompts_meta,
@@ -1011,8 +1163,12 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
             raise RuntimeError(f"Requested container sandbox '{sandbox}' but runtime is not available or responsive.")
         active_sandbox = runtime
 
-    trace_cmd, tracer_name, env_overlay = _tracer_setup(server_cmd, target_trace_file, tracer)
-    syscalls_available = bool(tracer_name) and not active_sandbox
+    if active_sandbox:
+        trace_cmd, tracer_name, env_overlay = server_cmd, f"sandbox-{active_sandbox}", {}
+        syscalls_available = False
+    else:
+        trace_cmd, tracer_name, env_overlay = _tracer_setup(server_cmd, target_trace_file, tracer)
+        syscalls_available = bool(tracer_name)
     # Truncate/create the trace file up front: native tracers open it
     # O_APPEND, and analyze() needs a readable file even if the server exits
     # before any interesting syscall fires.

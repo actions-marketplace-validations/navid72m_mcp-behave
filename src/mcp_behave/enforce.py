@@ -51,6 +51,54 @@ class PolicyEnforcer:
         self.redact = redact
         self.canary_mgr = canary_mgr or CanaryManager()
 
+    def _build_error_response(self, msg_id: Any, code: int, message: str) -> bytes:
+        resp = {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "error": {
+                "code": code,
+                "message": message,
+            },
+        }
+        return json.dumps(resp, ensure_ascii=False).encode("utf-8") + b"\n"
+
+    def _build_enforcement_event(
+        self,
+        *,
+        direction: str,
+        reason: str,
+        error_code: int,
+        message: str,
+        severity: str = SEVERITY_HIGH,
+        tool_name: Optional[str] = None,
+        msg_id: Any = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> BehavioralEvent:
+        payload: Dict[str, Any] = {
+            "action": "blocked",
+            "direction": direction,
+            "reason": reason,
+            "error_code": error_code,
+            "message": message,
+        }
+        if tool_name:
+            payload["tool"] = tool_name
+        if extra:
+            payload.update(extra)
+        return BehavioralEvent(
+            event="enforcement_action",
+            session_id=self.session_id,
+            server_id=self.server_id,
+            kind=KIND_ENFORCEMENT_ACTION,
+            source="monitor",
+            evidence_tier=EVIDENCE_TIER_OBSERVED,
+            severity=severity,
+            current_tool=tool_name,
+            request_id=msg_id,
+            timestamp=time.time(),
+            payload=payload,
+        )
+
     def evaluate_client_request(
         self, line_bytes: bytes
     ) -> Tuple[Optional[bytes], Optional[BehavioralEvent]]:
@@ -65,17 +113,61 @@ class PolicyEnforcer:
                 f"PolicyEnforcer cannot enforce without a valid ServerLock for server '{self.server_id}'"
             )
 
-        # Fast path: only tools/call can be rejected by lockfile policy
-        if b'"tools/call"' not in line_bytes:
+        if not self.enforce:
             return None, None
+
+        # Fast path only when neither tools/call nor JSON unicode escapes are present
+        if b'"tools/call"' not in line_bytes and b"\\u" not in line_bytes and not line_bytes.lstrip().startswith(b"["):
+            # Still validate JSON object structure under fail-closed if line is non-empty
+            stripped = line_bytes.lstrip()
+            if stripped.startswith(b"{"):
+                try:
+                    msg = json.loads(line_bytes.decode("utf-8", errors="replace"))
+                    if isinstance(msg, dict) and msg.get("method") != "tools/call":
+                        return None, None
+                except Exception:
+                    pass
 
         try:
             line_str = line_bytes.decode("utf-8", errors="replace")
             msg = json.loads(line_str)
         except Exception:
+            if self.fail_mode == "fail-closed":
+                err_msg = "Policy violation: Malformed JSON-RPC request blocked under fail-closed enforcement."
+                err_bytes = self._build_error_response(None, ERROR_CODE_TOOL_BLOCKED, err_msg)
+                evt = self._build_enforcement_event(
+                    direction="client_to_server",
+                    reason="malformed_json",
+                    error_code=ERROR_CODE_TOOL_BLOCKED,
+                    message=err_msg,
+                )
+                return err_bytes, evt
+            return None, None
+
+        if isinstance(msg, list):
+            if self.fail_mode == "fail-closed":
+                err_msg = "Policy violation: JSON-RPC batch arrays are unsupported under fail-closed enforcement."
+                err_bytes = self._build_error_response(None, ERROR_CODE_TOOL_BLOCKED, err_msg)
+                evt = self._build_enforcement_event(
+                    direction="client_to_server",
+                    reason="unsupported_batch_message",
+                    error_code=ERROR_CODE_TOOL_BLOCKED,
+                    message=err_msg,
+                )
+                return err_bytes, evt
             return None, None
 
         if not isinstance(msg, dict):
+            if self.fail_mode == "fail-closed":
+                err_msg = "Policy violation: Non-object JSON-RPC payload blocked under fail-closed enforcement."
+                err_bytes = self._build_error_response(None, ERROR_CODE_TOOL_BLOCKED, err_msg)
+                evt = self._build_enforcement_event(
+                    direction="client_to_server",
+                    reason="non_object_payload",
+                    error_code=ERROR_CODE_TOOL_BLOCKED,
+                    message=err_msg,
+                )
+                return err_bytes, evt
             return None, None
 
         method = msg.get("method")
@@ -83,55 +175,39 @@ class PolicyEnforcer:
             return None, None
 
         msg_id = msg.get("id")
-        params = msg.get("params") or {}
+        if isinstance(msg_id, (dict, list, bool)):
+            msg_id = None
+        params = msg.get("params")
         tool_name = params.get("name") if isinstance(params, dict) else None
 
-        if not tool_name:
+        if not isinstance(tool_name, str) or not tool_name:
+            if self.fail_mode == "fail-closed":
+                err_msg = "Policy violation: tools/call missing valid tool name blocked under fail-closed enforcement."
+                err_bytes = self._build_error_response(msg_id, ERROR_CODE_TOOL_BLOCKED, err_msg)
+                evt = self._build_enforcement_event(
+                    direction="client_to_server",
+                    reason="invalid_tool_call_params",
+                    error_code=ERROR_CODE_TOOL_BLOCKED,
+                    message=err_msg,
+                    msg_id=msg_id,
+                )
+                return err_bytes, evt
             return None, None
 
-        # When --enforce is active, check against locked tools
-        if self.enforce:
-            if not self.server_lock:
-                raise RuntimeError(
-                    f"PolicyEnforcer cannot enforce without a valid ServerLock for server '{self.server_id}'"
+        locked_tool = self.server_lock.get_tool(tool_name)
+        if not locked_tool:
+            if self.fail_mode == "fail-closed":
+                err_msg = f"Policy violation: Tool '{tool_name}' invocation blocked by mcp-behave lockfile policy."
+                err_bytes = self._build_error_response(msg_id, ERROR_CODE_TOOL_BLOCKED, err_msg)
+                evt = self._build_enforcement_event(
+                    direction="client_to_server",
+                    reason="unapproved_tool",
+                    error_code=ERROR_CODE_TOOL_BLOCKED,
+                    message=err_msg,
+                    tool_name=tool_name,
+                    msg_id=msg_id,
                 )
-            locked_tool = self.server_lock.get_tool(tool_name)
-            if not locked_tool:
-                # Tool not permitted in lockfile
-                if self.fail_mode == "fail-closed":
-                    err_msg = f"Policy violation: Tool '{tool_name}' invocation blocked by mcp-behave lockfile policy."
-                    # Strict preservation of ID type (int, string, or None)
-                    resp = {
-                        "jsonrpc": "2.0",
-                        "id": msg_id,
-                        "error": {
-                            "code": ERROR_CODE_TOOL_BLOCKED,
-                            "message": err_msg,
-                        },
-                    }
-                    err_bytes = json.dumps(resp, ensure_ascii=False).encode("utf-8") + b"\n"
-
-                    event = BehavioralEvent(
-                        event="enforcement_action",
-                        session_id=self.session_id,
-                        server_id=self.server_id,
-                        kind=KIND_ENFORCEMENT_ACTION,
-                        source="monitor",
-                        evidence_tier=EVIDENCE_TIER_OBSERVED,
-                        severity=SEVERITY_HIGH,
-                        current_tool=tool_name,
-                        request_id=msg_id,
-                        timestamp=time.time(),
-                        payload={
-                            "action": "blocked",
-                            "direction": "client_to_server",
-                            "tool": tool_name,
-                            "reason": "unapproved_tool",
-                            "error_code": ERROR_CODE_TOOL_BLOCKED,
-                            "message": err_msg,
-                        },
-                    )
-                    return err_bytes, event
+                return err_bytes, evt
 
         return None, None
 
@@ -152,87 +228,100 @@ class PolicyEnforcer:
         except Exception:
             return line_bytes, []
 
-        # Fast pre-filter: skip deep JSON inspection if clean
+        # Fast pre-filter: skip deep JSON inspection if clean and no unicode escapes / batches
         has_canary = bool(self.canary_mgr.canaries)
         has_suspicious = bool(COMBINED_TEXT_PREFILTER.search(line_str.lower()))
-        if not has_canary and not has_suspicious:
+        has_escape_or_batch = ("\\u" in line_str) or line_str.lstrip().startswith("[")
+        if not has_canary and not has_suspicious and not has_escape_or_batch and not (self.enforce and self.fail_mode == "fail-closed"):
             return line_bytes, []
 
         try:
             msg = json.loads(line_str)
         except Exception:
+            if self.enforce and self.fail_mode == "fail-closed":
+                err_msg = "Policy violation: Malformed JSON-RPC server response blocked under fail-closed enforcement."
+                err_bytes = self._build_error_response(None, ERROR_CODE_RESPONSE_BLOCKED, err_msg)
+                evt = self._build_enforcement_event(
+                    direction="server_to_client",
+                    reason="malformed_json",
+                    error_code=ERROR_CODE_RESPONSE_BLOCKED,
+                    message=err_msg,
+                    severity=SEVERITY_CRITICAL,
+                )
+                return err_bytes, [evt]
+            return line_bytes, []
+
+        if isinstance(msg, list):
+            if self.enforce and self.fail_mode == "fail-closed":
+                err_msg = "Policy violation: JSON-RPC batch response blocked under fail-closed enforcement."
+                err_bytes = self._build_error_response(None, ERROR_CODE_RESPONSE_BLOCKED, err_msg)
+                evt = self._build_enforcement_event(
+                    direction="server_to_client",
+                    reason="unsupported_batch_message",
+                    error_code=ERROR_CODE_RESPONSE_BLOCKED,
+                    message=err_msg,
+                    severity=SEVERITY_CRITICAL,
+                )
+                return err_bytes, [evt]
+            if self.redact:
+                redacted_list, redact_events = self._redact_json_object(msg, None)
+                if redact_events:
+                    redacted_bytes = json.dumps(redacted_list, ensure_ascii=False).encode("utf-8") + b"\n"
+                    return redacted_bytes, redact_events
             return line_bytes, []
 
         if not isinstance(msg, dict):
+            if self.enforce and self.fail_mode == "fail-closed":
+                err_msg = "Policy violation: Non-object JSON-RPC server response blocked under fail-closed enforcement."
+                err_bytes = self._build_error_response(None, ERROR_CODE_RESPONSE_BLOCKED, err_msg)
+                evt = self._build_enforcement_event(
+                    direction="server_to_client",
+                    reason="non_object_payload",
+                    error_code=ERROR_CODE_RESPONSE_BLOCKED,
+                    message=err_msg,
+                    severity=SEVERITY_CRITICAL,
+                )
+                return err_bytes, [evt]
             return line_bytes, []
 
         msg_id = msg.get("id")
+        if isinstance(msg_id, (dict, list, bool)):
+            msg_id = None
         events: List[BehavioralEvent] = []
 
+        # Inspect decoded text (catches \uXXXX escapes that bypass raw-byte prefilters)
+        decoded_str = json.dumps(msg, ensure_ascii=False)
+
         # 1. Check active canary tokens
-        canaries_found = self.canary_mgr.find_canaries(line_str)
+        canaries_found = self.canary_mgr.find_canaries(decoded_str)
         if canaries_found and self.enforce and self.fail_mode == "fail-closed":
             err_msg = "Policy violation: Server response blocked due to confidential credential or canary token exfiltration."
-            resp = {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {
-                    "code": ERROR_CODE_RESPONSE_BLOCKED,
-                    "message": err_msg,
-                },
-            }
-            err_bytes = json.dumps(resp, ensure_ascii=False).encode("utf-8") + b"\n"
-            evt = BehavioralEvent(
-                event="enforcement_action",
-                session_id=self.session_id,
-                server_id=self.server_id,
-                kind=KIND_ENFORCEMENT_ACTION,
-                source="monitor",
-                evidence_tier=EVIDENCE_TIER_OBSERVED,
+            err_bytes = self._build_error_response(msg_id, ERROR_CODE_RESPONSE_BLOCKED, err_msg)
+            evt = self._build_enforcement_event(
+                direction="server_to_client",
+                reason="canary_exfiltration",
+                error_code=ERROR_CODE_RESPONSE_BLOCKED,
+                message=err_msg,
                 severity=SEVERITY_CRITICAL,
-                request_id=msg_id,
-                timestamp=time.time(),
-                payload={
-                    "action": "blocked",
-                    "direction": "server_to_client",
-                    "reason": "canary_exfiltration",
-                    "canary_count": len(canaries_found),
-                    "error_code": ERROR_CODE_RESPONSE_BLOCKED,
-                },
+                msg_id=msg_id,
+                extra={"canary_count": len(canaries_found)},
             )
             return err_bytes, [evt]
 
         # 2. Check critical secrets (private keys) for blocking under enforce
         if self.enforce and self.fail_mode == "fail-closed":
             for rule_name, pattern, _, is_crit in SECRET_RULES:
-                if is_crit and pattern.search(line_str):
+                if is_crit and pattern.search(decoded_str):
                     err_msg = f"Policy violation: Server response blocked due to critical credential exposure ({rule_name})."
-                    resp = {
-                        "jsonrpc": "2.0",
-                        "id": msg_id,
-                        "error": {
-                            "code": ERROR_CODE_RESPONSE_BLOCKED,
-                            "message": err_msg,
-                        },
-                    }
-                    err_bytes = json.dumps(resp, ensure_ascii=False).encode("utf-8") + b"\n"
-                    evt = BehavioralEvent(
-                        event="enforcement_action",
-                        session_id=self.session_id,
-                        server_id=self.server_id,
-                        kind=KIND_ENFORCEMENT_ACTION,
-                        source="monitor",
-                        evidence_tier=EVIDENCE_TIER_OBSERVED,
+                    err_bytes = self._build_error_response(msg_id, ERROR_CODE_RESPONSE_BLOCKED, err_msg)
+                    evt = self._build_enforcement_event(
+                        direction="server_to_client",
+                        reason="critical_secret_exposure",
+                        error_code=ERROR_CODE_RESPONSE_BLOCKED,
+                        message=err_msg,
                         severity=SEVERITY_CRITICAL,
-                        request_id=msg_id,
-                        timestamp=time.time(),
-                        payload={
-                            "action": "blocked",
-                            "direction": "server_to_client",
-                            "reason": "critical_secret_exposure",
-                            "detector": rule_name,
-                            "error_code": ERROR_CODE_RESPONSE_BLOCKED,
-                        },
+                        msg_id=msg_id,
+                        extra={"detector": rule_name},
                     )
                     return err_bytes, [evt]
 

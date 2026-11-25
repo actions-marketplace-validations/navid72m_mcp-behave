@@ -170,3 +170,32 @@ def test_resolve_package_identity_dispatcher():
 
     native_res = resolve_package_identity(["/bin/ls"])
     assert native_res["ecosystem"] == "native_binary"
+
+
+def test_mcp_registry_ownership_and_version_consistency():
+    """Verify MCP Registry ownership markers and consistent version declarations across packaging metadata."""
+    import json
+    import re
+    import mcp_behave
+
+    repo_root = Path(__file__).resolve().parent.parent
+    expected_mcp_name = "io.github.navid72m/mcp-behave"
+
+    readme_text = (repo_root / "README.md").read_text(encoding="utf-8")
+    assert f"mcp-name: {expected_mcp_name}" in readme_text
+
+    pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject_text, re.MULTILINE)
+    assert m is not None
+    py_ver = m.group(1)
+    assert mcp_behave.__version__ == py_ver
+
+    pkg_json = json.loads((repo_root / "package.json").read_text(encoding="utf-8"))
+    assert pkg_json["mcpName"] == expected_mcp_name
+    assert pkg_json["version"] == py_ver
+
+    srv_json = json.loads((repo_root / "server.json").read_text(encoding="utf-8"))
+    assert srv_json["name"] == expected_mcp_name
+    assert srv_json["version"] == py_ver
+    for pkg in srv_json["packages"]:
+        assert pkg["version"] == py_ver

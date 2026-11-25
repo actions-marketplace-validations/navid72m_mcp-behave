@@ -100,7 +100,7 @@ SECRET_RULES: List[Tuple[str, re.Pattern, float, bool]] = [
     # 9. Generic High-Entropy Credential Assignment
     (
         "generic_secret_token",
-        re.compile(r"""(?i)["']?(?:api[_-]?key|client[_-]?secret|auth[_-]?token|bearer_token)["']?\s*[:=]\s*["']?([A-Za-z0-9_\-+/]{24,})["']?"""),
+        re.compile(r"""(?i)["']?(?:api[_-]?key|client[_-]?secret|auth[_-]?token|bearer[_-]?token)["']?\s*[:=]\s*["']?([A-Za-z0-9_\-+/]{24,})["']?"""),
         4.5,
         False,
     ),
@@ -136,7 +136,7 @@ COMBINED_BYTE_PREFILTER: re.Pattern = COMBINED_PREFILTER
 # Fast text pre-filter regex to bypass 22 regex passes on clean payloads (exits in < 0.01 ms)
 COMBINED_TEXT_PREFILTER: re.Pattern = re.compile(
     r"akia|asia|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox|begin\s+(?:rsa|ec|dsa|openssh|pgp)\s+private\s+key"
-    r"|aws_secret_access_key|secret_key|secretaccesskey|api[_-]?key|client[_-]?secret|auth[_-]?token|bearer_token"
+    r"|aws_secret_access_key|secret_key|secretaccesskey|api[_-]?key|client[_-]?secret|auth[_-]?token|bearer[_-]?token"
     r"|ignore\s+(?:all\s+)?previous|disregard|you\s+are\s+now|system\s*prompt|###|<\s*/?\s*(?:system|instructions|developer|mcp_context)|\[/?inst\]|<<sys"
     r"|jailbreak|do\s*not\s*tell|hide\s*this|do\s*not\s*inform|without\s*informing|secretly|silently|covertly"
     r"|https?://|curl|wget|base64\.b64decode"
@@ -445,13 +445,10 @@ class ContentScanner:
         # 2. Slack (xox)
         if b"x" in raw_bytes and (b"xox" in raw_bytes or b"XOX" in raw_bytes):
             return True
-        # 3. OpenAI / Anthropic (sk-)
-        if b"k" in raw_bytes and (b"sk-" in raw_bytes or b"SK-" in raw_bytes):
-            return True
-        # 4. Private keys (BEGIN ) & Bearer auth
+        # 3. Private keys (BEGIN ) & Bearer auth
         if b"B" in raw_bytes and (b"BEGIN " in raw_bytes or b"PRIVATE KEY" in raw_bytes or b"Bearer " in raw_bytes):
             return True
-        # 5. XML tags (<system, <instructions, <developer, <<sys)
+        # 4. XML tags (<system, <instructions, <developer, <<sys)
         if b"<" in raw_bytes and (
             b"<sys" in raw_bytes
             or b"<SYS" in raw_bytes
@@ -461,10 +458,10 @@ class ContentScanner:
             or b"<DEV" in raw_bytes
         ):
             return True
-        # 6. Bracket tags ([inst)
+        # 5. Bracket tags ([inst)
         if b"[" in raw_bytes and (b"[inst" in raw_bytes or b"[INST" in raw_bytes):
             return True
-        # 7. Injections: ignore, disregard
+        # 6. Injections: ignore, disregard
         if (b"g" in raw_bytes or b"G" in raw_bytes) and (
             b"ignore" in raw_bytes
             or b"IGNORE" in raw_bytes
@@ -474,14 +471,14 @@ class ContentScanner:
             or b"Disregard" in raw_bytes
         ):
             return True
-        # 8. System prompt
+        # 7. System prompt
         if (b"y" in raw_bytes or b"Y" in raw_bytes) and (
             b"system prompt" in raw_bytes
             or b"SYSTEM PROMPT" in raw_bytes
             or b"System Prompt" in raw_bytes
         ):
             return True
-        # 9. Underscore-separated credentials (covers api_key, auth_token, secret_key, etc.)
+        # 8. Underscore-separated credentials (covers api_key, auth_token, secret_key, etc.)
         if b"_" in raw_bytes:
             if (
                 b"api_key" in raw_bytes
@@ -507,20 +504,65 @@ class ContentScanner:
                 or b"mcpb_canary_" in raw_bytes
             ):
                 return True
-        # 10. CamelCase & alternative credential markers
-        if b"K" in raw_bytes and (
-            b"apiKey" in raw_bytes
-            or b"secretKey" in raw_bytes
-            or b"secretAccessKey" in raw_bytes
+        # 9. Hyphenated credentials (Item 2: api-key, client-secret, auth-token, bearer-token, sk-)
+        if b"-" in raw_bytes:
+            if (
+                b"sk-" in raw_bytes
+                or b"SK-" in raw_bytes
+                or b"api-key" in raw_bytes
+                or b"API-KEY" in raw_bytes
+                or b"Api-Key" in raw_bytes
+                or b"client-secret" in raw_bytes
+                or b"CLIENT-SECRET" in raw_bytes
+                or b"Client-Secret" in raw_bytes
+                or b"auth-token" in raw_bytes
+                or b"AUTH-TOKEN" in raw_bytes
+                or b"Auth-Token" in raw_bytes
+                or b"bearer-token" in raw_bytes
+                or b"BEARER-TOKEN" in raw_bytes
+                or b"Bearer-Token" in raw_bytes
+            ):
+                return True
+        # 10. Lowercase 'k' credential markers (sk-, apikey, authtoken, bearertoken)
+        if b"k" in raw_bytes and (
+            b"sk-" in raw_bytes
+            or b"apikey" in raw_bytes
+            or b"authtoken" in raw_bytes
+            or b"bearertoken" in raw_bytes
         ):
             return True
+        # 11. Uppercase 'K' credential markers (APIKEY, ApiKey, authToken, etc.)
+        if b"K" in raw_bytes and (
+            b"SK-" in raw_bytes
+            or b"apiKey" in raw_bytes
+            or b"ApiKey" in raw_bytes
+            or b"APIKEY" in raw_bytes
+            or b"secretKey" in raw_bytes
+            or b"secretAccessKey" in raw_bytes
+            or b"AuthToken" in raw_bytes
+            or b"AUTHTOKEN" in raw_bytes
+            or b"BearerToken" in raw_bytes
+            or b"BEARERTOKEN" in raw_bytes
+        ):
+            return True
+        # 12. CamelCase T
         if b"T" in raw_bytes and (
             b"authToken" in raw_bytes
             or b"accessToken" in raw_bytes
             or b"bearerToken" in raw_bytes
         ):
             return True
-        if b"S" in raw_bytes and b"clientSecret" in raw_bytes:
+        # 13. CamelCase S & uppercase CLIENTSECRET
+        if b"S" in raw_bytes and (
+            b"clientSecret" in raw_bytes
+            or b"CLIENTSECRET" in raw_bytes
+        ):
+            return True
+        # 14. Lowercase clientsecret guarded by 'i'
+        if b"i" in raw_bytes and (
+            b"clientsecret" in raw_bytes
+            or b"ClientSecret" in raw_bytes
+        ):
             return True
         return False
 
