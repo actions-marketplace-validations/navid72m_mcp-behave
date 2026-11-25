@@ -269,3 +269,5 @@ The CI workflow runs tests on Linux and macOS. Contributions, bug reports, false
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+<!-- mcp-name: io.github.navid72m/mcp-behave -->
