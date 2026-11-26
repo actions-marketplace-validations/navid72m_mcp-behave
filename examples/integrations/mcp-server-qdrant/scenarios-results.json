@@ -1,0 +1,34 @@
+{
+  "wrap_passed": "4/4",
+  "enforce_passed": "4/4",
+  "scenarios": [
+    {
+      "name": "store_doc_architecture",
+      "category": "expected_write",
+      "tool": "qdrant-store",
+      "expected_outcome": "success",
+      "is_error": false
+    },
+    {
+      "name": "store_doc_excel",
+      "category": "expected_write",
+      "tool": "qdrant-store",
+      "expected_outcome": "success",
+      "is_error": false
+    },
+    {
+      "name": "find_matching_architecture",
+      "category": "read_only",
+      "tool": "qdrant-find",
+      "expected_outcome": "success",
+      "is_error": false
+    },
+    {
+      "name": "find_nonexistent_collection",
+      "category": "invalid_input",
+      "tool": "qdrant-find",
+      "expected_outcome": "success",
+      "is_error": false
+    }
+  ]
+}

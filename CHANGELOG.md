@@ -2,6 +2,31 @@
 
 All notable changes to `mcp-behave` are documented in this file.
 
+## [0.5.7] - 2026-11-26
+
+An adoption and CI compatibility release addressing blockers discovered during real-world external MCP server evaluations.
+
+### Behavioral Baseline & CI Compatibility
+- **Structured Python Atomic Bytecode Identities (`src/mcp_behave/lockfile.py`)**: Added `classify_baseline_write()` and `baseline_behavior.files_written_typed` (`{"kind": "literal" | "pyc_atomic_temp", "path": ...}`) so CPython `importlib._write_atomic` temporary `.pyc.<digits>` writes match across `mcp-behave init` and `mcp-behave check` without conflating them with direct `.pyc` writes.
+- **Strict Typed Baseline Validation (`src/mcp_behave/lockfile.py`)**: Added `_parse_typed_files_written()` to validate `files_written_typed` containers, entry objects, supported `kind` values (`literal`, `pyc_atomic_temp`), and non-empty `path` strings before target execution—rejecting malformed typed baselines with an explicit `stderr` diagnostic and nonzero exit (`2`) without falling back to legacy comparison.
+- **ASCII-Only Temporary Filename Matching (`src/mcp_behave/lockfile.py`)**: Restricted `.pyc.<digits>` matching to `\A(.*/__pycache__/[^/]+\.pyc)\.[0-9]+\Z` so Unicode digits and trailing newlines do not match `pyc_atomic_temp`.
+- **Clean Machine-Readable Stdout (`src/mcp_behave/probe.py`)**: Routed `[probe]` progress and diagnostic messages to `stderr` so `--json`, `--sarif`, and `check --json` emit strictly valid JSON/SARIF on `stdout`.
+- **External Baseline Stability**: Verified `mcp-behave init` -> `mcp-behave check` stability (0 false-positive diffs) against **Excel MCP Server (`v2.3.7`)** and **MotherDuck MCP (`v1.1.1`)** in isolated `--network none` containers.
+
+### Tracer & Shutdown Semantics
+- **Zero-Length Datagram Handling (`src/mcp_behave/tracer_server.py`)**: Fixed `TracerServer.drain_once()` so zero-length `SOCK_DGRAM` packets do not terminate draining prematurely while queued `! DROPPED` loss markers remain; `drain_once()` returns `True` only when `BlockingIOError` is reached.
+
+### Documentation & Release Pipeline
+- **`SECURITY.md`**: Clarified that default host execution uses canary `$HOME` redirection and environment scrubbing rather than OS/container sandboxing, which requires `--sandbox`.
+- **`.github/workflows/publish.yml`**: Removed npm publish error suppression (`|| echo ...`) and failed-on-timeout instead of proceeding when npm/PyPI registry replication polling times out.
+
+### Known Limitations
+- **Qdrant MCP (`v0.9.0`) `init`/`check` Instability**: Remains unstable (`check` exits `3`) because `onnxruntime` writes to randomized `mcp_behave_canary_home_*` paths and relative `deviceid.tmp.<uuid>` / `/tmp/<rand>` paths; `canary_home` normalization was intentionally omitted because `trace.log` cannot establish runtime symlink containment.
+- **Legacy Lockfiles**: Older lockfiles lacking `files_written_typed` retain strict literal path comparisons and may require reviewed regeneration via `mcp-behave init`.
+- **Tracer Startup Bursts & Shutdown Uncertainty**: Native tracer startup `import` bursts can still trigger `EAGAIN` `telemetry_drop` events, and `mcp-behave wrap` conservatively preserves the shutdown unread-datagram uncertainty warning.
+- **Scope of External Evaluations**: Phase 1 evaluations (Excel MCP Server, MotherDuck MCP, Qdrant MCP) demonstrate CI compatibility and runtime observation; they do not establish comprehensive security guarantees for those servers.
+- **Performance Benchmarks**: No performance or endurance benchmarks were repeated for `v0.5.7`; benchmark figures in `README.md` and `BENCHMARK.md` are measurements of `v0.5.6`.
+
 ## [0.5.6] - 2026-11-26
 
 ### Performance

@@ -1,0 +1,503 @@
+{
+  "$schema": "https://mcp-behave.dev/schemas/v1/lockfile.json",
+  "version": 1,
+  "created_at": "2026-11-26T14:05:43.232111+00:00",
+  "updated_at": "2026-11-26T14:05:43.232116+00:00",
+  "mcp_behave_version": "0.5.7",
+  "servers": {
+    "excel-mcp-server": {
+      "server_id": "excel-mcp-server",
+      "command": [
+        "/opt/target-venv/bin/excel-mcp-server",
+        "stdio",
+        "--allow-dir",
+        "/workspace/excel_work/allowed"
+      ],
+      "environment": {},
+      "audit": {
+        "audited_at": "2026-11-26T14:05:43.231901+00:00",
+        "findings_count": 159
+      },
+      "manifest": {
+        "server_info": {},
+        "instructions_hash": "",
+        "capabilities": {},
+        "tools": {
+          "create_workbook": {
+            "description_hash": "sha256:8b9f75a1a537f248b277b5159f243418e8390bd10d9dfe2afd7ff05228501c76",
+            "input_schema_hash": "sha256:01578cbfa7f09c885baa7583a43053cf649c1d3deadfb1770104dd9ea5d8670b",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "describe_workbook": {
+            "description_hash": "sha256:e0f8ec80cdad3bb29941e2afe36cf2bd6ebb9acefeb79a35b22243ee98bfb372",
+            "input_schema_hash": "sha256:923b083c9bcab2e3d3e07c7d9b4401688ad9f3d5e2c2f0c48fcd43052bdcb71b",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false
+            }
+          },
+          "set_workbook_settings": {
+            "description_hash": "sha256:6dddc49cb050f7cc308c4c6842ce36eb4ecbef35500f2c323f74d7ecb32a07eb",
+            "input_schema_hash": "sha256:f1385f9fa2f93a6ea5a24955d97578fbdc8422add0a68d035192fa3caf9deb26",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "list_workbooks": {
+            "description_hash": "sha256:a98ba26090b00e682bbc93d990c1f07b9167f4cedab45233b9d7b3f522df2c47",
+            "input_schema_hash": "sha256:d4b5eb53337b091a21f997beb3cdb8472ddea2cff3381e3c156f4b8fb4464cea",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false
+            }
+          },
+          "export_workbook": {
+            "description_hash": "sha256:b4ef13f518dc6790143ba2e131a8fa6e6764f3a9d220833e3da14a6af3e67edd",
+            "input_schema_hash": "sha256:923b083c9bcab2e3d3e07c7d9b4401688ad9f3d5e2c2f0c48fcd43052bdcb71b",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false
+            }
+          },
+          "import_workbook": {
+            "description_hash": "sha256:9c7d16d65d86d00744d57d41b094908423d1d0dfbe1d4f776b65ca5c1f133d7e",
+            "input_schema_hash": "sha256:3a611d6824590179f6ad06e8f7cb02387db368c1e7ccd1ff50d731f02a79ac92",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "import_csv": {
+            "description_hash": "sha256:f1817449f1573ac563b3a88fe0a06d3518be82adf1631ec7c8e61acfc711b9fe",
+            "input_schema_hash": "sha256:9de000b601d0ff7b0fec2d2aaf628d1313418bcde8dbb8f7152bcbd3f304fb7d",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "export_csv": {
+            "description_hash": "sha256:399bc372bed7a4a4e0de8871446b3941bc5ca16bd869c85377fab623ba176515",
+            "input_schema_hash": "sha256:3844b258173d7f25d522b1ee3f83ae0d03a2f6441beb7c00e7ec37b054d4fd3e",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "describe_sheet": {
+            "description_hash": "sha256:913a6378382db2ff74b60bb5f1e0156882b96ffb685578c8eef0e2c722910bed",
+            "input_schema_hash": "sha256:ab9e4c940b633c9341fb10d9480f4dbb25341f45d58aeb6b21174487e325790b",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false
+            }
+          },
+          "create_sheet": {
+            "description_hash": "sha256:16aee054d1a8ffc83f9ed4a87382cd572818f629a8c02d4a0eb243c212832175",
+            "input_schema_hash": "sha256:1ebbdd6043f9c4cd30d632e0008653b79670a9fed4f97bd12cbb6a3bf84fb75e",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "rename_sheet": {
+            "description_hash": "sha256:fe2525104151b879db50c0fcd22498f0d4508c645e42dbacbf5dd3ef1d881a0d",
+            "input_schema_hash": "sha256:230cef4f568cedb4f433c4c43d9e9011679390dc675666926e769a19ab0e2f73",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "copy_sheet": {
+            "description_hash": "sha256:415b91061a94ba3ec842ea63cde10ccb06badf2bb5c6a19e3d416a75aae80647",
+            "input_schema_hash": "sha256:230cef4f568cedb4f433c4c43d9e9011679390dc675666926e769a19ab0e2f73",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "delete_sheet": {
+            "description_hash": "sha256:e85d5b4e3e544e120d5addf2e1f65f67a498d18cca5cdee4b4ef6fdfa327f6ee",
+            "input_schema_hash": "sha256:ab9e4c940b633c9341fb10d9480f4dbb25341f45d58aeb6b21174487e325790b",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "insert_rows_or_columns": {
+            "description_hash": "sha256:883e02b94d4c068afc65c2fee403a5e3ae55de89130e1eec8d4ec77a56230a79",
+            "input_schema_hash": "sha256:ed57f6a87933024cfedf270fca108d9f25f3739558239d235c6eaff38e30d6fe",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "delete_rows_or_columns": {
+            "description_hash": "sha256:49d3d9002d2ea8a3ce2bb516b2c65938b1721d0c70540a40d68de8241e48a0ee",
+            "input_schema_hash": "sha256:ed57f6a87933024cfedf270fca108d9f25f3739558239d235c6eaff38e30d6fe",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "read_range": {
+            "description_hash": "sha256:c53e863294b0755740fd71c92a165dcc51dfe3ead39299a19605bdfdfe4dd160",
+            "input_schema_hash": "sha256:fec22748f19c969330917a36981bb048f955113c2a9b0da60a78137cbaa8de11",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false
+            }
+          },
+          "write_range": {
+            "description_hash": "sha256:3aa2ec037b5b66618e68f1e01bf56cb2d00834591cf22c30e8702521a6405731",
+            "input_schema_hash": "sha256:2fbe79e6a1aa22b15a0ba6ff11cbd5e476fb35fc3829f492c0d5d2adb574153f",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "clear_range": {
+            "description_hash": "sha256:691d8368482e5c8475fc46043e7f9b5fe11230c84be74126a8a181103555b867",
+            "input_schema_hash": "sha256:1bad231199202869c521c638126dbae4e5e52e059c739f50f06b27d48bece733",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "copy_range": {
+            "description_hash": "sha256:6167db08dd191686f300ef839a0d860509a9cf00f0ffac687c4d356c76dd8f00",
+            "input_schema_hash": "sha256:d596e2d2286e920a79d8e9372e3f5c2cf379485e0708c93e4a0c01bdbc7c13e0",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "sort_range": {
+            "description_hash": "sha256:3c7e5aa28578823ae747da4a94685f9afac85bdf6b0f42dc2735b890326a94a3",
+            "input_schema_hash": "sha256:2409a1ee4b3471970337f6a9df06f35b14b93a13c64c9e64b1eca2acdb9360cc",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "transform_range": {
+            "description_hash": "sha256:9264f1311a523ab2fc83668709fb8d1fb97490f0e50b349f5216f4c9f015a61d",
+            "input_schema_hash": "sha256:36d0c283a3dfa36cc4cd8421e8fd5c2465f4427ddc9368aff7e780b5437fe842",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "find_cells": {
+            "description_hash": "sha256:1c43ab5cc152cff5733d3087fe75f241520f90ed12e1a2f7789a7951d302c974",
+            "input_schema_hash": "sha256:2db9326046a3123f93ae566bcc56e9a3af6cbc9c4a4dd6522a4bdeb050f73d63",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false
+            }
+          },
+          "replace_cells": {
+            "description_hash": "sha256:dab34cfc3b2191309f0c7362f3a12907b29cf15e275cb16720cdae7d1cac9f24",
+            "input_schema_hash": "sha256:dfc772b6beb5ddf2d82ff7c2ce5374bf3f525d4b4ec49ba7914b4722b9188be1",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "trace_formula": {
+            "description_hash": "sha256:7cc548f583a628e2054f6ff73c94627ce6fa962fb156cbd31e6fbf0529d51db0",
+            "input_schema_hash": "sha256:81cfce248c2d9688313590959d43bdc7459b064bbf0ae82e9aa6310f6ff7e2df",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false
+            }
+          },
+          "goal_seek": {
+            "description_hash": "sha256:28ae2470408f9b830d925221ad81ff1905ad209a0bd2e9505db8754ebc0c212a",
+            "input_schema_hash": "sha256:146ec93f003a680db3f5aa62525db7d7761e2abbd71089e73fde745bd50706d7",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "format_range": {
+            "description_hash": "sha256:99485627b5ba35c6716998a8d0e30752af45a78c5edb6138728489882582d3b4",
+            "input_schema_hash": "sha256:3c76d7f9caf02b4c32b04e5c32aca224ce803f38ee275785f3f3323340a20fe8",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "merge_cells": {
+            "description_hash": "sha256:7c74fa425431225986009b7b7995c139bd951aca1f8375a439ccad49e27fee6e",
+            "input_schema_hash": "sha256:4233769ae7d6ad57da68c30f1afd17be7fd628aa8d3bf560d772d38011f8e0ce",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "set_sheet_layout": {
+            "description_hash": "sha256:3846abf4268c8382b8fa8962d0c4bf4dbb633ce626073fa1ddc9a5a71bb08fb5",
+            "input_schema_hash": "sha256:42aaab692b4f28def76a769da0f738078ad4ed7bf0955b40856b092107ea7b27",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "add_conditional_format": {
+            "description_hash": "sha256:bd02fa84b689c8348af8050d08e15fd15fa44f6855c5211a64952b20ff5e7ab4",
+            "input_schema_hash": "sha256:6a053567a3092cefb792cb8ceb029eadf528df0ddbbe19752683b4f0dcb83dd3",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "add_data_validation": {
+            "description_hash": "sha256:fc6d43744dff46d46070ccc0d2f09a0e29469ac099097d5d5d02196737dcda11",
+            "input_schema_hash": "sha256:f9b503c3f978506285564f2350fbee135b4175a448513a53344123bfa1c308ba",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "set_table": {
+            "description_hash": "sha256:0df3ed377bd811a36d676f186cc064d57aeda9c137dc538f82d84f967dc73796",
+            "input_schema_hash": "sha256:a33738f177e43070d74aa40f4106ae0c764bed020d067e99bd9ab6b087abd590",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "create_chart": {
+            "description_hash": "sha256:4caffe55b6d87733e911a4c4c853afb2ae92ab5874a7fe93e8e1ff5f8f8afac0",
+            "input_schema_hash": "sha256:6332956581297784232224ccfa3c8728f856caa0b71f46cc0e5f543c39bd1dc2",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "delete_chart": {
+            "description_hash": "sha256:520aedac4c483d4a5821fb6ad84a850333036eb5d3bf40757b0a04f38fc504f5",
+            "input_schema_hash": "sha256:7f8ea2841b1f6cea5e3bf962a9134e5bfcb4164e6fed9d57c1d6b40a05cfe282",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "add_sparklines": {
+            "description_hash": "sha256:463fcb0b0fe12b4036875732a6bc8ae0077c4e10f91c5f2dc46a747abe83ea73",
+            "input_schema_hash": "sha256:94d8edfd5f4ff94d18a6c4b6284956c09a60cdd5fa9b398a846004ac880b4edf",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "delete_sparklines": {
+            "description_hash": "sha256:115ad3b8a7dc12785661bd6234fcda09bc08fcbb236521cd13a4173a26a488ef",
+            "input_schema_hash": "sha256:1d5ec4b274b91702d4ed946dbc352ff41bf250fec491a302d9da5027c25cd159",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "create_pivot_table": {
+            "description_hash": "sha256:b0e8e39e33795222366acbaf3b133248912480d800e30ad9808c359163c8a466",
+            "input_schema_hash": "sha256:fa8d7ccf6a822741e153bb9df65e53ca7aac25e23eccf2766801158caaa3ed63",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "delete_pivot_table": {
+            "description_hash": "sha256:b461c62d8baca8b7e950bd00f40df35ab3e39360768dd72ce98843cdddc1a3f0",
+            "input_schema_hash": "sha256:7f8ea2841b1f6cea5e3bf962a9134e5bfcb4164e6fed9d57c1d6b40a05cfe282",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "add_slicer": {
+            "description_hash": "sha256:84e7d0705966627e26f476dc1e59a6a560252bef493fea3dba0d2df6e2a17a11",
+            "input_schema_hash": "sha256:707079844498cc1a846a6fce532bbd2ec508556847cce89c8753d23b7aef67bf",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "delete_slicer": {
+            "description_hash": "sha256:7d8c2c673539fd398f3fed69f663f0b295c59ebfebd051d156111fa5c30dc964",
+            "input_schema_hash": "sha256:7f8ea2841b1f6cea5e3bf962a9134e5bfcb4164e6fed9d57c1d6b40a05cfe282",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "set_defined_name": {
+            "description_hash": "sha256:b08a82c5e7d740448704e732eb44481769579c2fe5416f6073ebc4d3a82e2b76",
+            "input_schema_hash": "sha256:993a4df24b7c70862dd5c4872fc1ea4589c2d6ba8a934e451abcca888fd1ea42",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "delete_defined_name": {
+            "description_hash": "sha256:dadda788de02a86beb7ad62bc5871e5f46ee339e109904a66969a4d3e100b1a1",
+            "input_schema_hash": "sha256:9d962accc47112db48df2613560bab6494c8f3bab3f0770cabe9a1d1716c6d64",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "set_note": {
+            "description_hash": "sha256:eab38341f8f97675bdcfbea2d4939434db11d176c9dc8d1efcfdae28b6244665",
+            "input_schema_hash": "sha256:428ac2af4f694d2a9d82197f3f8f775a1f7e4b25d80753bd4b27aa950f094fd1",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "delete_note": {
+            "description_hash": "sha256:4dc4f142e2e1480695406d36da5465b43aeb28bfa112ae10991419f4690b0414",
+            "input_schema_hash": "sha256:1808cee93b3c6dc2c2d80ab66edc81d406366040bb100921f6043f01ac0592e2",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "insert_image": {
+            "description_hash": "sha256:34e20666cd552afc8bda986801a73775db8d144e83059112dfdbf6ead443855e",
+            "input_schema_hash": "sha256:0459e7e9ec9423a74f6858d638b16dfe17fa3477961ca3f486bfdfab80df2804",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "delete_image": {
+            "description_hash": "sha256:e185bc1da598998fc4780e1b4f0e9b77b293d130597e68a1f46277b63bdd598f",
+            "input_schema_hash": "sha256:7f8ea2841b1f6cea5e3bf962a9134e5bfcb4164e6fed9d57c1d6b40a05cfe282",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "read_vba": {
+            "description_hash": "sha256:f83e84db39aee73f5bec17eee6593b3a6fa185e678442ed765c22642a6a8ce52",
+            "input_schema_hash": "sha256:95efd8bb3002acddda3428fd1bf41cc745cbc90ad4fdf30564ef2f5d3bb8cf86",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": true,
+              "openWorldHint": false
+            }
+          }
+        },
+        "prompts": {},
+        "resources": {}
+      },
+      "package": {
+        "ecosystem": "native_binary",
+        "name": "excel-mcp-server",
+        "version": "",
+        "resolved_source": "local_binary",
+        "integrity": "sha256:618a1c005efa89f41216ff3e5fc92536c0d16e5e70a9f391f6e5305ed937dc4a"
+      },
+      "runtime": {
+        "executable_path": "/opt/target-venv/bin/excel-mcp-server",
+        "executable_sha256": "sha256:618a1c005efa89f41216ff3e5fc92536c0d16e5e70a9f391f6e5305ed937dc4a"
+      }
+    }
+  }
+}

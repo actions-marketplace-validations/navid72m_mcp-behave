@@ -1,6 +1,6 @@
+
 name: publish
 
-# Triggered by pushing a version tag like v0.1.0 or manually via workflow_dispatch.
 on:
   push:
     tags: ["v*"]
@@ -8,21 +8,25 @@ on:
 
 permissions:
   contents: read
-  id-token: write  # required for Trusted Publishers OIDC
+  id-token: write
 
 jobs:
   publish-pypi:
     runs-on: ubuntu-latest
     environment: pypi
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+
       - name: Build
         run: |
-          pip install build
+          python -m pip install build
           python -m build
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -30,45 +34,82 @@ jobs:
 
   publish-npm:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Update npm
+        run: npm install -g npm@11
+
+      - name: Verify runtime
+        run: |
+          node --version
+          npm --version
+
       - name: Publish to npm
-        run: npm publish --access public || echo "Version already published on npm, skipping."
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+
+          if [ "$(npm view "mcp-behave@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+            echo "Version $VERSION already exists on npm."
+          else
+            npm publish --access public
+          fi
 
   publish-mcp-registry:
     needs: [publish-pypi, publish-npm]
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Install mcp-publisher
         run: |
-          curl -sSL "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.9/mcp-publisher_linux_amd64.tar.gz" | sudo tar -xz -C /usr/local/bin mcp-publisher
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.9/mcp-publisher_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin mcp-publisher
           sudo chmod +x /usr/local/bin/mcp-publisher
+
       - name: Authenticate with MCP Registry
         run: mcp-publisher login github-oidc
-      - name: Wait for package registries replication
+
+      - name: Wait for package registries
         run: |
-          echo "Waiting for package registries (npm & PyPI) to replicate globally..."
-          for i in {1..18}; do
-            NPM_VER=$(npm view mcp-behave version --registry=https://registry.npmjs.org/ 2>/dev/null || true)
-            PYPI_VER=$(curl -s https://pypi.org/pypi/mcp-behave/json | grep -o '"version":"[^"]*"' | head -n 1 | cut -d'"' -f4 || true)
-            TAG_VER="${GITHUB_REF_NAME#v}"
-            echo "Attempt $i/18: Target=$TAG_VER, npm=$NPM_VER, PyPI=$PYPI_VER"
-            if [ "$NPM_VER" = "$TAG_VER" ] && [ "$PYPI_VER" = "$TAG_VER" ]; then
-              echo "Both npm and PyPI show version $TAG_VER! Ready to publish to MCP Registry."
+          VERSION=$(python3 -c 'import json; print(json.load(open("server.json"))["version"])')
+
+          for i in {1..30}; do
+            NPM_VER=$(npm view "mcp-behave@$VERSION" version 2>/dev/null || true)
+
+            PYPI_VER=$(curl -fsSL "https://pypi.org/pypi/mcp-behave/$VERSION/json" \
+              | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['version'])" \
+              2>/dev/null || true)
+
+            echo "Attempt $i/30: Target=$VERSION npm=$NPM_VER PyPI=$PYPI_VER"
+
+            if [ "$NPM_VER" = "$VERSION" ] && [ "$PYPI_VER" = "$VERSION" ]; then
+              echo "Both packages are available."
               exit 0
             fi
+
             sleep 10
           done
-          echo "Proceeding to publish after polling timeout..."
+
+          echo "Error: Package replication timeout." >&2
+          exit 1
+
       - name: Publish to MCP Registry
         run: mcp-publisher publish server.json
+

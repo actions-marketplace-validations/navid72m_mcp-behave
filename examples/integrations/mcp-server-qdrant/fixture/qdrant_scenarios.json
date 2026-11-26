@@ -1,0 +1,44 @@
+[
+  {
+    "name": "store_doc_architecture",
+    "category": "expected_write",
+    "tool": "qdrant-store",
+    "arguments": {
+      "information": "mcp-behave monitors MCP servers using LD_PRELOAD on Linux and DYLD on macOS.",
+      "collection_name": "synthetic_eval",
+      "metadata": {"topic": "architecture", "env": "synthetic"}
+    },
+    "expected_outcome": "success"
+  },
+  {
+    "name": "store_doc_excel",
+    "category": "expected_write",
+    "tool": "qdrant-store",
+    "arguments": {
+      "information": "Excel MCP Server enforces folder confinement via --allow-dir and read-only mode via --read-only.",
+      "collection_name": "synthetic_eval",
+      "metadata": {"topic": "excel", "env": "synthetic"}
+    },
+    "expected_outcome": "success"
+  },
+  {
+    "name": "find_matching_architecture",
+    "category": "read_only",
+    "tool": "qdrant-find",
+    "arguments": {
+      "query": "LD_PRELOAD syscall tracing",
+      "collection_name": "synthetic_eval"
+    },
+    "expected_outcome": "success"
+  },
+  {
+    "name": "find_nonexistent_collection",
+    "category": "invalid_input",
+    "tool": "qdrant-find",
+    "arguments": {
+      "query": "anything",
+      "collection_name": "does_not_exist"
+    },
+    "expected_outcome": "success"
+  }
+]

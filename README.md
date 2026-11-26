@@ -25,11 +25,15 @@ It also provides `mcp-behave wrap`, a stdio proxy for monitoring MCP traffic whi
   </a>
 </p>
 
-## v0.5.6 Performance & Reliability
+## v0.5.7 Adoption & CI Compatibility
+
+`v0.5.7` is an adoption and CI compatibility release: it routes `[probe]` progress output to `stderr` for clean `--json`/`--sarif` `stdout`, adds strict typed `pyc_atomic_temp` identities with ASCII-only `[0-9]+` matching for `mcp-behave init`/`check` baseline stability (verified on Excel MCP Server `v2.3.7` and MotherDuck MCP `v1.1.1`), and fixes zero-length datagram handling in `TracerServer.drain_once()`. See [CHANGELOG.md](CHANGELOG.md) for full details and remaining limitations.
+
+## v0.5.6 Performance & Reliability (Measured on v0.5.6)
 
 | **6.8× higher throughput** | **89.5% lower median latency** |
 |---|---|
-| **101,052 successful endurance-test requests** | **467 passing product tests** |
+| **101,052 successful endurance-test requests** | **467 passing product tests (v0.5.6)** |
 
 In a 10-repetition alternating paired comparison (`v0.5.5` vs `v0.5.6`, concurrent `--enforce --redact`, `n=200`, `c=16`, macOS arm64 with native DYLD tracing active), median throughput rose from `185.4` to `1,266.2` RPS while `p50` latency dropped from `95.062` ms to `10.003` ms (`-89.5%`) and `p95` dropped from `167.835` ms to `20.851` ms (`-87.6%`). In a 1-hour bounded-retention soak (`enforce_redact`), `mcp-behave wrap` completed `101,052` requests with `0` failures, `0` timeouts, `0` secret leaks across `2,833` checks, peak RSS of `81.55 MiB`, and `18 -> 19` open FDs (full-run telemetry completeness is `UNVERIFIED` under bounded retention due to intentional pruning). These measurements apply to the tested concurrent stdio proxy workload and environments; see [BENCHMARK.md](BENCHMARK.md) and [v0.5.6 benchmark evidence](benchmarks/results/v0.5.6/README.md) for full details and limitations.
 
@@ -255,6 +259,17 @@ The repository includes benchmark corpora and reports covering paired benign/mal
 - [Official reference-server audit](docs/benchmarks/official_servers_audit.md)
 
 These are project-maintained evaluations on specified corpora and fixtures. Results are corpus-specific; they are not independent certification or a guarantee that an arbitrary MCP server is safe.
+
+## Real-world integrations
+
+Reproducible behavioral audits, controlled scenario harnesses, and optional CI workflow examples evaluated with published `mcp-behave==0.5.7` in isolated `--network none` Linux containers (`LD_PRELOAD` tracing):
+
+- [Integration examples index](examples/integrations/README.md)
+- [MotherDuck MCP `v1.1.1`](examples/integrations/mcp-server-motherduck/README.md) (`7/7` controlled scenarios in `wrap` and `--enforce`, `3/3` consecutive `init`/`check` passes, `78` dropped startup telemetry records)
+- [Excel MCP Server `v2.3.7`](examples/integrations/excel-mcp-server/README.md) (`8/8` controlled scenarios in `wrap` and `--enforce`, `3/3` consecutive `init`/`check` passes, `2.2%` automatic probing coverage, `11` dropped startup telemetry records)
+- [Qdrant MCP `v0.9.0`](examples/integrations/mcp-server-qdrant/README.md) (`4/4` controlled scenarios in `wrap` and `--enforce`, `HIGH` audit confidence, `init`/`check` retains `7` randomized `onnxruntime`/`/tmp` diffs, `127` dropped startup telemetry records)
+
+Across all three targets, `19/19` controlled scenarios passed, `--json` and `--sarif` outputs parsed cleanly, and deliberate filesystem writes were detected. These evaluations do not establish comprehensive server security or full tool coverage, and the included GitHub Actions workflows were validated locally rather than on GitHub-hosted runners.
 
 ## Documentation
 

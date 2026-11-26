@@ -1,0 +1,51 @@
+[
+  {
+    "name": "list_databases",
+    "category": "read_only",
+    "tool": "list_databases",
+    "arguments": {},
+    "expected_outcome": "success"
+  },
+  {
+    "name": "list_tables",
+    "category": "read_only",
+    "tool": "list_tables",
+    "arguments": {},
+    "expected_outcome": "success"
+  },
+  {
+    "name": "list_columns_items",
+    "category": "read_only",
+    "tool": "list_columns",
+    "arguments": {"table": "items"},
+    "expected_outcome": "success"
+  },
+  {
+    "name": "select_item_revenue_view",
+    "category": "read_only",
+    "tool": "execute_query",
+    "arguments": {"sql": "SELECT * FROM item_revenue ORDER BY name;"},
+    "expected_outcome": "success"
+  },
+  {
+    "name": "write_blocked_in_readonly_mode",
+    "category": "permission_boundary",
+    "tool": "execute_query",
+    "arguments": {"sql": "CREATE TABLE should_fail (id INT);"},
+    "expected_outcome": "error"
+  },
+  {
+    "name": "local_fs_glob_in_readonly_mode",
+    "category": "documented_boundary",
+    "tool": "execute_query",
+    "arguments": {"sql": "SELECT count(*) AS cnt FROM glob('/etc/*');"},
+    "expected_outcome": "success"
+  },
+  {
+    "name": "invalid_table_query",
+    "category": "invalid_input",
+    "tool": "execute_query",
+    "arguments": {"sql": "SELECT * FROM does_not_exist;"},
+    "expected_outcome": "error"
+  }
+]

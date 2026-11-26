@@ -1,0 +1,40 @@
+# EXAMPLE WORKFLOW — validated syntactically and via local Docker reproduction; not executed on GitHub-hosted CI runners.
+name: Behavioral Regression Check (mcp-behave)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mcp-behave-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install mcp-behave==0.5.7 and target
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev strace
+          pip install mcp-behave==0.5.7
+          python -m venv /tmp/target-venv
+          /tmp/target-venv/bin/pip install "mcp-server-motherduck==1.1.1"
+      - name: Create disposable DuckDB fixture & run audit + baseline check
+        run: |
+          /tmp/target-venv/bin/python examples/integrations/mcp-server-motherduck/fixture/create_fixture.py /tmp/sample.duckdb
+          mcp-behave --json --no-dns --probe-rounds 2 --fail-on high \
+            -- /tmp/target-venv/bin/mcp-server-motherduck --db-path /tmp/sample.duckdb > audit.json
+          mcp-behave init --lockfile /tmp/mcp-behave.lock --probe-rounds 1 \
+            -- /tmp/target-venv/bin/mcp-server-motherduck --db-path /tmp/sample.duckdb
+          mcp-behave check --lockfile /tmp/mcp-behave.lock --probe-rounds 1 --json \
+            -- /tmp/target-venv/bin/mcp-server-motherduck --db-path /tmp/sample.duckdb > check.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcp-behave-motherduck
+          path: |
+            audit.json
+            check.json

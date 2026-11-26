@@ -1,0 +1,44 @@
+{
+  "mcp_behave_version": "0.5.7",
+  "target": "mcp-server-qdrant",
+  "target_version": "0.9.0",
+  "target_commit": "d858b297cdc1cabf7d7580e8d4c1618f89873fe5",
+  "manifest_sha256": "e401b40bad9e0e72014cfd2fb6847d42355acc8a19792127ff413e2351281e40",
+  "syscalls_available": true,
+  "audit_confidence": {
+    "score": "HIGH",
+    "tools_declared": 2,
+    "tools_exercised": 2,
+    "tools_executed": 2,
+    "tools_exec_pct": 100.0,
+    "tools_coverage_pct": 100.0,
+    "calls_total": 4,
+    "calls_transport_ok": 4,
+    "calls_executed_ok": 4,
+    "calls_validation_rejected": 0,
+    "calls_tool_error": 0,
+    "calls_ok": 4,
+    "calls_failed": 0,
+    "call_success_rate_pct": 100.0,
+    "probe_rounds": 2,
+    "tracer_backend": "preload",
+    "tracer_fidelity": "MEDIUM-HIGH",
+    "tracer_description": "Linux LD_PRELOAD library interposition",
+    "caveats": [
+      "Libc interposition cannot intercept statically linked binaries (Go, musl Rust) or raw direct kernel syscalls."
+    ]
+  },
+  "declared": {
+    "tools": [
+      "qdrant-find",
+      "qdrant-store"
+    ],
+    "resources": [],
+    "prompts": []
+  },
+  "findings_count": 4,
+  "sarif_runs": 1,
+  "sarif_results": 4,
+  "subprocesses_observed": 0,
+  "network_connects_observed": 0
+}
