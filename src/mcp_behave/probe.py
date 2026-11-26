@@ -696,7 +696,7 @@ async def _list_safely(coro, label: str):
     try:
         return await coro
     except Exception as exc:
-        print(f"[probe]   {label} not supported: {exc}")
+        print(f"[probe]   {label} not supported: {exc}", file=sys.stderr)
         return None
 
 
@@ -705,10 +705,10 @@ async def _call_with_timeout(coro, label: str, timeout: float):
         res = await asyncio.wait_for(coro, timeout=timeout)
         return True, res
     except asyncio.TimeoutError:
-        print(f"[probe]   {label} timed out after {timeout}s")
+        print(f"[probe]   {label} timed out after {timeout}s", file=sys.stderr)
         return False, None
     except Exception as exc:
-        print(f"[probe]   {label} raised: {exc}")
+        print(f"[probe]   {label} raised: {exc}", file=sys.stderr)
         return False, None
 
 
@@ -967,7 +967,7 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
 
     tools_meta, resources_meta, prompts_meta = await _discover_manifest(session)
 
-    print(f"[probe] discovered {len(tools_meta)} tool(s)")
+    print(f"[probe] discovered {len(tools_meta)} tool(s)", file=sys.stderr)
 
     def _is_tool_read_only(tool_meta: dict) -> bool:
         ann = tool_meta.get("annotations") or {}
@@ -994,7 +994,7 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
     rounds = max(1, rounds)
     for round_idx in range(rounds):
         if rounds > 1:
-            print(f"[probe] --- probe round {round_idx + 1}/{rounds} ---")
+            print(f"[probe] --- probe round {round_idx + 1}/{rounds} ---", file=sys.stderr)
         for t in ordered_tools:
             tname = t.get("name", "")
             # Skip re-registering setup/init tools in subsequent rounds so downstream state accumulation can be observed
@@ -1009,7 +1009,7 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
             # to read-only query tools. Mutating tools NEVER receive harvested entities!
             active_pool = harvested_pool if is_ro else None
             args = synth_args(t.get("inputSchema"), round_idx=r_idx, harvested_pool=active_pool)
-            print(f"[probe] calling tool {t['name']}({json.dumps(args)})")
+            print(f"[probe] calling tool {t['name']}({json.dumps(args)})", file=sys.stderr)
             stats["tools"]["called"] += 1
             _emit_trace_marker(trace_file, "CALL_START", t["name"])
             ok, res = await _call_with_timeout(
@@ -1035,7 +1035,7 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
                 fuzz_arg_sets = synth_fuzz_args(t.get("inputSchema"))
                 if fuzz_arg_sets:
                     stats.setdefault("fuzz", {"attempted": 0, "ok": 0, "failed": 0})
-                    print(f"[probe] fuzzing tool {t['name']} with {len(fuzz_arg_sets)} vector(s)")
+                    print(f"[probe] fuzzing tool {t['name']} with {len(fuzz_arg_sets)} vector(s)", file=sys.stderr)
                     for f_args in fuzz_arg_sets:
                         stats["tools"]["called"] += 1
                         stats["fuzz"]["attempted"] += 1
@@ -1052,9 +1052,9 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
     stats["tools"]["tools_executed_count"] = len(executed_tools)
     stats["tools"]["tools_executed_names"] = sorted(list(executed_tools))
 
-    print(f"[probe] discovered {len(resources_meta)} resource(s)")
+    print(f"[probe] discovered {len(resources_meta)} resource(s)", file=sys.stderr)
     for r in resources_meta:
-        print(f"[probe] reading resource {r['uri']}")
+        print(f"[probe] reading resource {r['uri']}", file=sys.stderr)
         stats["resources"]["called"] += 1
         _emit_trace_marker(trace_file, "RES_START", r["uri"])
         ok, _ = await _call_with_timeout(
@@ -1063,7 +1063,7 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
         if ok:
             stats["resources"]["ok"] += 1
 
-    print(f"[probe] discovered {len(prompts_meta)} prompt(s)")
+    print(f"[probe] discovered {len(prompts_meta)} prompt(s)", file=sys.stderr)
     for p in prompts_meta:
         args = {}
         for a in (p.get("arguments") or []):
@@ -1084,7 +1084,7 @@ async def _exercise(session: ClientSession, call_timeout: float, fuzz: bool = Fa
                     if val_list:
                         val = val_list[0]
                 args[aname] = val or "valid-input"
-        print(f"[probe] getting prompt {p['name']}({json.dumps(args)})")
+        print(f"[probe] getting prompt {p['name']}({json.dumps(args)})", file=sys.stderr)
         stats["prompts"]["called"] += 1
         _emit_trace_marker(trace_file, "PR_START", p["name"])
         ok, _ = await _call_with_timeout(
@@ -1100,7 +1100,8 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
                     tool_outputs: dict | None = None,
                     *, transport: str, syscalls_available: bool,
                     manifest_file: str | None = None, trace_file: str | None = None,
-                    sandbox: str | None = None, tool_history: dict | None = None,
+                    sandbox: str | None = None, canary_home: str | None = None,
+                    tool_history: dict | None = None,
                     audit_status: str = AUDIT_STATUS_COMPLETE,
                     failure_reason: str | None = None):
     """Write the manifest JSON to disk.
@@ -1116,6 +1117,7 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
         "transport": transport,
         "syscalls_available": syscalls_available,
         "sandbox": sandbox,
+        "canary_home": canary_home,
         "audit_status": audit_status,
         "failure_reason": failure_reason,
         "tools": tools_meta,
@@ -1131,9 +1133,9 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
     }
     with open(m_file, "w") as f:
         json.dump(manifest, f, indent=2)
-    print(f"[probe] manifest -> {m_file}")
+    print(f"[probe] manifest -> {m_file}", file=sys.stderr)
     if syscalls_available:
-        print(f"[probe] trace    -> {t_file}")
+        print(f"[probe] trace    -> {t_file}", file=sys.stderr)
 
 
 async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
@@ -1214,7 +1216,8 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
                         tool_outputs=tool_outputs,
                         transport="stdio", syscalls_available=syscalls_available,
                         manifest_file=target_manifest_file, trace_file=target_trace_file,
-                        sandbox=active_sandbox, tool_history=tool_history)
+                        sandbox=active_sandbox, canary_home=canary_dir,
+                        tool_history=tool_history)
     finally:
         if canary_dir and os.path.exists(canary_dir):
             try:

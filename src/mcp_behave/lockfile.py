@@ -15,6 +15,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
@@ -478,10 +479,59 @@ def _diff_m3_lockfile(
 # Legacy Behavioral Lockfile & Regression Testing API
 # ---------------------------------------------------------------------------
 
+_PYC_ATOMIC_RE = re.compile(r"^(.*/__pycache__/[^/]+\.pyc)\.\d+$")
+_ONNX_DEVICEID_RE = re.compile(
+    r"^(\$CANARY_HOME/\.cache/Microsoft/DeveloperTools/\.onnxruntime/deviceid\.tmp)\.[0-9a-fA-F-]+$"
+)
+_LEGACY_CANARY_RE = re.compile(r"^(?:/private)?/tmp/mcp_behave_canary_home_[A-Za-z0-9_]+(?=/|$)")
+
+
+def normalize_baseline_path(
+    path: str,
+    *,
+    canary_home: Optional[str] = None,
+    legacy_canary_fallback: bool = False,
+) -> str:
+    """Canonicalize ephemeral audit-specific path noise without hiding real filesystem writes.
+
+    - Canonicalizes ONLY the actual canary_home root associated with the current audit
+      (plus its realpath) to '$CANARY_HOME'.
+    - Strips Python importlib._write_atomic numeric suffixes on __pycache__/*.pyc.<id> files.
+    - Canonicalizes onnxruntime's randomized deviceid.tmp.<uuid> ONLY underneath $CANARY_HOME.
+    """
+    norm = path
+    if canary_home:
+        roots = []
+        for candidate in (canary_home, os.path.realpath(canary_home)):
+            c = candidate.rstrip("/")
+            if c and c not in roots:
+                roots.append(c)
+        for root in roots:
+            if norm == root:
+                norm = "$CANARY_HOME"
+                break
+            if norm.startswith(root + "/"):
+                norm = "$CANARY_HOME" + norm[len(root):]
+                break
+    elif legacy_canary_fallback:
+        norm = _LEGACY_CANARY_RE.sub("$CANARY_HOME", norm, count=1)
+
+    m_onnx = _ONNX_DEVICEID_RE.match(norm)
+    if m_onnx:
+        norm = f"{m_onnx.group(1)}.<UUID>"
+
+    m_pyc = _PYC_ATOMIC_RE.match(norm)
+    if m_pyc:
+        norm = m_pyc.group(1)
+
+    return norm
+
+
 def generate_lockfile_data(manifest: Dict[str, Any], profile: Dict[str, Any]) -> Dict[str, Any]:
     """Generate structured lockfile content from probed manifest and behavioral profile (legacy)."""
     from . import analyze as analyze_mod
 
+    canary_home = manifest.get("canary_home")
     tools = [t.get("name") for t in manifest.get("tools", []) if t.get("name")]
     tool_network = profile.get("tool_network_connects", {})
 
@@ -496,7 +546,12 @@ def generate_lockfile_data(manifest: Dict[str, Any], profile: Dict[str, Any]) ->
     for f in profile.get("files_opened", []):
         is_sens, _ = analyze_mod.is_sensitive_path(f)
         if is_sens:
-            sensitive_files.append(f)
+            sensitive_files.append(normalize_baseline_path(f, canary_home=canary_home))
+
+    files_written = sorted({
+        normalize_baseline_path(f, canary_home=canary_home)
+        for f in profile.get("files_written", [])
+    })
 
     return {
         "$schema": "https://raw.githubusercontent.com/navid72m/mcp-behave/main/schemas/lockfile.v1.json",
@@ -505,11 +560,12 @@ def generate_lockfile_data(manifest: Dict[str, Any], profile: Dict[str, Any]) ->
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "server_cmd": manifest.get("server_cmd"),
         "manifest_sha256": manifest.get("manifest_sha256"),
+        "canary_home_canonicalized": True,
         "declared_tools": sorted(tools),
         "baseline_behavior": {
             "network_endpoints": sorted(profile.get("network_connects", [])),
             "sensitive_files": sorted(set(sensitive_files)),
-            "files_written": sorted(profile.get("files_written", [])),
+            "files_written": files_written,
             "unix_sockets": sorted(profile.get("unix_sockets", [])),
             "subprocesses": sorted(profile.get("subprocesses", [])),
         },
@@ -538,20 +594,32 @@ def _diff_legacy_lockfile(lock_data: Dict[str, Any], manifest: Dict[str, Any], p
     for net in sorted(new_nets):
         diffs.append(f"Undeclared network egress: '{net}' was contacted (not in lockfile baseline)")
 
+    canary_home = manifest.get("canary_home") if isinstance(manifest, dict) else None
+    legacy_fallback = not bool(lock_data.get("canary_home_canonicalized"))
+
     # 2. Sensitive files regression
-    base_sens = set(baseline.get("sensitive_files", []))
+    base_sens = {
+        normalize_baseline_path(s, legacy_canary_fallback=legacy_fallback)
+        for s in baseline.get("sensitive_files", [])
+    }
     curr_sens = set()
     for f in profile.get("files_opened", []):
         is_sens, _ = analyze_mod.is_sensitive_path(f)
         if is_sens:
-            curr_sens.add(f)
+            curr_sens.add(normalize_baseline_path(f, canary_home=canary_home))
     new_sens = curr_sens - base_sens
     for s in sorted(new_sens):
         diffs.append(f"Undeclared sensitive file read: '{s}' was accessed (not in lockfile baseline)")
 
     # 3. File modifications/writes regression
-    base_written = set(baseline.get("files_written", []))
-    curr_written = set(profile.get("files_written", []))
+    base_written = {
+        normalize_baseline_path(w, legacy_canary_fallback=legacy_fallback)
+        for w in baseline.get("files_written", [])
+    }
+    curr_written = {
+        normalize_baseline_path(w, canary_home=canary_home)
+        for w in profile.get("files_written", [])
+    }
     new_written = curr_written - base_written
     for w in sorted(new_written):
         diffs.append(f"Undeclared file write/modification: '{w}' was written (not in lockfile baseline)")
