@@ -936,12 +936,13 @@ class ProtocolMonitor:
                     msg, direction, tool_name, method, msg_id, now
                 )
             else:
-                scan_events = self.scanner.scan_raw_bytes(
-                    raw_bytes, direction, tool_name=tool_name, request_id=msg_id, now=now
-                )
-                if not scan_events and (b"\\u" in raw_bytes or b"\\/" in raw_bytes):
+                if b"\\u" in raw_bytes or b"\\/" in raw_bytes:
                     scan_events = self._scan_parsed_message_sync(
                         msg, direction, tool_name, method, msg_id, now
+                    )
+                else:
+                    scan_events = self.scanner.scan_raw_bytes(
+                        raw_bytes, direction, tool_name=tool_name, request_id=msg_id, now=now
                     )
             for se in scan_events:
                 self.bus.publish_sync(se)

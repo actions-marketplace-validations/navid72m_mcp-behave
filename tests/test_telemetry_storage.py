@@ -263,3 +263,120 @@ def test_protocol_enforcement_continues_when_telemetry_fails(tmp_path: Path):
             await asyncio.wait_for(task, timeout=5.0)
 
     asyncio.run(run())
+
+
+def test_sr06_retention_protects_active_writers_and_detects_external_unlink(tmp_path):
+    """SR-06: Active JSONL files survive retention across concurrent stores; external unlink degrades health."""
+    import sqlite3
+
+    # 1. Two concurrent stores sharing state_dir; store1 active & aged beyond retention
+    store1 = TelemetryStore("sr06-s1", "srv", state_dir=tmp_path)
+    store1.record(BehavioralEvent(event="init", payload={"seq": 1}))
+    # Wait briefly for writer to create and open jsonl_file
+    deadline = time.time() + 2.0
+    while not store1.jsonl_file.exists() and time.time() < deadline:
+        time.sleep(0.02)
+    assert store1.jsonl_file.exists()
+
+    old = time.time() - 20 * 86400
+    os.utime(store1.jsonl_file, (old, old))
+
+    # Genuinely inactive expired file and rotated archive in shared sessions_dir
+    stale_inactive = store1.sessions_dir / "dead-session.jsonl"
+    stale_inactive.write_text('{"event":"old"}\n', encoding="utf-8")
+    os.utime(stale_inactive, (old, old))
+    stale_rotated = store1.sessions_dir / "sr06-s1.jsonl.1"
+    stale_rotated.write_text('{"event":"rot"}\n', encoding="utf-8")
+    os.utime(stale_rotated, (old, old))
+
+    # Concurrent store2 startup + explicit retention must preserve store1's active file,
+    # while purging genuinely inactive expired files and closed rotated archives.
+    store2 = TelemetryStore("sr06-s2", "srv", state_dir=tmp_path, retention_days=14)
+    try:
+        assert store1.jsonl_file.exists()
+        assert not stale_inactive.exists()
+        assert not stale_rotated.exists()
+
+        # Subsequent write on store1 remains visible on disk
+        store1.record(BehavioralEvent(event="after_retention", payload={"seq": 2}))
+        store1.close(timeout=3.0)
+        lines = store1.jsonl_file.read_text(encoding="utf-8").splitlines()
+        assert any("after_retention" in ln for ln in lines)
+
+        # After store1 shuts down, store2's retention cleans up store1's aged file
+        os.utime(store1.jsonl_file, (old, old))
+        purged = store2.cleanup_retention(14)
+        assert purged >= 1
+        assert not store1.jsonl_file.exists()
+    finally:
+        store2.close(timeout=3.0)
+
+    # 2. Unexpected external removal of active JSONL file -> detected on next flush & reopened
+    store3 = TelemetryStore("sr06-s3", "srv", state_dir=tmp_path)
+    store3.close(timeout=3.0)
+    fp = store3._open_jsonl()
+    try:
+        os.unlink(store3.jsonl_file)
+        fp = store3._flush_batch([BehavioralEvent(event="post_unlink", payload={"ok": True})], fp, None)
+    finally:
+        if fp is not None:
+            fp.close()
+    health3 = store3.get_storage_health()
+    assert health3["storage_degraded"] is True
+    assert health3["complete_observation"] is False
+    assert health3["jsonl_write_failures"] >= 1
+    assert store3.jsonl_file.exists()
+    assert "post_unlink" in store3.jsonl_file.read_text(encoding="utf-8")
+
+
+def test_sr07_sqlite_retention_preserves_exact_newest_n_rows(tmp_path):
+    """SR-07: SQLite pruning preserves exactly newest N rows for N=1, small N, noncontiguous IDs, and N=0."""
+    import sqlite3
+
+    # 1. N=1 with exact 1 row and multiple rows
+    s1 = TelemetryStore("sr07-n1", "srv", state_dir=tmp_path / "n1", max_sqlite_events=1)
+    s1.record(BehavioralEvent(event="e1", payload={"idx": 1}))
+    s1.close(timeout=3.0)
+    with sqlite3.connect(s1.db_file) as conn:
+        rows = conn.execute("SELECT payload_json FROM events ORDER BY id ASC").fetchall()
+    assert len(rows) == 1 and '"idx": 1' in rows[0][0]
+
+    s1b = TelemetryStore("sr07-n1b", "srv", state_dir=tmp_path / "n1b", max_sqlite_events=1)
+    for i in range(5):
+        s1b.record(BehavioralEvent(event="e", payload={"idx": i}))
+    s1b.close(timeout=3.0)
+    with sqlite3.connect(s1b.db_file) as conn:
+        rows = conn.execute("SELECT payload_json FROM events ORDER BY id ASC").fetchall()
+    assert len(rows) == 1 and '"idx": 4' in rows[0][0]
+    assert s1b.get_storage_health()["intentional_pruned_rows"] == 4
+
+    # 2. Small N=3: exact 3 rows -> 0 pruned; >3 rows & noncontiguous IDs -> exact 3 newest
+    s3 = TelemetryStore("sr07-n3", "srv", state_dir=tmp_path / "n3", max_sqlite_events=3)
+    for i in range(3):
+        s3.record(BehavioralEvent(event="e", payload={"idx": i}))
+    s3.close(timeout=3.0)
+    with sqlite3.connect(s3.db_file) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 3
+    assert s3.get_storage_health()["intentional_pruned_rows"] == 0
+
+    # Noncontiguous IDs (1, 5, 10, 20, 30) with max_sqlite_events=3 -> keeps 10, 20, 30
+    with sqlite3.connect(s3.db_file) as conn:
+        conn.execute("DELETE FROM events")
+        for row_id in (1, 5, 10, 20, 30):
+            conn.execute(
+                "INSERT INTO events (id, ts, session_id, server_id, kind, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (row_id, 100.0 + row_id, "sr07-n3", "srv", "e", f'{{"id":{row_id}}}'),
+            )
+        conn.commit()
+        s3._enforce_sqlite_bounds(conn, force_truncate_wal=False)
+        s3._enforce_sqlite_bounds(conn, force_truncate_wal=False)
+        kept_ids = [r[0] for r in conn.execute("SELECT id FROM events ORDER BY id ASC").fetchall()]
+    assert kept_ids == [10, 20, 30]
+
+    # 3. Disabled retention (max_sqlite_events=0) preserves all rows
+    s0 = TelemetryStore("sr07-n0", "srv", state_dir=tmp_path / "n0", max_sqlite_events=0)
+    for i in range(6):
+        s0.record(BehavioralEvent(event="e", payload={"idx": i}))
+    s0.close(timeout=3.0)
+    with sqlite3.connect(s0.db_file) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 6

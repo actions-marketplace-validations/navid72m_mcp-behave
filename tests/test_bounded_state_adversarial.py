@@ -799,7 +799,7 @@ def test_sr05_single_message_escaped_secret_consistent_small_and_large(tmp_path,
     try:
         mon._sync_process_line(b'{"id":1,"method":"tools/call","params":{"name":"t"}}', "client_to_server", 100.0)
         payload = (
-            '{"id":1,"result":{"content":[{"type":"text","text":"\\u0067hp_'
+            '{"id":1,"result":{"content":[{"type":"text","text":"AKIAIOSFODNN7EXAMPLE \\u0067hp_'
             + "A" * 36
             + " "
             + "x" * pad
@@ -807,9 +807,9 @@ def test_sr05_single_message_escaped_secret_consistent_small_and_large(tmp_path,
         ).encode()
         mon._sync_process_line(payload, "server_to_client", 101.0)
         leaks = [e for e in recorded if e.event == "secret_leak"]
-        assert len(leaks) == 1
-        assert leaks[0].request_id == 1
-        assert leaks[0].current_tool == "t"
+        detectors = {e.payload.get("detector") for e in leaks}
+        assert detectors == {"aws_access_key_id", "github_token"}
+        assert all(e.request_id == 1 and e.current_tool == "t" for e in leaks)
     finally:
         mon.close(timeout=2.0)
         bus.close()

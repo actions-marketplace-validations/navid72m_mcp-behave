@@ -7,6 +7,10 @@ Employs a bounded queue; on overflow drops events and records a `telemetry_drop`
 from __future__ import annotations
 
 from contextlib import closing
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None  # type: ignore[assignment]
 import hashlib
 import json
 import os
@@ -126,6 +130,7 @@ class TelemetryStore:
         self._last_storage_error: Optional[str] = None
         self._last_error_log_ts: Optional[float] = None
         self._jsonl_bytes_written = 0
+        self._active_jsonl_stat: Optional[tuple[int, int]] = None
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
 
@@ -168,8 +173,8 @@ class TelemetryStore:
                     if p.resolve().parent != resolved_sessions:
                         continue
                     if p.stat().st_mtime < cutoff:
-                        p.unlink(missing_ok=True)
-                        purged += 1
+                        if self._unlink_if_inactive(p):
+                            purged += 1
                 except OSError:
                     pass
 
@@ -358,23 +363,58 @@ class TelemetryStore:
             except Exception:
                 pass
 
+    def _unlink_if_inactive(self, path: Path) -> bool:
+        """Unlink an expired telemetry file only if no active writer holds a shared lock on it."""
+        if fcntl is None:
+            if path.resolve() == self.jsonl_file.resolve() and not self._stop_event.is_set():
+                return False
+            path.unlink(missing_ok=True)
+            return True
+
+        fd: Optional[int] = None
+        try:
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError):
+                return False
+            path.unlink(missing_ok=True)
+            return True
+        except FileNotFoundError:
+            return False
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
     def _open_jsonl(self):
         """Open active session JSONL file with 0o600 permissions inside sessions_dir."""
         try:
             if self.jsonl_file.resolve().parent != self.sessions_dir.resolve():
                 raise ValueError("jsonl_file escaped sessions_dir")
             fd = os.open(self.jsonl_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            if fcntl is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except OSError:
+                    pass
             fp = open(fd, "a", encoding="utf-8")
             try:
                 os.chmod(self.jsonl_file, 0o600)
             except OSError:
                 pass
             try:
-                self._jsonl_bytes_written = self.jsonl_file.stat().st_size
+                st = os.fstat(fd)
+                self._jsonl_bytes_written = st.st_size
+                self._active_jsonl_stat = (st.st_dev, st.st_ino)
             except OSError:
                 self._jsonl_bytes_written = 0
+                self._active_jsonl_stat = None
             return fp
         except Exception as exc:
+            self._active_jsonl_stat = None
             self._record_storage_error("jsonl", exc)
             return None
 
@@ -424,7 +464,7 @@ class TelemetryStore:
                 cur = db_conn.execute(
                     """
                     DELETE FROM events
-                    WHERE id <= (
+                    WHERE id < (
                         SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET ?
                     )
                     """,
@@ -556,6 +596,20 @@ class TelemetryStore:
             jsonl_fp = self._rotate_jsonl(jsonl_fp)
 
         jsonl_ok = False
+        if jsonl_fp is not None and self._active_jsonl_stat is not None:
+            try:
+                st = self.jsonl_file.stat()
+                if (st.st_dev, st.st_ino) != self._active_jsonl_stat:
+                    raise FileNotFoundError("active jsonl file was replaced")
+            except OSError as exc:
+                self._record_storage_error("jsonl", f"active jsonl file unavailable: {exc}", dropped=0)
+                try:
+                    jsonl_fp.close()
+                except Exception:
+                    pass
+                jsonl_fp = None
+                self._active_jsonl_stat = None
+
         if jsonl_fp is None:
             jsonl_fp = self._open_jsonl()
 
