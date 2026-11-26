@@ -7,6 +7,7 @@ active re-verification, and persists cross-session history in SQLite.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import copy
 import random
 import re
@@ -375,7 +376,11 @@ class ManifestTracker:
         self._probe_timer: Optional[asyncio.TimerHandle] = None
         self._client_uses_int_ids: Optional[bool] = None
         self._client_uses_uuid: Optional[bool] = None
-        self._observed_client_int_ids: List[int] = []
+        self._max_observed_int_ids: int = 1024
+        self._observed_client_int_ids: deque[int] = deque(maxlen=self._max_observed_int_ids)
+        self._observed_client_int_set: Set[int] = set()
+        self._max_client_int_id: Optional[int] = None
+        self._max_observed_prefixes: int = 256
         self._observed_client_prefixes: Dict[str, Tuple[int, int]] = {}
 
     def _schedule_coroutine(self, coro: Coroutine[Any, Any, Any]) -> Optional[Any]:
@@ -509,10 +514,16 @@ class ManifestTracker:
     def record_client_id_style(self, req_id: Any) -> None:
         """Observe client's JSON-RPC ID style to mimic it during synthetic probes."""
         if req_id is not None:
-            if isinstance(req_id, int):
+            if isinstance(req_id, int) and not isinstance(req_id, bool):
                 self._client_uses_int_ids = True
-                if req_id not in self._observed_client_int_ids:
+                if self._max_client_int_id is None or req_id > self._max_client_int_id:
+                    self._max_client_int_id = req_id
+                if req_id not in self._observed_client_int_set:
+                    if len(self._observed_client_int_ids) >= self._max_observed_int_ids:
+                        evicted = self._observed_client_int_ids.popleft()
+                        self._observed_client_int_set.discard(evicted)
                     self._observed_client_int_ids.append(req_id)
+                    self._observed_client_int_set.add(req_id)
             elif isinstance(req_id, str):
                 self._client_uses_int_ids = False
                 import uuid
@@ -527,7 +538,12 @@ class ManifestTracker:
                         num_str = m.group(2)
                         num = int(num_str)
                         width = len(num_str)
-                        if prefix not in self._observed_client_prefixes or num > self._observed_client_prefixes[prefix][0]:
+                        if prefix not in self._observed_client_prefixes:
+                            if len(self._observed_client_prefixes) >= self._max_observed_prefixes:
+                                oldest_prefix = next(iter(self._observed_client_prefixes))
+                                self._observed_client_prefixes.pop(oldest_prefix, None)
+                            self._observed_client_prefixes[prefix] = (num, width)
+                        elif num > self._observed_client_prefixes[prefix][0]:
                             self._observed_client_prefixes[prefix] = (num, width)
 
     def generate_probe_id(self, exclude_ids: Optional[Set[Any]] = None) -> Any:
@@ -536,6 +552,7 @@ class ManifestTracker:
         with self._probe_lock:
             self._prune_probe_tracking(now)
             excluded = set(self._issued_probe_ids.keys()) | set(self._tombstoned_probe_ids.keys())
+        excluded |= self._observed_client_int_set
         if exclude_ids:
             excluded |= set(exclude_ids)
         if self.get_active_ids_fn:
@@ -549,11 +566,12 @@ class ManifestTracker:
             and not self._observed_client_prefixes
             and not getattr(self, "_client_uses_uuid", False)
         ):
-            # Client uses ints or unknown default: sequential int past maximum seen
+            # Client uses ints or unknown default: sequential int past true session maximum
+            max_seen = self._max_client_int_id
             if self._observed_client_int_ids:
-                candidate = max(self._observed_client_int_ids) + 1
-            else:
-                candidate = 1
+                recent_max = max(self._observed_client_int_ids)
+                max_seen = recent_max if max_seen is None else max(max_seen, recent_max)
+            candidate = (max_seen + 1) if max_seen is not None else 1
             while candidate in excluded:
                 candidate += 1
             return candidate

@@ -43,7 +43,14 @@ from .launcher import (
 )
 from .lockfile import Lockfile, ServerLock, load_lockfile
 from .protocol import ProtocolMonitor, StreamingFramer
-from .telemetry import TelemetryStore
+from .telemetry import (
+    DEFAULT_MAX_JSONL_BACKUPS,
+    DEFAULT_MAX_JSONL_BYTES,
+    DEFAULT_MAX_SQLITE_EVENTS,
+    DEFAULT_RETENTION_INTERVAL_S,
+    DEFAULT_WAL_CHECKPOINT_BYTES,
+    TelemetryStore,
+)
 from .tracer_server import TracerServer
 
 
@@ -293,6 +300,11 @@ async def run_proxy(
     grace_period: float = 3.0,
     augment_path: bool = False,
     retention_days: int = 14,
+    max_jsonl_bytes: int = DEFAULT_MAX_JSONL_BYTES,
+    max_jsonl_backups: int = DEFAULT_MAX_JSONL_BACKUPS,
+    max_sqlite_events: int = DEFAULT_MAX_SQLITE_EVENTS,
+    retention_interval_s: float = DEFAULT_RETENTION_INTERVAL_S,
+    wal_checkpoint_bytes: int = DEFAULT_WAL_CHECKPOINT_BYTES,
     reverify_interval: int = 20,
     reverify_period: float = 300.0,
     enable_reverify: bool = True,
@@ -324,6 +336,11 @@ async def run_proxy(
         state_dir=state_dir,
         log_content=log_content,
         retention_days=retention_days,
+        max_jsonl_bytes=max_jsonl_bytes,
+        max_jsonl_backups=max_jsonl_backups,
+        max_sqlite_events=max_sqlite_events,
+        retention_interval_s=retention_interval_s,
+        wal_checkpoint_bytes=wal_checkpoint_bytes,
     )
 
     monitor = tracer_server = child_proc = spawn_task = None
@@ -475,11 +492,17 @@ async def run_proxy(
             # Query last trusted manifest baseline for cross-session drift detection (Milestone 2)
             prior_manifest = telemetry.get_last_trusted_manifest(eff_server_id)
 
+            def on_attribution_gap(gap_evt: BehavioralEvent) -> None:
+                gap_evt.session_id = session_id
+                bus.publish_sync(gap_evt)
+                telemetry.record(gap_evt)
+
             # Attribution Engine (Milestone 4)
             attribution_engine = AttributionEngine(
                 server_id=eff_server_id,
                 server_lock=server_lock,
                 enforce=enforce,
+                on_event_fn=on_attribution_gap,
             )
 
             # Active Policy Enforcer & Redactor (Milestone 5)
@@ -888,6 +911,22 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
         help="Number of days to retain JSONL sessions and telemetry events (default: 14).",
     )
     parser.add_argument(
+        "--max-jsonl-bytes", type=int, default=DEFAULT_MAX_JSONL_BYTES,
+        help=f"Max bytes per session JSONL file before rotation (0=unlimited, default: {DEFAULT_MAX_JSONL_BYTES}).",
+    )
+    parser.add_argument(
+        "--max-jsonl-backups", type=int, default=DEFAULT_MAX_JSONL_BACKUPS,
+        help=f"Max rotated JSONL archive files to retain per session (default: {DEFAULT_MAX_JSONL_BACKUPS}).",
+    )
+    parser.add_argument(
+        "--max-sqlite-events", type=int, default=DEFAULT_MAX_SQLITE_EVENTS,
+        help=f"Max logical event rows retained in telemetry.db (0=unlimited, default: {DEFAULT_MAX_SQLITE_EVENTS}).",
+    )
+    parser.add_argument(
+        "--retention-interval", type=float, default=DEFAULT_RETENTION_INTERVAL_S,
+        help=f"Periodic retention cleanup interval in seconds (default: {DEFAULT_RETENTION_INTERVAL_S}).",
+    )
+    parser.add_argument(
         "--reverify-interval", type=int, default=20,
         help="Number of tool calls between active manifest re-verifications (default: 20).",
     )
@@ -952,6 +991,10 @@ def main_wrap(argv: Optional[List[str]] = None) -> int:
             grace_period=args.grace_period,
             augment_path=args.augment_path,
             retention_days=args.retention_days,
+            max_jsonl_bytes=args.max_jsonl_bytes,
+            max_jsonl_backups=args.max_jsonl_backups,
+            max_sqlite_events=args.max_sqlite_events,
+            retention_interval_s=args.retention_interval,
             reverify_interval=args.reverify_interval,
             reverify_period=args.reverify_period,
             enable_reverify=not args.no_reverify,
