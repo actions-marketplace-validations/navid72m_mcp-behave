@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 320" width="680" height="320" role="img" aria-label="Throughput Across 10 Alternating Paired Repetitions">
+  <rect width="680" height="320" rx="10" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+  <text x="24" y="34" fill="#f1f5f9" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="16" font-weight="700">Throughput Across 10 Alternating Paired Repetitions</text>
+  <text x="24" y="54" fill="#94a3b8" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="11.5">v0.5.6 (1,093.5 - 1,461.9 RPS) vs v0.5.5 (137.5 - 230.5 RPS) | n=200/rep | c=16</text>
+  <line x1="76" y1="261.0" x2="636" y2="261.0" stroke="#334155" stroke-dasharray="3,3"/>
+  <text x="66" y="265.0" text-anchor="end" fill="#94a3b8" font-family="sans-serif" font-size="11">0</text>
+  <line x1="76" y1="217.2" x2="636" y2="217.2" stroke="#334155" stroke-dasharray="3,3"/>
+  <text x="66" y="221.2" text-anchor="end" fill="#94a3b8" font-family="sans-serif" font-size="11">400</text>
+  <line x1="76" y1="173.5" x2="636" y2="173.5" stroke="#334155" stroke-dasharray="3,3"/>
+  <text x="66" y="177.5" text-anchor="end" fill="#94a3b8" font-family="sans-serif" font-size="11">800</text>
+  <line x1="76" y1="129.8" x2="636" y2="129.8" stroke="#334155" stroke-dasharray="3,3"/>
+  <text x="66" y="133.8" text-anchor="end" fill="#94a3b8" font-family="sans-serif" font-size="11">1200</text>
+  <line x1="76" y1="86.0" x2="636" y2="86.0" stroke="#334155" stroke-dasharray="3,3"/>
+  <text x="66" y="90.0" text-anchor="end" fill="#94a3b8" font-family="sans-serif" font-size="11">1600</text>
+  <text x="24" y="173.5" transform="rotate(-90 24 173.5)" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Throughput (RPS)</text>
+  <text x="76.0" y="279" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Rep 1</text>
+  <text x="138.2" y="279" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Rep 2</text>
+  <text x="200.4" y="279" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Rep 3</text>
+  <text x="262.7" y="279" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Rep 4</text>
+  <text x="324.9" y="279" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Rep 5</text>
+  <text x="387.1" y="279" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Rep 6</text>
+  <text x="449.3" y="279" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Rep 7</text>
+  <text x="511.6" y="279" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Rep 8</text>
+  <text x="573.8" y="279" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Rep 9</text>
+  <text x="636.0" y="279" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Rep 10</text>
+  <polyline fill="none" stroke="#64748b" stroke-width="2.5" points="76.0,239.0 138.2,241.1 200.4,237.7 262.7,235.9 324.9,240.5 387.1,242.0 449.3,235.8 511.6,244.7 573.8,241.0 636.0,246.0"/>
+  <circle cx="76.0" cy="239.0" r="3.5" fill="#64748b"/>
+  <circle cx="138.2" cy="241.1" r="3.5" fill="#64748b"/>
+  <circle cx="200.4" cy="237.7" r="3.5" fill="#64748b"/>
+  <circle cx="262.7" cy="235.9" r="3.5" fill="#64748b"/>
+  <circle cx="324.9" cy="240.5" r="3.5" fill="#64748b"/>
+  <circle cx="387.1" cy="242.0" r="3.5" fill="#64748b"/>
+  <circle cx="449.3" cy="235.8" r="3.5" fill="#64748b"/>
+  <circle cx="511.6" cy="244.7" r="3.5" fill="#64748b"/>
+  <circle cx="573.8" cy="241.0" r="3.5" fill="#64748b"/>
+  <circle cx="636.0" cy="246.0" r="3.5" fill="#64748b"/>
+  <polyline fill="none" stroke="#10b981" stroke-width="2.5" points="76.0,101.1 138.2,120.7 200.4,101.4 262.7,138.3 324.9,124.3 387.1,127.0 449.3,102.3 511.6,132.7 573.8,114.5 636.0,141.4"/>
+  <circle cx="76.0" cy="101.1" r="3.5" fill="#10b981"/>
+  <circle cx="138.2" cy="120.7" r="3.5" fill="#10b981"/>
+  <circle cx="200.4" cy="101.4" r="3.5" fill="#10b981"/>
+  <circle cx="262.7" cy="138.3" r="3.5" fill="#10b981"/>
+  <circle cx="324.9" cy="124.3" r="3.5" fill="#10b981"/>
+  <circle cx="387.1" cy="127.0" r="3.5" fill="#10b981"/>
+  <circle cx="449.3" cy="102.3" r="3.5" fill="#10b981"/>
+  <circle cx="511.6" cy="132.7" r="3.5" fill="#10b981"/>
+  <circle cx="573.8" cy="114.5" r="3.5" fill="#10b981"/>
+  <circle cx="636.0" cy="141.4" r="3.5" fill="#10b981"/>
+  <rect x="440" y="34" width="12" height="12" rx="2" fill="#64748b"/><text x="458" y="44" fill="#94a3b8" font-family="sans-serif" font-size="11">v0.5.5</text>
+  <rect x="520" y="34" width="12" height="12" rx="2" fill="#10b981"/><text x="538" y="44" fill="#f1f5f9" font-family="sans-serif" font-size="11">v0.5.6</text>
+</svg>

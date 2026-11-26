@@ -25,6 +25,16 @@ It also provides `mcp-behave wrap`, a stdio proxy for monitoring MCP traffic whi
   </a>
 </p>
 
+## v0.5.6 Performance & Reliability
+
+| **6.8× higher throughput** | **89.5% lower median latency** |
+|---|---|
+| **101,052 successful endurance-test requests** | **467 passing product tests** |
+
+In a 10-repetition alternating paired comparison (`v0.5.5` vs `v0.5.6`, concurrent `--enforce --redact`, `n=200`, `c=16`, macOS arm64 with native DYLD tracing active), median throughput rose from `185.4` to `1,266.2` RPS while `p50` latency dropped from `95.062` ms to `10.003` ms (`-89.5%`) and `p95` dropped from `167.835` ms to `20.851` ms (`-87.6%`). In a 1-hour bounded-retention soak (`enforce_redact`), `mcp-behave wrap` completed `101,052` requests with `0` failures, `0` timeouts, `0` secret leaks across `2,833` checks, peak RSS of `81.55 MiB`, and `18 -> 19` open FDs (full-run telemetry completeness is `UNVERIFIED` under bounded retention due to intentional pruning). These measurements apply to the tested concurrent stdio proxy workload and environments; see [BENCHMARK.md](BENCHMARK.md) and [v0.5.6 benchmark evidence](benchmarks/results/v0.5.6/README.md) for full details and limitations.
+
+![v0.5.6 vs v0.5.5 concurrent enforcement and redaction throughput](benchmarks/results/v0.5.6/charts/throughput_comparison.svg)
+
 ## Why mcp-behave?
 
 An MCP server can advertise a harmless tool while its implementation performs unexpected operations. For example, a tool described as a local document formatter might also read a credential file or attempt an outbound network connection.

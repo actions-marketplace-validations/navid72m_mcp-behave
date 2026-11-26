@@ -1,6 +1,6 @@
 # mcp-behave: Roadmap & Strategy
 
-Current state (**v0.5.3**): Completed Milestones 1 through 6 including bidirectional transparent stdio NDJSON wrapping (`mcp-behave wrap`), sub-millisecond paired streaming latency, dynamic and cross-session manifest drift detection, cryptographic behavioral lockfiles (`mcp-behave init/check`), attribution engine pairing syscall interposition with MCP tool executions, policy enforcement with synthetic error injection and in-place response secret/canary redaction, client config auto-injection (`mcp-behave install/uninstall`), approved Enterprise Gateway Architecture specification (Milestone 7), comprehensive v0.5.0/v0.5.1/v0.5.2 security remediation, probe generation isolation and tombstoning, partial manifest trust isolation, guaranteed superset byte prefilter, per-PID tracer tracking with descendant blind spot detection, deferred C hook canonicalization, adaptive sequential/prefix probe ID mimicry, and 100% green Linux CI matrix across all supported Python versions.
+Current state (**v0.5.6**): Completed Milestones 1 through 6 including bidirectional transparent stdio NDJSON wrapping (`mcp-behave wrap`), Unicode-safe enforcement/redaction optimization (`6.8×` higher concurrent throughput and `89.5%` lower `p50` latency vs `v0.5.5` in 10-rep paired testing), dynamic and cross-session manifest drift detection, cryptographic behavioral lockfiles (`mcp-behave init/check`), attribution engine with sticky session-level uncertainty on evictions/gaps/queue drops, structural large-message manifest and per-item batch secret scanning, bounded runtime state and `O(1)`-amortized PID capacity enforcement, `flock`-protected JSONL rotation and logical SQLite retention, and validated 5-minute lossless/bounded soaks on macOS and Linux ARM64 plus a 1-hour macOS bounded endurance soak.
 
 ---
 
@@ -178,7 +178,7 @@ The goal is establishing baseline behavioral standards across the wider AI agent
 
 ## 7. Target Metrics (v1.0)
 
-| Metric | Target by v1.0 | Current Status (v0.4.2) |
+| Metric | Target by v1.0 | Current Status (v0.5.6) |
 |---|---|---|
 | False-Positive Rate on Top 50 Benign Servers | < 5% of benign servers triggering a HIGH finding | **0% FPR** across benchmark reference servers |
 | Evasion Suite Detection Rate (eBPF + NetNS) | $\ge 90\%$ of evasion techniques caught | Prototype eBPF live; captures raw syscalls & unhooked binaries |

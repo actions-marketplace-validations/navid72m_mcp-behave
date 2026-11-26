@@ -1,163 +1,164 @@
-# MCP-Behave Runtime Security Benchmark (BENCHMARK.md)
+# MCP-Behave Benchmarks & Validation Evidence (BENCHMARK.md)
 
-> **Empirical evaluation of `mcp-behave` against malicious server code, evasion techniques, and reference MCP architectures.**
+> **Authoritative evaluation hub for `mcp-behave` v0.5.6 runtime performance, endurance stability, cross-platform validation, and historical security-detection corpora.**
 
 ---
 
-## 1. Executive Summary & Core Thesis
+## 1. Latest Release Performance Summary (v0.5.6)
 
-Most existing "MCP security benchmarks" (such as **MCPTox**, **MCP-AttackBench**, and **AgentDefense-Bench**) evaluate how **LLM agents** respond to adversarial prompts, jailbreaks, or poisoned tool descriptions. 
+- **Integrated Release Commit**: `cb9237578c453069f0069e47ee2f60e8d13ff644`
+- **Production `src/` Tree**: `2c9a19786550e06f7541cd965626673c70850f3b`
 
-However, `mcp-behave` operates at a fundamentally different level:
-- It **does not** execute an LLM agent.
-- It **executes the MCP server under native syscall tracing** (`LD_PRELOAD` on Linux, `DYLD_INSERT_LIBRARIES` on macOS, or `strace`), isolated within an ephemeral canary sandbox (`$HOME` redirection and secret scrubbing).
-- It compares what the server **declared** in its MCP manifest against what it **actually executed** (files opened, sockets connected, subprocesses spawned, manifest changes across runs).
+| Validation Dimension | Measured Result (v0.5.6) | Qualification / Scope |
+| --- | --- | --- |
+| **Paired Concurrent `--enforce --redact`** | **1,266.2 RPS** median (`6.8×` vs `v0.5.5`) | 10 alternating reps, `n=200`, `c=16`, macOS arm64, `macos_dyld` active |
+| **Median `p50` / `p95` / `p99` Latency** | **10.003 / 20.851 / 24.075 ms** | `-89.5%` p50, `-87.6%` p95, `~8×` p99 vs `v0.5.5` on same workload |
+| **1-Hour Bounded-Retention Soak** | **101,052 ok / 0 fail / 0 timeouts** | `2,833` secrets verified, `0` leaks, `567/567` disconnect checks; completeness `UNVERIFIED` (pruned) |
+| **5-Minute Lossless Soaks** | **VERIFIED** exact identity reconciliation | Both macOS arm64 (`8,490` ok) and Linux aarch64 (`8,387` ok), `0` missing/dup/unexpected |
+| **Regression Suites** | **467 passed** (macOS), **464 passed / 3 skipped** (Linux) | Plus **23/23** independent review regressions & probes |
 
-Therefore, evaluating `mcp-behave` requires benchmarks of **malicious server code**, not malicious prompts.
+---
 
+## 2. Paired v0.5.5 vs. v0.5.6 Comparison
+
+Workload: concurrent `--enforce --redact` over stdio (`mock_mcp_server.py`, 200 mixed small/medium/large requests per repetition, concurrency `16`, `seed=42`), Python `3.12.7` (`hardened=False`, native `macos_dyld` tracer active), 10 alternating repetitions per version in isolated detached Git worktrees (`v0.5.5` at `a528679` vs `v0.5.6` at `ce2f814`).
+
+| Metric | v0.5.5 (`a528679`) | v0.5.6 (`ce2f814`) | Improvement |
+| --- | ---: | ---: | --- |
+| **Median Throughput** | 185.4 RPS | **1,266.2 RPS** | **6.8× higher** (range `1,093.5–1,461.9` vs `137.5–230.5`) |
+| **Median `p50` Latency** | 95.062 ms | **10.003 ms** | **89.5% reduction** |
+| **Median `p95` Latency** | 167.835 ms | **20.851 ms** | **87.6% reduction** |
+| **Median `p99` Latency** | 191.919 ms | **24.075 ms** | **~8× faster** (`7.97×`) |
+
+*Scope note: These figures apply specifically to concurrent inline enforcement and redaction under the tested stdio workload and do not generalize automatically to unrelated workloads, remote HTTP transports, or other operating systems.*
+
+![Throughput comparison between v0.5.5 and v0.5.6](benchmarks/results/v0.5.6/charts/throughput_comparison.svg)
+
+![Latency comparison between v0.5.5 and v0.5.6](benchmarks/results/v0.5.6/charts/latency_comparison.svg)
+
+![Throughput across 10 alternating paired repetitions](benchmarks/results/v0.5.6/charts/paired_repetitions_rps.svg)
+
+---
+
+## 3. Endurance and Resource Stability (1-Hour Soak)
+
+Executed on macOS arm64 (`25.6.0`, Python `3.12.7`, `macos_dyld` tracer `sha256=75fdf9c8...`) in `enforce_redact` mode (`rate=25`, `concurrency=16`, `large_bytes=131072`, `max_jsonl_bytes=1 MiB`, `max_jsonl_backups=2`, `max_sqlite_events=2000`, `retention_interval=10s`, RSS cap `256 MiB`, FD cap `128`).
+
+| Metric | Measured Value |
+| --- | --- |
+| **Duration / Requests** | `3,601.43 s` — **101,052** succeeded, **0** failed, **0** timed out (`28.06 RPS`) |
+| **Secret Verification / Leaks** | **2,833** verified redactions, **0** secret leaks |
+| **Disconnect Checks** | **567 / 567** passed (expected crash exit code `42`, zero orphans) |
+| **Overall Latency (`p50` / `p95` / `p99`)** | `4.4366 ms` / `16.5788 ms` / `21.2469 ms` (`p95` drift: `16.146 -> 16.040 ms`) |
+| **Process Tree RSS** | Initial `71.12 MiB`, Peak `81.55 MiB`, Final `56.36 MiB` (`-14.76 MiB`) |
+| **Open File Descriptors** | `18 -> 19` (Peak `19`) |
+| **Final Storage** | `5,999.6 KiB` (`~5.86 MiB`: `sqlite_total=2,000`, `rotated_jsonl=2`) |
+| **Graceful Shutdown** | `0.108 s` (`exit=0`, `orphans_after_shutdown=False`) |
+| **Telemetry Completeness** | **`UNVERIFIED`** (`validation_profile="bounded"`, intentional pruning/rotation active, `0` drops) |
+
+> **Important**: This was a **bounded-retention** endurance test. Full-run telemetry completeness is explicitly **`UNVERIFIED`** because older JSONL archives and SQLite rows were intentionally pruned during the hour; it must not be cited as proof of complete lossless observation.
+
+![1-hour endurance RSS trend](benchmarks/results/v0.5.6/charts/endurance_1h_rss.svg)
+
+![1-hour endurance file descriptor trend](benchmarks/results/v0.5.6/charts/endurance_1h_fds.svg)
+
+![1-hour endurance latency trend](benchmarks/results/v0.5.6/charts/endurance_1h_latency.svg)
+
+---
+
+## 4. Lossless vs. Bounded-Retention Validation (5-Minute Soaks)
+
+| Run | Profile | Tracer | Requests (ok/fail/to) | Secrets Verified / Leaked | Storage | Completeness Status |
+| --- | --- | --- | --- | --- | ---: | --- |
+| **macOS 5m Lossless** | `lossless` | `macos_dyld` | `8,490 / 0 / 0` | `238 / 0` | `22,242.4 KiB` | **`VERIFIED`** (`0` missing/dup/unexpected) |
+| **Linux 5m Lossless** | `lossless` | `linux_ld_preload` | `8,387 / 0 / 0` | `235 / 0` | `21,875.3 KiB` | **`VERIFIED`** (`0` missing/dup/unexpected) |
+| **macOS 5m Bounded** | `bounded` | `macos_dyld` | `8,460 / 0 / 0` | `237 / 0` | `5,926.8 KiB` | **`UNVERIFIED`** (`0` drops, `sqlite=2,000`) |
+| **Linux 5m Bounded** | `bounded` | `linux_ld_preload` | `8,517 / 0 / 0` | `239 / 0` | `5,163.8 KiB` | **`UNVERIFIED`** (`0` drops, `sqlite=2,000`) |
+
+![Storage consumption: lossless vs bounded retention](benchmarks/results/v0.5.6/charts/storage_lossless_vs_bounded.svg)
+
+---
+
+## 5. Cross-Platform Validation
+
+- **macOS (`arm64`, macOS `25.6.0`, Python `3.12.3` / `3.12.7`)**:
+  - **467 / 467** product tests passed (`tests/`).
+  - **23 / 23** independent review regressions and corrective probes passed (`report/MCP-2-review/test_review_regressions.py` + `test_final_identity_and_wording.py`).
+  - Native `DYLD_INSERT_LIBRARIES` tracer (`libmcpbehave_trace.dylib`, `sha256=75fdf9c8...`) verified active on unhardened Python (`3.12.7`).
+  - 5-minute lossless (`VERIFIED`) and 5-minute + 1-hour bounded (`UNVERIFIED`) soaks passed.
+- **Linux (`aarch64` Docker `python:3.12-slim`, kernel `7.0.14-orbstack`)**:
+  - **464 passed, 3 skipped** (the 3 skipped tests are macOS-specific).
+  - Native `LD_PRELOAD` tracer (`libmcpbehave_trace.so`, `sha256=6ca109bd...`) compiled and verified via live child handshake (`T <pid> READY`).
+  - 5-minute lossless (`VERIFIED`) and 5-minute bounded (`UNVERIFIED`) soaks passed.
+- **Untested platforms**: Bare-metal `x86_64` Linux and native Windows were not executed in this validation pass.
+
+---
+
+## 6. Security Detection Benchmarks & External Corpora
+
+In addition to `wrap` runtime validation, the repository maintains corpus and external benchmark evaluations for `mcp-behave` auditing (see individual reports for tested versions and conditions):
+
+| Benchmark Suite | Focus Area | Reported Result | Reference |
+| --- | --- | --- | --- |
+| **Twin-Server Corpus** *(v0.4.x)* | Malicious server behaviors (`bench/run.py --rounds 3`) | **90.0% Recall, 0.0% FPR, 6/7 Pair Separation** | Section 9 (`bench/run.py`) |
+| **CrossMCP-Bench** | Multi-server authorization & cross-tool exfiltration | **100.0% Prevention, 0.0% FPR** | [`docs/benchmarks/crossmcp_bench_report.md`](docs/benchmarks/crossmcp_bench_report.md) |
+| **Pluto MCP Visibility** | Syscall observation coverage across 12 capability classes | **100.0% Detection (12/12)** | [`docs/benchmarks/pluto_visibility_bench.md`](docs/benchmarks/pluto_visibility_bench.md) |
+| **MCP-GuardBench** | Tool argument vulnerability & prompt injection defense | **100.0% Detection, 0.0% FPR** | [`docs/benchmarks/guardbench_report.md`](docs/benchmarks/guardbench_report.md) |
+| **Official Reference Servers** | 7 reference servers + 15 adversarial scenarios | Published empirical audit | [`docs/benchmarks/official_servers_audit.md`](docs/benchmarks/official_servers_audit.md) |
+
+---
+
+## 7. Reproduction Methodology
+
+> **Important provenance fix**: Earlier 5-repetition comparison runs (`wrap_v055_5rep.json` / `wrap_v056_5rep.json`) were **invalidated and excluded** from release performance claims because `benchmarks/bench_wrap.py` overwrote the caller's `PYTHONPATH` with its own `SRC_DIR`, causing both runs to import `v0.5.6`.
+
+Use the standalone provenance-verified runner [`benchmarks/run_paired_comparison.py`](benchmarks/run_paired_comparison.py), which:
+1. Creates isolated detached Git worktrees for `--baseline-ref` and `--candidate-ref`.
+2. Verifies inside fresh subprocesses that `mcp_behave.enforce.__file__` resolves strictly inside the intended worktree (failing immediately on mismatch).
+3. Records `enforce.py` and `protocol.py` SHA-256 digests and native tracer eligibility.
+4. Alternates execution order across repetitions using identical workloads and saves both per-repetition and aggregate results.
+
+```sh
+# 1. Paired v0.5.5 vs v0.5.6 concurrent --enforce --redact comparison
+.venv/bin/python benchmarks/run_paired_comparison.py \
+  --python .venv/bin/python \
+  --baseline-ref v0.5.5 \
+  --candidate-ref cb9237578c453069f0069e47ee2f60e8d13ff644 \
+  --repetitions 10 --conc-count 200 --concurrency 16 --seed 42 \
+  --json-out benchmarks/results/v0.5.6/paired_conc_redact_10rep.json
+
+# 2. Lossless 5-minute soak (exact identity reconciliation)
+PYTHONPATH=src:. .venv/bin/python benchmarks/soak_wrap.py \
+  --validation-profile lossless --duration 300 --mode enforce_redact \
+  --rate 25 --concurrency 16 --large-bytes 131072 --seed 42 \
+  --max-jsonl-bytes 0 --max-jsonl-backups 0 --max-sqlite-events 0 --retention-interval 0 \
+  --max-rss-mib 256 --max-fds 128
+
+# 3. Bounded-retention 1-hour endurance soak
+PYTHONPATH=src:. .venv/bin/python benchmarks/soak_wrap.py \
+  --validation-profile bounded --duration 3600 --sample-interval 15 --mode enforce_redact \
+  --rate 25 --concurrency 16 --large-bytes 131072 --seed 42 \
+  --max-jsonl-bytes 1048576 --max-jsonl-backups 2 --max-sqlite-events 2000 --retention-interval 10 \
+  --max-rss-mib 256 --max-fds 128
 ```
-┌────────────────────────────────────────────────────────┐
-│                   MCP SERVER TARGET                    │
-│   (Declared Tools, Resources, Prompts, Descriptions)   │
-└──────────────────────────┬─────────────────────────────┘
-                           │
-             stdio JSON-RPC Probing Harness
-                           │
-      ┌────────────────────┴────────────────────┐
-      ▼                                         ▼
-[ Static AST / Linter ]             [ mcp-behave Runtime Tracer ]
- Inspects source code / manifest     Intercepts libc openat/connect/execve
- Blind to runtime evasion            Verifies declared vs observed behavior
-```
 
 ---
 
-## 2. Benchmark Corpus & Twin-Server Architecture
+## 8. Known Limitations
 
-The `bench/corpus/` suite contains **17 standardized, runnable stdio MCP servers organized across 7 functional domain pairs ("Twin-Server" Paradigm)**, cross-mapped to academic benchmarks (**MCP-SafetyBench**, **MCPSecBench**, **SC-Inject-Bench**, **MCPTox**) and the **SafeMCP / MITRE ATT&CK Threat Taxonomy**:
-
-### A. The Twin-Server Pairs
-| Pair ID | Core Domain | Benign Baseline (`benign/`) | Poisoned Variant (`malicious/`) | SafeMCP Threat ID | Primary Observable Anomaly |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **`pair_filesystem`** | Local File Storage | `ref_filesystem` (scoped workspace access) | `sc_inject_credential` (probes `~/.ssh/id_rsa`) | `MCP-T1001` (Sensitive Path Snooping) | `openat` on `.ssh/id_rsa` in canary HOME |
-| **`pair_sqlite`** | Relational DB | `ref_sqlite` (local in-memory SQL queries) | `sqlite_poisoned` (beacons records to TCP C2) | `MCP-T1002` (Undeclared Socket Egress) | `connect` to unauthorized C2 endpoint |
-| **`pair_fetch`** | HTTP / Web Client | `ref_fetch` (declared public web fetch) | `fetch_poisoned` (probes `169.254.169.254` IMDS) | `MCP-T1003` (SSRF / Cloud Metadata Probe) | `connect` to AWS/GCP link-local metadata IP |
-| **`pair_git`** | Version Control | `ref_git` (local commit log & diff query) | `git_poisoned` / `dvmcp_command_exec` (shell exec) | `MCP-T1004` (Unauthorized Process Spawning) | `execve` on `/bin/sh` |
-| **`pair_stateful`** | Protocol & State | `ref_stateful` (idempotent deterministic tools) | `mcpsec_rug_pull` (mutates schema across turns) | `MCP-T1005` (Behavioral Rug-Pull) | SHA-256 manifest drift across audit runs |
-| **`pair_delayed`** | Timing Evasion | `ref_calculator` (pure computation baseline) | `deadbugz_delayed` (benign on calls 1–2; attack on 3+) | `MCP-T1006` (Multi-Turn Delayed Activation) | Turn-dependent behavioral activation |
-| **`pair_container`** | Daemon Isolation | `ref_calculator` (pure compute baseline) | `unix_socket_escape` (probes `docker.sock`) | `MCP-T1007` (Container Socket Access) | `connect` to AF_UNIX control socket |
-| **`pair_email`** | Messaging API | `ref_email` (declared email dispatch) | `postmark_inband_bcc` (hidden BCC payload stuffing) | `MCP-T1008` (In-Band Payload Tampering) | Transport match / Payload diff (Roadmap) |
+- **PID-only identity assurance**: `TracerServer` tracks PIDs best-effort (`best_effort_pid_only`) and cannot rule out OS PID reuse after capacity eviction or delayed `READY` arrival.
+- **Session-level attribution uncertainty**: Unparseable protocol frames, monitor queue drops, or evicted in-flight calls degrade attribution to `correlated` until a trusted lifecycle resynchronization boundary.
+- **SQLite logical row bounds**: `--max-sqlite-events` bounds logical row count (`DELETE`), not physical disk file size without `VACUUM`; WAL is truncated when exceeding `16 MiB`.
+- **Bounded-retention completeness**: Full-run observation completeness is explicitly `UNVERIFIED` under `--validation-profile bounded` when pruning/rotation occurs.
+- **Platform coverage**: Linux validation ran on `aarch64` Docker (`python:3.12-slim`), not bare-metal `x86_64` Linux or native Windows.
+- **Point-in-time orphan detection**: Post-shutdown orphan checks use point-in-time `ps` snapshots.
+- **Dynamic libc interposition boundaries**: Static binaries, raw `syscall` instructions, and in-band payload tampering (`postmark_inband_bcc`) remain documented boundaries of libc-level interposition.
 
 ---
 
-## 3. Empirical Results Matrix
+## 9. Historical Benchmark Archive
 
-```
-========================================================================================
-                    TWIN-SERVER BENCHMARK EVALUATION MATRIX
-========================================================================================
-Target ID                Pair ID          Ground Truth Static     mcp-behave   Decision
-----------------------------------------------------------------------------------------
-ref_calculator           pair_calculator  BENIGN       CLEAN      CLEAN        TN (Clean)
-ref_email                pair_email       BENIGN       CLEAN      CLEAN        TN (Clean)
-ref_fetch                pair_fetch       BENIGN       CLEAN      CLEAN        TN (Clean)
-ref_filesystem           pair_filesystem  BENIGN       CLEAN      CLEAN        TN (Clean)
-ref_git                  pair_git         BENIGN       CLEAN      CLEAN        TN (Clean)
-ref_sqlite               pair_sqlite      BENIGN       CLEAN      CLEAN        TN (Clean)
-ref_stateful             pair_stateful    BENIGN       CLEAN      CLEAN        TN (Clean)
-deadbugz_delayed         pair_delayed     MALICIOUS    FLAGGED    FLAGGED      TP (Caught)
-dvmcp_command_exec       pair_git         MALICIOUS    FLAGGED    FLAGGED      TP (Caught)
-fetch_poisoned           pair_fetch       MALICIOUS    FLAGGED    FLAGGED      TP (Caught)
-git_poisoned             pair_git         MALICIOUS    FLAGGED    FLAGGED      TP (Caught)
-mcpsec_rug_pull          pair_stateful    MALICIOUS    CLEAN      FLAGGED      TP (Caught)
-postmark_inband_bcc      pair_email       MALICIOUS    CLEAN      CLEAN        FN (Missed)
-sc_inject_credential     pair_filesystem  MALICIOUS    FLAGGED    FLAGGED      TP (Caught)
-sc_inject_egress         pair_calculator  MALICIOUS    FLAGGED    FLAGGED      TP (Caught)
-sqlite_poisoned          pair_sqlite      MALICIOUS    FLAGGED    FLAGGED      TP (Caught)
-unix_socket_escape       pair_container   MALICIOUS    FLAGGED    FLAGGED      TP (Caught)
-========================================================================================
-```
+The evaluations below were recorded on earlier `v0.4.x` releases and are preserved for historical reference:
 
-### Twin-Server Pair Separation Analysis
-| Pair ID | Benign Baseline | Poisoned Variant(s) | Separation Status |
-| :--- | :--- | :--- | :--- |
-| **`pair_calculator`** | `ref_calculator` (Clean) | `sc_inject_egress` (Flagged) | **PASSED (Clean Separation)** |
-| **`pair_fetch`** | `ref_fetch` (Clean) | `fetch_poisoned` (Flagged) | **PASSED (Clean Separation)** |
-| **`pair_filesystem`** | `ref_filesystem` (Clean) | `sc_inject_credential` (Flagged) | **PASSED (Clean Separation)** |
-| **`pair_git`** | `ref_git` (Clean) | `dvmcp_command_exec`, `git_poisoned` (Flagged) | **PASSED (Clean Separation)** |
-| **`pair_sqlite`** | `ref_sqlite` (Clean) | `sqlite_poisoned` (Flagged) | **PASSED (Clean Separation)** |
-| **`pair_stateful`** | `ref_stateful` (Clean) | `mcpsec_rug_pull` (Flagged) | **PASSED (Clean Separation)** |
-| **`pair_email`** | `ref_email` (Clean) | `postmark_inband_bcc` (Clean - Missed) | *FAILED (Indistinguishable)* |
-
-> **Twin Pair Separation Accuracy**: **6 / 7 (85.7%)** clean separation rate between benign baselines and poisoned twins.
-
-### SafeMCP / MITRE ATT&CK Threat Taxonomy Coverage
-| Threat ID | Technique Description | Caught / Total | Detection Rate |
-| :--- | :--- | :---: | :---: |
-| **`MCP-T1001`** | Sensitive File Snooping (SSH/AWS/.env) | **2 / 2** | **100.0%** |
-| **`MCP-T1002`** | Undeclared Socket Egress / C2 Beaconing | **3 / 3** | **100.0%** |
-| **`MCP-T1003`** | Cloud Metadata / SSRF Probe (IMDS: `169.254.169.254`) | **1 / 1** | **100.0%** |
-| **`MCP-T1004`** | Unauthorized Process Spawning (Shell/RCE) | **2 / 2** | **100.0%** |
-| **`MCP-T1005`** | Behavioral Rug-Pull / Surface Mutation | **1 / 1** | **100.0%** |
-| **`MCP-T1006`** | Multi-Turn Delayed Activation Evasion (Deadbugz) | **1 / 1** | **100.0%** |
-| **`MCP-T1007`** | Container Runtime Socket Access (`docker.sock`) | **1 / 1** | **100.0%** |
-| **`MCP-T1008`** | In-Band Payload Tampering & Secret Smuggling | **0 / 1** | **0.0%** *(Documented Edge Case)* |
-
-### Aggregate Metrics Comparison
-
-| Metric | Static AST / Regex Scanner | `mcp-behave` (1 Round) | `mcp-behave` (3 Rounds) |
-| :--- | :---: | :---: | :---: |
-| **Precision** | **100.0%** | **100.0%** | **100.0%** |
-| **Recall (Detection Rate)** | 80.0% (8/10) | 70.0% (7/10) | **90.0% (9/10)** |
-| **F1 Score** | 0.8889 | 0.8235 | **0.9474** |
-| **False Positive Rate (FPR)** | **0.0% (0/7)** | **0.0% (0/7)** | **0.0% (0/7)** |
-| **Twin Pair Separation** | 71.4% (5/7) | 57.1% (4/7) | **85.7% (6/7)** |
-| **Host Workstation Exposure** | N/A (Offline) | ✅ **Zero (Canary Sandboxed)** | ✅ **Zero (Canary Sandboxed)** |
-
----
-
-## 4. Transparent Analysis of "The Misses" & Edge Cases
-
-A trustworthy security tool must document its boundaries transparently. Our benchmark identified two critical edge cases:
-
-### 1. In-Band API Exfiltration (`postmark-mcp v1.0.16`)
-- **The Attack**: In version 1.0.16 of the legitimate `postmark-mcp` package, an attacker added a line that covertly added a BCC recipient to every sent email.
-- **Why Transport Tracing Missed It**: The server communicates with `api.postmarkapp.com`—an authorized, declared endpoint for an email server. Because the destination IP and port match legitimate declared capabilities, raw socket connection tracing sees expected traffic.
-- **Roadmap Solution (Phase 2)**: **Semantic Egress Diffing & Payload Taint Tracking**. By comparing declared tool arguments with the deserialized HTTP request body in memory, `mcp-behave` can detect argument-to-payload tampering.
-
-### 2. Multi-Call Delayed Evasion (`Deadbugz`)
-- **The Attack**: Target server executes benign calculations on calls 1 and 2, and activates malicious credential harvesting on call 3+.
-- **Why Single-Round Missed It**: A single-shot audit (`--probe-rounds 1`) only calls each tool once.
-- **Empirical Fix**: Multi-round probing (`mcp-behave --probe-rounds 3`) exercises tools repeatedly with varied realistic arguments, defeating delayed triggers.
-
-### 3. AF_UNIX Domain Sockets & Kernel-Level Direct Syscalls
-- **The Boundary**: Dynamic libc interposition (`DYLD_INSERT_LIBRARIES` / `LD_PRELOAD`) intercepts dynamic library calls (`connect`, `openat`). It cannot intercept static Go binaries or raw kernel assembly instructions (`syscall`).
-- **Roadmap Solution (Phase 1)**: **Linux eBPF Tracing Engine** (`kprobe/sys_enter_connect`, `kprobe/sys_enter_openat`).
-
----
-
-## 5. Cross-Benchmark Context
-
-| Benchmark Suite | Focus Area | `mcp-behave` Result | Reference |
-| :--- | :--- | :---: | :--- |
-| **Corpus Benchmark** | Real-world server attacks (SC-Inject, DVMCP, Deadbugz) | **85.7% Recall, 0.0% FPR** | `bench/run.py` |
-| **MLZoo CrossMCP-Bench** | Multi-server agent authorization & cross-tool exfiltration | **100.0% Prevention, 0.0% FPR** | [`docs/benchmarks/crossmcp_bench_report.md`](docs/benchmarks/crossmcp_bench_report.md) |
-| **Pluto MCP Visibility** | Syscall observation coverage across 12 capability classes | **100.0% Detection (12/12)** | [`benchmarks/pluto_bench_results.json`](benchmarks/pluto_bench_results.json) |
-| **MCP-GuardBench** | Tool argument vulnerability & prompt injection defense | **100.0% Detection, 0.0% FPR** | [`benchmarks/guardbench_results.json`](benchmarks/guardbench_results.json) |
-
----
-
-## 6. How to Run the Benchmark
-
-```bash
-# Clone and setup
-git clone https://github.com/navid72m/mcp-behave.git
-cd mcp-behave
-pip install -e ".[test]"
-
-# Run benchmark with multi-round probing
-python3 bench/run.py --rounds 3
-
-# View raw JSON results
-cat bench/results.json
-```
+- **Twin-Server Corpus (`bench/corpus/`, 17 servers across 7 domain pairs, v0.4.x)**: `mcp-behave` with `--probe-rounds 3` achieved **100.0% precision**, **90.0% recall (9/10)**, **0.0% FPR (0/7)**, and **6/7 (85.7%)** twin-pair separation (`postmark_inband_bcc` documented as a transport-matching miss; `deadbugz_delayed` caught with 3 rounds). Reproducible via `python3 bench/run.py --rounds 3`.
+- **External Corpora**: [`docs/benchmarks/crossmcp_bench_report.md`](docs/benchmarks/crossmcp_bench_report.md), [`docs/benchmarks/pluto_visibility_bench.md`](docs/benchmarks/pluto_visibility_bench.md), [`docs/benchmarks/guardbench_report.md`](docs/benchmarks/guardbench_report.md), [`docs/benchmarks/official_servers_audit.md`](docs/benchmarks/official_servers_audit.md).
