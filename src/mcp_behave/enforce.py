@@ -21,13 +21,67 @@ from .events import (
 )
 from .telemetry import hash_content
 from .lockfile import ServerLock
-from .scanner import COMBINED_TEXT_PREFILTER, SECRET_RULES, CanaryManager
+from .scanner import SECRET_RULES, CanaryManager
 
 # Standard JSON-RPC policy violation error codes
 ERROR_CODE_TOOL_BLOCKED = -32003
 ERROR_CODE_RESPONSE_BLOCKED = -32004
 
 KIND_ENFORCEMENT_ACTION = "enforcement_action"
+
+
+def _rule_may_match(rule_name: str, text: str, text_fold: str) -> bool:
+    """Exact necessary-substring pre-check for SECRET_RULES (zero false negatives).
+
+    `text_fold` must be `text.casefold()` so Unicode case-insensitive folds
+    such as U+017F ('ſ' -> 's') and U+212A ('K' -> 'k') are handled identically
+    to Python `re` (?i).
+    """
+    if rule_name == "private_key":
+        return "PRIVATE KEY-----" in text
+    if rule_name == "aws_access_key_id":
+        return "AKIA" in text or "ASIA" in text
+    if rule_name == "aws_secret_access_key":
+        return "secret" in text_fold
+    if rule_name == "openai_api_key":
+        return "sk-" in text
+    if rule_name == "anthropic_api_key":
+        return "sk-ant-api03-" in text
+    if rule_name == "github_token":
+        return (
+            "ghp_" in text
+            or "gho_" in text
+            or "ghu_" in text
+            or "ghs_" in text
+            or "ghr_" in text
+        )
+    if rule_name == "github_pat":
+        return "github_pat_" in text
+    if rule_name == "slack_token":
+        return "xox" in text
+    if rule_name == "generic_secret_token":
+        return "key" in text_fold or "secret" in text_fold or "token" in text_fold
+    return True
+
+
+def _may_contain_secret(text: str, text_fold: Optional[str] = None) -> bool:
+    """Fast C-level substring pre-check covering all SECRET_RULES."""
+    if (
+        "PRIVATE KEY-----" in text
+        or "AKIA" in text
+        or "ASIA" in text
+        or "sk-" in text
+        or "ghp_" in text
+        or "gho_" in text
+        or "ghu_" in text
+        or "ghs_" in text
+        or "ghr_" in text
+        or "github_pat_" in text
+        or "xox" in text
+    ):
+        return True
+    tf = text_fold if text_fold is not None else text.casefold()
+    return "key" in tf or "secret" in tf or "token" in tf
 
 
 class PolicyEnforcer:
@@ -115,18 +169,6 @@ class PolicyEnforcer:
 
         if not self.enforce:
             return None, None
-
-        # Fast path only when neither tools/call nor JSON unicode escapes are present
-        if b'"tools/call"' not in line_bytes and b"\\u" not in line_bytes and not line_bytes.lstrip().startswith(b"["):
-            # Still validate JSON object structure under fail-closed if line is non-empty
-            stripped = line_bytes.lstrip()
-            if stripped.startswith(b"{"):
-                try:
-                    msg = json.loads(line_bytes.decode("utf-8", errors="replace"))
-                    if isinstance(msg, dict) and msg.get("method") != "tools/call":
-                        return None, None
-                except Exception:
-                    pass
 
         try:
             line_str = line_bytes.decode("utf-8", errors="replace")
@@ -228,17 +270,18 @@ class PolicyEnforcer:
         except Exception:
             return line_bytes, []
 
-        # Fast pre-filter: skip deep JSON inspection if clean and no unicode escapes / batches
+        fail_closed_enforce = self.enforce and self.fail_mode == "fail-closed"
         has_canary = bool(self.canary_mgr.canaries)
-        has_suspicious = bool(COMBINED_TEXT_PREFILTER.search(line_str.lower()))
-        has_escape_or_batch = ("\\u" in line_str) or line_str.lstrip().startswith("[")
-        if not has_canary and not has_suspicious and not has_escape_or_batch and not (self.enforce and self.fail_mode == "fail-closed"):
-            return line_bytes, []
+
+        # Skip JSON parse only when fail-closed enforcement is inactive and no secret/canary/escape/batch markers exist
+        if not fail_closed_enforce and not has_canary:
+            if "\\u" not in line_str and not line_str.lstrip().startswith("[") and not _may_contain_secret(line_str):
+                return line_bytes, []
 
         try:
             msg = json.loads(line_str)
         except Exception:
-            if self.enforce and self.fail_mode == "fail-closed":
+            if fail_closed_enforce:
                 err_msg = "Policy violation: Malformed JSON-RPC server response blocked under fail-closed enforcement."
                 err_bytes = self._build_error_response(None, ERROR_CODE_RESPONSE_BLOCKED, err_msg)
                 evt = self._build_enforcement_event(
@@ -252,7 +295,7 @@ class PolicyEnforcer:
             return line_bytes, []
 
         if isinstance(msg, list):
-            if self.enforce and self.fail_mode == "fail-closed":
+            if fail_closed_enforce:
                 err_msg = "Policy violation: JSON-RPC batch response blocked under fail-closed enforcement."
                 err_bytes = self._build_error_response(None, ERROR_CODE_RESPONSE_BLOCKED, err_msg)
                 evt = self._build_enforcement_event(
@@ -271,7 +314,7 @@ class PolicyEnforcer:
             return line_bytes, []
 
         if not isinstance(msg, dict):
-            if self.enforce and self.fail_mode == "fail-closed":
+            if fail_closed_enforce:
                 err_msg = "Policy violation: Non-object JSON-RPC server response blocked under fail-closed enforcement."
                 err_bytes = self._build_error_response(None, ERROR_CODE_RESPONSE_BLOCKED, err_msg)
                 evt = self._build_enforcement_event(
@@ -289,12 +332,13 @@ class PolicyEnforcer:
             msg_id = None
         events: List[BehavioralEvent] = []
 
-        # Inspect decoded text (catches \uXXXX escapes that bypass raw-byte prefilters)
+        # Inspect decoded text (catches \uXXXX escapes, duplicate keys, and alternate formatting)
         decoded_str = json.dumps(msg, ensure_ascii=False)
+        decoded_fold = decoded_str.casefold()
 
         # 1. Check active canary tokens
-        canaries_found = self.canary_mgr.find_canaries(decoded_str)
-        if canaries_found and self.enforce and self.fail_mode == "fail-closed":
+        canaries_found = self.canary_mgr.find_canaries(decoded_str) if has_canary else []
+        if canaries_found and fail_closed_enforce:
             err_msg = "Policy violation: Server response blocked due to confidential credential or canary token exfiltration."
             err_bytes = self._build_error_response(msg_id, ERROR_CODE_RESPONSE_BLOCKED, err_msg)
             evt = self._build_enforcement_event(
@@ -308,10 +352,16 @@ class PolicyEnforcer:
             )
             return err_bytes, [evt]
 
-        # 2. Check critical secrets (private keys) for blocking under enforce
-        if self.enforce and self.fail_mode == "fail-closed":
+        has_secret_marker = (
+            _may_contain_secret(decoded_str, decoded_fold)
+            if (fail_closed_enforce or self.redact)
+            else False
+        )
+
+        # 2. Check critical secrets (private keys / AWS secret keys) for blocking under enforce
+        if fail_closed_enforce and has_secret_marker:
             for rule_name, pattern, _, is_crit in SECRET_RULES:
-                if is_crit and pattern.search(decoded_str):
+                if is_crit and _rule_may_match(rule_name, decoded_str, decoded_fold) and pattern.search(decoded_str):
                     err_msg = f"Policy violation: Server response blocked due to critical credential exposure ({rule_name})."
                     err_bytes = self._build_error_response(msg_id, ERROR_CODE_RESPONSE_BLOCKED, err_msg)
                     evt = self._build_enforcement_event(
@@ -325,8 +375,8 @@ class PolicyEnforcer:
                     )
                     return err_bytes, [evt]
 
-        # 3. Inline Redaction (when --redact is active)
-        if self.redact:
+        # 3. Inline Redaction (when --redact is active); skip recursive traversal if no markers exist
+        if self.redact and (canaries_found or has_secret_marker):
             redacted_msg, redact_events = self._redact_json_object(msg, msg_id)
             if redact_events:
                 redacted_bytes = json.dumps(redacted_msg, ensure_ascii=False).encode("utf-8") + b"\n"
@@ -370,32 +420,38 @@ class PolicyEnforcer:
                         )
                     )
 
-                # Redact secrets
-                for rule_name, pattern, _, _ in SECRET_RULES:
-                    matches = list(pattern.finditer(redacted_str))
-                    for m in matches:
-                        matched_text = m.group(0)
-                        redacted_str = redacted_str.replace(
-                            matched_text, f"[REDACTED: {rule_name}]"
-                        )
-                        events.append(
-                            BehavioralEvent(
-                                event="enforcement_action",
-                                session_id=self.session_id,
-                                server_id=self.server_id,
-                                kind=KIND_ENFORCEMENT_ACTION,
-                                source="monitor",
-                                evidence_tier=EVIDENCE_TIER_OBSERVED,
-                                severity=SEVERITY_HIGH,
-                                request_id=msg_id,
-                                timestamp=time.time(),
-                                payload={
-                                    "action": "redacted",
-                                    "target": hash_content(matched_text),
-                                    "detector": rule_name,
-                                },
+                # Redact secrets (skip regexes whose necessary literal substring is absent)
+                str_fold = redacted_str.casefold()
+                if _may_contain_secret(redacted_str, str_fold):
+                    for rule_name, pattern, _, _ in SECRET_RULES:
+                        if not _rule_may_match(rule_name, redacted_str, str_fold):
+                            continue
+                        matches = list(pattern.finditer(redacted_str))
+                        for m in matches:
+                            matched_text = m.group(0)
+                            redacted_str = redacted_str.replace(
+                                matched_text, f"[REDACTED: {rule_name}]"
                             )
-                        )
+                            events.append(
+                                BehavioralEvent(
+                                    event="enforcement_action",
+                                    session_id=self.session_id,
+                                    server_id=self.server_id,
+                                    kind=KIND_ENFORCEMENT_ACTION,
+                                    source="monitor",
+                                    evidence_tier=EVIDENCE_TIER_OBSERVED,
+                                    severity=SEVERITY_HIGH,
+                                    request_id=msg_id,
+                                    timestamp=time.time(),
+                                    payload={
+                                        "action": "redacted",
+                                        "target": hash_content(matched_text),
+                                        "detector": rule_name,
+                                    },
+                                )
+                            )
+                        if matches:
+                            str_fold = redacted_str.casefold()
                 return redacted_str
             return val
 

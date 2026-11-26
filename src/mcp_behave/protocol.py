@@ -315,6 +315,8 @@ class ProtocolMonitor:
         try:
             self._line_queue.put_nowait((line_bytes, direction, now))
         except queue.Full:
+            if self.attribution_engine and hasattr(self.attribution_engine, "record_queue_drop"):
+                self.attribution_engine.record_queue_drop(direction, len(line_bytes), now)
             drop_event = BehavioralEvent(
                 event="telemetry_drop",
                 session_id=self.session_id,
@@ -338,6 +340,8 @@ class ProtocolMonitor:
         try:
             self._line_queue.put_nowait((line_bytes, direction, now))
         except queue.Full:
+            if self.attribution_engine and hasattr(self.attribution_engine, "record_queue_drop"):
+                self.attribution_engine.record_queue_drop(direction, len(line_bytes), now)
             drop_event = BehavioralEvent(
                 event="telemetry_drop",
                 session_id=self.session_id,
@@ -381,18 +385,6 @@ class ProtocolMonitor:
 
     def _sync_process_line(self, line_bytes: bytes, direction: str, now: float) -> None:
         """Synchronous parsing and telemetry dispatch on background thread."""
-        # Fast path for large messages (>64 KB): avoid intermediate copy of 1 MB byte string
-        if len(line_bytes) > 65536 and not self.log_content:
-            header_check = line_bytes[:4096]
-            is_manifest_response = (
-                b'"tools"' in header_check
-                or b'"serverInfo"' in header_check
-                or b'"capabilities"' in header_check
-            )
-            if not is_manifest_response:
-                self._handle_large_message_envelope_sync(line_bytes, len(line_bytes), direction, now)
-                return
-
         # Strip trailing newlines for inspection
         stripped = line_bytes.rstrip(b"\r\n")
         if not stripped:
@@ -403,57 +395,16 @@ class ProtocolMonitor:
         if stripped.startswith(b"\xef\xbb\xbf"):
             stripped = stripped[3:]
 
+        # Fast path for large messages (>64 KB): avoid re-serializing 1 MB payloads for hashing/scanning
+        if len(line_bytes) > 65536 and not self.log_content:
+            self._handle_large_message_envelope_sync(stripped, len(line_bytes), direction, now)
+            return
+
         # Attempt JSON parse directly on bytes (avoids large intermediate str allocation)
         try:
             data = json.loads(stripped)
         except Exception:
-            decoded_preview = stripped[:256].decode("utf-8", errors="replace")
-            # Check for stdout pollution or protocol anomaly
-            if direction == "server_to_client":
-                # A corrupted JSON-RPC message typically starts with '{' or '[{' or contains '"jsonrpc"'
-                looks_like_jsonrpc = (
-                    stripped.startswith(b"{")
-                    or stripped.startswith(b"[{")
-                    or b'"jsonrpc"' in stripped
-                    or b'"method"' in stripped
-                    or b'"result"' in stripped
-                )
-                if not looks_like_jsonrpc:
-                    event = BehavioralEvent(
-                        event="stdout_pollution",
-                        session_id=self.session_id,
-                        server_id=self.server_id,
-                        kind=KIND_STDOUT_POLLUTION,
-                        timestamp=now,
-                        source="monitor",
-                        evidence_tier="observed",
-                        payload={
-                            "size_bytes": len(line_bytes),
-                            "preview": decoded_preview[:120],
-                        },
-                    )
-                    self.bus.publish_sync(event)
-                    self.telemetry.record(event)
-                    return
-
-            # Otherwise, malformed JSON is a protocol anomaly
-            event = BehavioralEvent(
-                event="protocol_anomaly",
-                session_id=self.session_id,
-                server_id=self.server_id,
-                kind=KIND_PROTOCOL_ANOMALY,
-                timestamp=now,
-                source="monitor",
-                evidence_tier="observed",
-                payload={
-                    "direction": direction,
-                    "size_bytes": len(line_bytes),
-                    "error": "invalid_json",
-                    "preview": decoded_preview[:120],
-                },
-            )
-            self.bus.publish_sync(event)
-            self.telemetry.record(event)
+            self._emit_malformed_event(stripped, len(line_bytes), direction, now)
             return
 
         # Handle batch or single message
@@ -461,8 +412,12 @@ class ProtocolMonitor:
             for item in data:
                 if isinstance(item, dict):
                     self._handle_single_message_sync(item, len(line_bytes), direction, now)
+                elif self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+                    self.attribution_engine.record_unparseable_message(direction, len(line_bytes), now)
         elif isinstance(data, dict):
             self._handle_single_message_sync(data, len(line_bytes), direction, now)
+        elif self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+            self.attribution_engine.record_unparseable_message(direction, len(line_bytes), now)
 
     def _handle_single_message_sync(
         self, msg: Dict[str, Any], total_bytes: int, direction: str, now: float
@@ -641,120 +596,321 @@ class ProtocolMonitor:
                 self.telemetry.record(event)
 
                 # Process TOFU Manifest and Drift Detection
-                if self.manifest_tracker:
-                    if method == "initialize" and not is_error and isinstance(content_obj, dict):
-                        init_events = self.manifest_tracker.handle_initialize_response(content_obj)
-                        for ievt in init_events:
-                            self.bus.publish_sync(ievt)
-                            self.telemetry.record(ievt)
-                            self._emit_alert(ievt)
-
-                    elif method == "tools/list":
-                        if self.manifest_tracker.prior_manifest is None:
-                            self.manifest_tracker.prior_manifest = self.telemetry.get_last_trusted_manifest(self.server_id)
-                        list_events, _ = self.manifest_tracker.handle_tools_list_response(
-                            msg_id,
-                            content_obj if not is_error else None,
-                            is_error=is_error,
-                        )
-                        for levt in list_events:
-                            self.bus.publish_sync(levt)
-                            self.telemetry.record(levt)
-                            self._emit_alert(levt)
+                self._handle_manifest_response_sync(
+                    msg_id, method, is_error, content_obj, direction, total_bytes, now
+                )
 
             elif "method" in msg:
                 # Server-initiated notification or request
-                method = msg.get("method")
-                params = msg.get("params") or {}
+                self._handle_server_notification_sync(msg, msg_id, total_bytes, now)
 
-                if self.manifest_tracker and msg_id is None:
-                    if method == "notifications/tools/list_changed":
-                        self.manifest_tracker.mark_list_changed("tools")
-                    elif method == "notifications/resources/list_changed":
-                        self.manifest_tracker.mark_list_changed("resources")
-                    elif method == "notifications/prompts/list_changed":
-                        self.manifest_tracker.mark_list_changed("prompts")
+    def _handle_manifest_response_sync(
+        self,
+        msg_id: Any,
+        method: Optional[str],
+        is_error: bool,
+        content_obj: Any,
+        direction: str,
+        total_bytes: int,
+        now: float,
+    ) -> None:
+        """Dispatch passive initialize and tools/list manifest lifecycle handling consistently."""
+        if not self.manifest_tracker:
+            return
+        if method == "initialize":
+            if not is_error and isinstance(content_obj, dict):
+                init_events = self.manifest_tracker.handle_initialize_response(content_obj)
+                for ievt in init_events:
+                    self.bus.publish_sync(ievt)
+                    self.telemetry.record(ievt)
+                    self._emit_alert(ievt)
+            elif not is_error and self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+                self.attribution_engine.record_unparseable_message(direction, total_bytes, now)
+        elif method == "tools/list":
+            if not is_error and not isinstance(content_obj, dict):
+                if self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+                    self.attribution_engine.record_unparseable_message(direction, total_bytes, now)
+            if self.manifest_tracker.prior_manifest is None:
+                self.manifest_tracker.prior_manifest = self.telemetry.get_last_trusted_manifest(self.server_id)
+            list_events, _ = self.manifest_tracker.handle_tools_list_response(
+                msg_id,
+                content_obj if not is_error else None,
+                is_error=is_error,
+            )
+            for levt in list_events:
+                self.bus.publish_sync(levt)
+                self.telemetry.record(levt)
+                self._emit_alert(levt)
 
-                payload = {
-                    "method": method,
-                    "size_bytes": total_bytes,
-                }
-                if self.log_content:
-                    payload["params"] = params
-                else:
-                    payload["params_hash"] = hash_content(params)
+    def _handle_server_notification_sync(
+        self,
+        msg: Dict[str, Any],
+        msg_id: Any,
+        total_bytes: int,
+        now: float,
+        hashed_summary: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Handle server-initiated notifications/requests consistently for normal and large payloads."""
+        method = msg.get("method")
+        params = msg.get("params") or {}
 
+        if self.manifest_tracker and msg_id is None:
+            if method == "notifications/tools/list_changed":
+                self.manifest_tracker.mark_list_changed("tools")
+            elif method == "notifications/resources/list_changed":
+                self.manifest_tracker.mark_list_changed("resources")
+            elif method == "notifications/prompts/list_changed":
+                self.manifest_tracker.mark_list_changed("prompts")
+
+        payload: Dict[str, Any] = {
+            "method": method,
+            "size_bytes": total_bytes,
+        }
+        if hashed_summary is not None:
+            payload["params_hash"] = hashed_summary
+        elif self.log_content:
+            payload["params"] = params
+        else:
+            payload["params_hash"] = hash_content(params)
+
+        event = BehavioralEvent(
+            event="protocol_notification",
+            session_id=self.session_id,
+            server_id=self.server_id,
+            kind=KIND_PROTOCOL_NOTIFICATION,
+            request_id=msg_id,
+            target=method,
+            timestamp=now,
+            source="monitor",
+            evidence_tier="observed",
+            payload=payload,
+        )
+        self.bus.publish_sync(event)
+        self.telemetry.record(event)
+
+    def _record_active_request(
+        self, msg_id: Any, now: float, method: str, tool_name: Optional[str]
+    ) -> None:
+        """Store active request metadata with bounded capacity."""
+        with self._lock:
+            if len(self._active_requests) >= 10000 and msg_id not in self._active_requests:
+                oldest_key = next(iter(self._active_requests))
+                self._active_requests.pop(oldest_key, None)
+            self._active_requests[msg_id] = {
+                "start_ts": now,
+                "method": method,
+                "tool_name": tool_name,
+            }
+
+    def _emit_malformed_event(self, raw_bytes: bytes, total_bytes: int, direction: str, now: float) -> None:
+        """Emit stdout_pollution or protocol_anomaly for malformed payloads."""
+        stripped = raw_bytes.rstrip(b"\r\n")
+        decoded_preview = stripped[:256].decode("utf-8", errors="replace")
+        if direction == "server_to_client":
+            looks_like_jsonrpc = (
+                stripped.startswith(b"{")
+                or stripped.startswith(b"[{")
+                or b'"jsonrpc"' in stripped[:4096]
+                or b'"method"' in stripped[:4096]
+                or b'"result"' in stripped[:4096]
+            )
+            if not looks_like_jsonrpc:
                 event = BehavioralEvent(
-                    event="protocol_notification",
+                    event="stdout_pollution",
                     session_id=self.session_id,
                     server_id=self.server_id,
-                    kind=KIND_PROTOCOL_NOTIFICATION,
-                    request_id=msg_id,
-                    target=method,
+                    kind=KIND_STDOUT_POLLUTION,
                     timestamp=now,
                     source="monitor",
                     evidence_tier="observed",
-                    payload=payload,
+                    payload={"size_bytes": total_bytes, "preview": decoded_preview[:120]},
                 )
                 self.bus.publish_sync(event)
                 self.telemetry.record(event)
+                return
+
+        event = BehavioralEvent(
+            event="protocol_anomaly",
+            session_id=self.session_id,
+            server_id=self.server_id,
+            kind=KIND_PROTOCOL_ANOMALY,
+            timestamp=now,
+            source="monitor",
+            evidence_tier="observed",
+            payload={
+                "direction": direction,
+                "size_bytes": total_bytes,
+                "error": "invalid_json",
+                "preview": decoded_preview[:120],
+            },
+        )
+        self.bus.publish_sync(event)
+        self.telemetry.record(event)
+        if self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+            self.attribution_engine.record_unparseable_message(direction, total_bytes, now)
 
     def _handle_large_message_envelope_sync(
         self, raw_bytes: bytes, total_bytes: int, direction: str, now: float
     ) -> None:
-        """Extract id, method, and params.name without full JSON parsing or intermediate copies for >64 KB messages."""
-        header_chunk = raw_bytes[:4096]
-        msg_id: Any = None
-        tool_name: Optional[str] = None
-        id_m = re.search(rb'"id"\s*:\s*([0-9]+|"[^"]+")', header_chunk)
-        if id_m:
-            raw_id = id_m.group(1).decode("utf-8", errors="replace")
-            if raw_id.startswith('"') and raw_id.endswith('"'):
-                msg_id = raw_id[1:-1]
-            else:
-                try:
-                    msg_id = int(raw_id)
-                except ValueError:
-                    msg_id = raw_id
+        """Parse bounded >64 KB JSON-RPC messages structurally while hashing raw bytes and scanning via byte pre-filters."""
+        try:
+            data = json.loads(raw_bytes)
+        except Exception:
+            self._emit_malformed_event(raw_bytes, total_bytes, direction, now)
+            return
 
-        # Compute sha256 in C directly on bytes buffer (releases GIL)
+        # Compute sha256 in C directly on bytes buffer (releases GIL, avoids json.dumps re-serialization)
         h = hashlib.sha256(raw_bytes).hexdigest()
         prefix = raw_bytes[:4].decode("utf-8", errors="replace")
         hashed_summary = {"sha256": h, "prefix": prefix, "length": len(raw_bytes)}
 
+        if isinstance(data, list):
+            for msg in data:
+                if isinstance(msg, dict):
+                    self._handle_large_single_message_sync(
+                        msg, raw_bytes, total_bytes, hashed_summary, direction, now, is_batch=True
+                    )
+                elif self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+                    self.attribution_engine.record_unparseable_message(direction, total_bytes, now)
+        elif isinstance(data, dict):
+            self._handle_large_single_message_sync(
+                data, raw_bytes, total_bytes, hashed_summary, direction, now, is_batch=False
+            )
+        elif self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+            self.attribution_engine.record_unparseable_message(direction, total_bytes, now)
+
+    def _handle_large_single_message_sync(
+        self,
+        msg: Dict[str, Any],
+        raw_bytes: bytes,
+        total_bytes: int,
+        hashed_summary: Dict[str, Any],
+        direction: str,
+        now: float,
+        is_batch: bool = False,
+    ) -> None:
+        """Handle a single parsed >64 KB JSON-RPC object without re-serializing or full-text scanning."""
+        msg_id = msg.get("id")
+        if isinstance(msg_id, (bool, dict, list)):
+            msg_id = None
+        tool_name: Optional[str] = None
+        method: Optional[str] = None
+
         if direction == "client_to_server":
-            method_m = re.search(rb'"method"\s*:\s*"([^"]+)"', header_chunk)
-            method = method_m.group(1).decode("utf-8", errors="replace") if method_m else "unknown"
+            method = msg.get("method")
+            if method is not None:
+                params = msg.get("params") or {}
+                if method == "tools/call" and isinstance(params, dict):
+                    raw_name = params.get("name")
+                    tool_name = raw_name if isinstance(raw_name, str) and raw_name else None
 
-            name_m = re.search(rb'"name"\s*:\s*"([^"]+)"', header_chunk)
-            tool_name = name_m.group(1).decode("utf-8", errors="replace") if name_m else None
+                if method == "tools/call" and self.attribution_engine and tool_name and msg_id is not None:
+                    tool_ann = None
+                    if self.manifest_tracker and self.manifest_tracker.tools_baseline:
+                        tool_def = self.manifest_tracker.tools_baseline.get(tool_name)
+                        if tool_def and isinstance(tool_def, dict):
+                            tool_ann = tool_def.get("annotations")
+                    self.attribution_engine.on_tool_call_start(msg_id, tool_name, now, annotations=tool_ann)
 
-            if self.manifest_tracker:
-                if msg_id is not None:
-                    self.manifest_tracker.record_client_id_style(msg_id)
+                if self.manifest_tracker:
+                    if msg_id is not None:
+                        self.manifest_tracker.record_client_id_style(msg_id)
+                    if method in ("notifications/initialized", "initialized"):
+                        self.manifest_tracker.mark_client_initialized()
+                    if tool_name:
+                        self.manifest_tracker.schedule_client_tool_call(tool_name)
+
+                payload: Dict[str, Any] = {
+                    "method": method,
+                    "size_bytes": total_bytes,
+                    "params_hash": hashed_summary,
+                }
                 if tool_name:
-                    self.manifest_tracker.schedule_client_tool_call(tool_name)
+                    payload["tool_name"] = tool_name
 
-            payload: Dict[str, Any] = {
-                "method": method,
-                "size_bytes": total_bytes,
-                "params_hash": hashed_summary,
-            }
-            if tool_name:
-                payload["tool_name"] = tool_name
+                if msg_id is not None:
+                    self._record_active_request(msg_id, now, method, tool_name)
+                    event = BehavioralEvent(
+                        event="protocol_request",
+                        session_id=self.session_id,
+                        server_id=self.server_id,
+                        kind=KIND_PROTOCOL_REQUEST,
+                        request_id=msg_id,
+                        current_tool=tool_name,
+                        target=tool_name or method,
+                        timestamp=now,
+                        source="monitor",
+                        evidence_tier="observed",
+                        payload=payload,
+                    )
+                else:
+                    event = BehavioralEvent(
+                        event="protocol_notification",
+                        session_id=self.session_id,
+                        server_id=self.server_id,
+                        kind=KIND_PROTOCOL_NOTIFICATION,
+                        target=method,
+                        timestamp=now,
+                        source="monitor",
+                        evidence_tier="observed",
+                        payload=payload,
+                    )
+                self.bus.publish_sync(event)
+                self.telemetry.record(event)
 
-            if msg_id is not None:
+        elif direction == "server_to_client":
+            if (
+                msg_id is not None
+                and self.manifest_tracker
+                and (
+                    self.manifest_tracker.is_probe_response(msg_id)
+                    or self.manifest_tracker.is_tombstoned_probe_id(msg_id)
+                )
+            ):
+                is_err = "error" in msg
+                content_obj = msg.get("error") if is_err else msg.get("result")
+                events, _ = self.manifest_tracker.handle_tools_list_response(
+                    msg_id,
+                    content_obj if not is_err else None,
+                    is_error=is_err,
+                )
+                for evt in events:
+                    self.bus.publish_sync(evt)
+                    self.telemetry.record(evt)
+                    self._emit_alert(evt)
+                return
+
+            if msg_id is not None and ("result" in msg or "error" in msg):
+                is_error = "error" in msg
+                content_obj = msg.get("error") if is_error else msg.get("result")
                 with self._lock:
-                    self._active_requests[msg_id] = {
-                        "start_ts": now,
-                        "method": method,
-                        "tool_name": tool_name,
-                    }
+                    req_info = self._active_requests.pop(msg_id, None)
+
+                start_ts = req_info["start_ts"] if req_info else None
+                tool_name = req_info.get("tool_name") if req_info else None
+                method = req_info.get("method") if req_info else None
+                duration_ms = (now - start_ts) * 1000.0 if start_ts is not None else None
+
+                if method == "tools/call" and self.attribution_engine and msg_id is not None:
+                    self.attribution_engine.on_tool_call_end(msg_id, now)
+
+                payload = {
+                    "size_bytes": total_bytes,
+                    "is_error": is_error,
+                    "content_hash": hashed_summary,
+                }
+                if method:
+                    payload["method"] = method
+                if tool_name:
+                    payload["tool_name"] = tool_name
+                if duration_ms is not None:
+                    payload["duration_ms"] = round(duration_ms, 3)
+
                 event = BehavioralEvent(
-                    event="protocol_request",
+                    event="protocol_response",
                     session_id=self.session_id,
                     server_id=self.server_id,
-                    kind=KIND_PROTOCOL_REQUEST,
+                    kind=KIND_PROTOCOL_RESPONSE,
                     request_id=msg_id,
                     current_tool=tool_name,
                     target=tool_name or method,
@@ -763,67 +919,72 @@ class ProtocolMonitor:
                     evidence_tier="observed",
                     payload=payload,
                 )
-            else:
-                event = BehavioralEvent(
-                    event="protocol_notification",
-                    session_id=self.session_id,
-                    server_id=self.server_id,
-                    kind=KIND_PROTOCOL_NOTIFICATION,
-                    target=method,
-                    timestamp=now,
-                    source="monitor",
-                    evidence_tier="observed",
-                    payload=payload,
+                self.bus.publish_sync(event)
+                self.telemetry.record(event)
+
+                # Process TOFU Manifest and Drift Detection for large passive responses
+                self._handle_manifest_response_sync(
+                    msg_id, method, is_error, content_obj, direction, total_bytes, now
                 )
-            self.bus.publish_sync(event)
-            self.telemetry.record(event)
 
-        elif direction == "server_to_client":
-            is_error = b'"error"' in header_chunk
-            req_info = None
-            if msg_id is not None:
-                with self._lock:
-                    req_info = self._active_requests.pop(msg_id, None)
+            elif "method" in msg:
+                self._handle_server_notification_sync(
+                    msg, msg_id, total_bytes, now, hashed_summary=hashed_summary
+                )
 
-            start_ts = req_info["start_ts"] if req_info else None
-            tool_name = req_info.get("tool_name") if req_info else None
-            method = req_info.get("method") if req_info else None
-            duration_ms = (now - start_ts) * 1000.0 if start_ts is not None else None
-
-            payload = {
-                "size_bytes": total_bytes,
-                "is_error": is_error,
-                "content_hash": hashed_summary,
-            }
-            if method:
-                payload["method"] = method
-            if tool_name:
-                payload["tool_name"] = tool_name
-            if duration_ms is not None:
-                payload["duration_ms"] = round(duration_ms, 3)
-
-            event = BehavioralEvent(
-                event="protocol_response",
-                session_id=self.session_id,
-                server_id=self.server_id,
-                kind=KIND_PROTOCOL_RESPONSE,
-                request_id=msg_id,
-                current_tool=tool_name,
-                target=tool_name or method,
-                timestamp=now,
-                source="monitor",
-                evidence_tier="observed",
-                payload=payload,
-            )
-            self.bus.publish_sync(event)
-            self.telemetry.record(event)
-
-        # Content scanning for large messages using fast byte pre-filters
+        # Content scanning: scan per-item content in batches (O(N) total, zero cross-item attribution),
+        # or fast byte pre-filter over single >64 KB messages (with escaped-JSON fallback).
         if getattr(self, "scanner", None):
-            scan_events = self.scanner.scan_raw_bytes(
-                raw_bytes, direction, tool_name=tool_name, request_id=msg_id, now=now
-            )
+            if is_batch:
+                scan_events = self._scan_parsed_message_sync(
+                    msg, direction, tool_name, method, msg_id, now
+                )
+            else:
+                if b"\\u" in raw_bytes or b"\\/" in raw_bytes:
+                    scan_events = self._scan_parsed_message_sync(
+                        msg, direction, tool_name, method, msg_id, now
+                    )
+                else:
+                    scan_events = self.scanner.scan_raw_bytes(
+                        raw_bytes, direction, tool_name=tool_name, request_id=msg_id, now=now
+                    )
             for se in scan_events:
                 self.bus.publish_sync(se)
                 self.telemetry.record(se)
                 self._emit_alert(se)
+
+    def _scan_parsed_message_sync(
+        self,
+        msg: Dict[str, Any],
+        direction: str,
+        tool_name: Optional[str],
+        method: Optional[str],
+        msg_id: Any,
+        now: float,
+    ) -> List[BehavioralEvent]:
+        """Scan a single already-parsed JSON-RPC message object (handles JSON escapes)."""
+        if direction == "client_to_server":
+            params = msg.get("params")
+            tool_args = (
+                params.get("arguments")
+                if (isinstance(params, dict) and "arguments" in params)
+                else params
+            )
+            if tool_args is not None:
+                return self.scanner.scan_tool_call(
+                    tool_name or method, tool_args, request_id=msg_id, now=now
+                )
+        elif direction == "server_to_client":
+            if "result" in msg:
+                return self.scanner.scan_tool_result(
+                    tool_name, msg.get("result"), request_id=msg_id, now=now
+                )
+            if "error" in msg:
+                return self.scanner.scan_tool_result(
+                    tool_name, msg.get("error"), request_id=msg_id, now=now
+                )
+            if "params" in msg:
+                return self.scanner.scan_tool_result(
+                    None, msg.get("params"), request_id=msg_id, now=now
+                )
+        return []

@@ -25,6 +25,16 @@ It also provides `mcp-behave wrap`, a stdio proxy for monitoring MCP traffic whi
   </a>
 </p>
 
+## v0.5.6 Performance & Reliability
+
+| **6.8× higher throughput** | **89.5% lower median latency** |
+|---|---|
+| **101,052 successful endurance-test requests** | **467 passing product tests** |
+
+In a 10-repetition alternating paired comparison (`v0.5.5` vs `v0.5.6`, concurrent `--enforce --redact`, `n=200`, `c=16`, macOS arm64 with native DYLD tracing active), median throughput rose from `185.4` to `1,266.2` RPS while `p50` latency dropped from `95.062` ms to `10.003` ms (`-89.5%`) and `p95` dropped from `167.835` ms to `20.851` ms (`-87.6%`). In a 1-hour bounded-retention soak (`enforce_redact`), `mcp-behave wrap` completed `101,052` requests with `0` failures, `0` timeouts, `0` secret leaks across `2,833` checks, peak RSS of `81.55 MiB`, and `18 -> 19` open FDs (full-run telemetry completeness is `UNVERIFIED` under bounded retention due to intentional pruning). These measurements apply to the tested concurrent stdio proxy workload and environments; see [BENCHMARK.md](BENCHMARK.md) and [v0.5.6 benchmark evidence](benchmarks/results/v0.5.6/README.md) for full details and limitations.
+
+![v0.5.6 vs v0.5.5 concurrent enforcement and redaction throughput](benchmarks/results/v0.5.6/charts/throughput_comparison.svg)
+
 ## Why mcp-behave?
 
 An MCP server can advertise a harmless tool while its implementation performs unexpected operations. For example, a tool described as a local document formatter might also read a credential file or attempt an outbound network connection.
@@ -227,7 +237,7 @@ Native interposers observe selected dynamically linked libc calls. Direct syscal
 uvx mcp-behave --probe-rounds 3 --fuzz python -m my_mcp_server
 ```
 
-Clean reports, trace and sandbox statuses, redaction, and baselines provide evidence bounded by the configuration and observations. Review baseline changes before approving them.
+Clean reports, trace and sandbox statuses, redaction, and baselines provide evidence bounded by the configuration and observations. Review baseline changes before approving them. In `wrap`, PID-only tracer tracking is best-effort (`best_effort_pid_only`), parser gaps or queue drops degrade attribution to `correlated` until a trusted lifecycle resync, SQLite row caps bound logical row counts rather than physical disk size without `VACUUM`, bounded-retention runs leave full-run completeness `UNVERIFIED`, Linux validation was executed in ARM64 containers, and post-shutdown orphan checks are point-in-time `ps` snapshots.
 
 ## Evaluation
 
@@ -238,6 +248,7 @@ Clean reports, trace and sandbox statuses, redaction, and baselines provide evid
 The repository includes benchmark corpora and reports covering paired benign/malicious server fixtures, multi-server authorization scenarios, deterministic runtime-policy tests, and audits of reference MCP servers. The README intentionally keeps detailed tables out of the getting-started path:
 
 - [Benchmark methodology and results](BENCHMARK.md)
+- [v0.5.6 performance and endurance validation](benchmarks/results/v0.5.6/README.md) (10-rep paired concurrent enforcement+redaction comparison, macOS and Linux 5-minute lossless/bounded soaks, and 1-hour endurance validation)
 - [CrossMCP-Bench report](docs/benchmarks/crossmcp_bench_report.md)
 - [MCP-GuardBench report](docs/benchmarks/guardbench_report.md)
 - [Pluto MCP Visibility report](docs/benchmarks/pluto_visibility_bench.md)

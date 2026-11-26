@@ -19,6 +19,7 @@ from .events import (
     EVENT_FILE_OPEN,
     EVENT_FILE_WRITE,
     KIND_TELEMETRY_DROP,
+    SEVERITY_HIGH,
     SEVERITY_INFO,
     parse_native_line,
 )
@@ -33,15 +34,25 @@ class TracerServer:
         on_event_fn: Callable[[BehavioralEvent], None],
         loop: Optional[asyncio.AbstractEventLoop] = None,
         rcvbuf_size: int = 262144,  # 256 KB
+        max_tracked_pids: int = 4096,
     ):
         self.session_id = session_id
         self.on_event_fn = on_event_fn
         self.loop = loop or asyncio.get_event_loop()
         self.rcvbuf_size = rcvbuf_size
+        self.max_tracked_pids = max(16, max_tracked_pids)
         self._stopped = False
         self.handshake_event = asyncio.Event()
         self.instrumented_pids: Set[int] = set()
+        self._instrumented_times: Dict[int, float] = {}
         self.spawned_pids: Dict[int, Tuple[str, float]] = {}  # pid -> (path, timestamp)
+        self._spawn_counts: Dict[int, int] = {}
+        self._ready_counts: Dict[int, int] = {}
+        self._pid_event_counter: int = 0
+        self.pid_tracking_degraded: bool = False
+        self.evicted_pid_count: int = 0
+        self.pid_reuse_detected: bool = False
+        self._last_coverage_warn_ts: Optional[float] = None
 
         # Strictly limit socket path to /tmp to prevent exceeding Darwin's 104-byte sun_path limit
         short_id = session_id.replace("-", "")[:8]
@@ -118,6 +129,122 @@ class TracerServer:
                 uninstrumented.append((pid, path))
         return uninstrumented
 
+    @staticmethod
+    def _is_pid_alive(pid: int) -> bool:
+        """Best-effort liveness check using kill(pid, 0)."""
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+
+    def get_coverage_health(self) -> Dict[str, Any]:
+        """Return bounded PID tracking health and degradation status."""
+        return {
+            "pid_tracking_degraded": self.pid_tracking_degraded,
+            "evicted_pid_count": self.evicted_pid_count,
+            "pid_reuse_detected": self.pid_reuse_detected,
+            "identity_assurance": "best_effort_pid_only",
+            "tracked_spawned_pids": len(self.spawned_pids),
+            "tracked_instrumented_pids": len(self.instrumented_pids),
+        }
+
+    def _emit_coverage_limited(self, cap_evicted: int, cur: float) -> None:
+        """Mark PID tracking degraded and emit a rate-limited coverage warning event."""
+        self.pid_tracking_degraded = True
+        self.evicted_pid_count += cap_evicted
+        if self._last_coverage_warn_ts is None or (cur - self._last_coverage_warn_ts) >= 5.0:
+            self._last_coverage_warn_ts = cur
+            self.on_event_fn(
+                BehavioralEvent(
+                    event="tracer_coverage_limited",
+                    session_id=self.session_id,
+                    kind="blind_spot",
+                    timestamp=cur,
+                    source="monitor",
+                    evidence_tier="observed",
+                    severity=SEVERITY_HIGH,
+                    payload={
+                        "status": "degraded",
+                        "reason": "pid_tracking_capacity_exceeded",
+                        "max_tracked_pids": self.max_tracked_pids,
+                        "evicted_pid_count": self.evicted_pid_count,
+                        "message": (
+                            f"Tracer PID tracking exceeded capacity ({self.max_tracked_pids}); "
+                            f"evicted {cap_evicted} PID(s); descendant coverage may be incomplete."
+                        ),
+                    },
+                )
+            )
+
+    def _enforce_pid_capacity(self, now: Optional[float] = None) -> int:
+        """Enforce O(1)-amortized max_tracked_pids bounds across all PID sets and auxiliary maps."""
+        cur = now if now is not None else time.time()
+        cap_evicted = 0
+
+        while len(self.spawned_pids) > self.max_tracked_pids:
+            oldest_pid = next(iter(self.spawned_pids))
+            self.spawned_pids.pop(oldest_pid, None)
+            if oldest_pid not in self.instrumented_pids:
+                self._spawn_counts.pop(oldest_pid, None)
+            cap_evicted += 1
+
+        while len(self.instrumented_pids) > self.max_tracked_pids or len(self._instrumented_times) > self.max_tracked_pids:
+            if self._instrumented_times:
+                oldest_pid = next(iter(self._instrumented_times))
+                self._instrumented_times.pop(oldest_pid, None)
+            else:
+                oldest_pid = next(iter(self.instrumented_pids))
+            if oldest_pid in self.instrumented_pids:
+                self.instrumented_pids.discard(oldest_pid)
+                cap_evicted += 1
+            self._ready_counts.pop(oldest_pid, None)
+            if oldest_pid not in self.spawned_pids:
+                self._spawn_counts.pop(oldest_pid, None)
+
+        while len(self._ready_counts) > self.max_tracked_pids:
+            self._ready_counts.pop(next(iter(self._ready_counts)), None)
+
+        while len(self._spawn_counts) > self.max_tracked_pids:
+            self._spawn_counts.pop(next(iter(self._spawn_counts)), None)
+
+        if cap_evicted > 0:
+            self._emit_coverage_limited(cap_evicted, cur)
+
+        return cap_evicted
+
+    def prune_dead_pids(self, now: Optional[float] = None, min_age_s: float = 2.0) -> int:
+        """Prune terminated PIDs (and enforce max_tracked_pids cap) to prevent stale PID reuse."""
+        cur = now if now is not None else time.time()
+        removed = 0
+
+        for pid, (_path, spawn_ts) in list(self.spawned_pids.items()):
+            if (cur - spawn_ts) >= min_age_s and not self._is_pid_alive(pid):
+                self.spawned_pids.pop(pid, None)
+                self.instrumented_pids.discard(pid)
+                self._instrumented_times.pop(pid, None)
+                self._spawn_counts.pop(pid, None)
+                self._ready_counts.pop(pid, None)
+                removed += 1
+
+        for pid in list(self.instrumented_pids):
+            ts = self._instrumented_times.get(pid, 0.0)
+            if (cur - ts) >= min_age_s and not self._is_pid_alive(pid):
+                self.instrumented_pids.discard(pid)
+                self._instrumented_times.pop(pid, None)
+                self._spawn_counts.pop(pid, None)
+                self._ready_counts.pop(pid, None)
+                removed += 1
+
+        removed += self._enforce_pid_capacity(cur)
+        return removed
+
     def _check_single_descendant(self, pid: int, path: str) -> None:
         """Check whether a single descendant PID reported READY within grace period."""
         if pid not in self.instrumented_pids and not self._stopped:
@@ -168,7 +295,22 @@ class TracerServer:
             if s.startswith("T ") and s.endswith("READY"):
                 parts = s.split()
                 if len(parts) >= 3 and parts[1].isdigit():
-                    self.instrumented_pids.add(int(parts[1]))
+                    pid = int(parts[1])
+                    now = time.time()
+                    self.instrumented_pids.add(pid)
+                    self._instrumented_times.pop(pid, None)
+                    self._instrumented_times[pid] = now
+                    prev_ready = self._ready_counts.pop(pid, 0)
+                    self._ready_counts[pid] = prev_ready + 1
+                    self._pid_event_counter += 1
+                    if self._pid_event_counter % 256 == 0:
+                        self.prune_dead_pids(now=now)
+                    elif (
+                        len(self.instrumented_pids) > self.max_tracked_pids
+                        or len(self._instrumented_times) > self.max_tracked_pids
+                        or len(self._ready_counts) > self.max_tracked_pids
+                    ):
+                        self._enforce_pid_capacity(now)
                 self.handshake_event.set()
                 continue
 
@@ -178,7 +320,32 @@ class TracerServer:
                 if len(x_parts) >= 2 and x_parts[-1].isdigit():
                     child_pid = int(x_parts[-1])
                     child_path = " ".join(x_parts[:-1])
-                    self.spawned_pids[child_pid] = (child_path, time.time())
+                    now = time.time()
+                    prev_spawns = self._spawn_counts.pop(child_pid, 0)
+                    self._spawn_counts[child_pid] = prev_spawns + 1
+                    # Conservative PID-reuse handling: if child_pid was already spawned earlier
+                    # in this session (even with duplicate READY datagrams), require a fresh READY
+                    # handshake and record pid_reuse_detected (PID alone cannot prove identity).
+                    if child_pid in self.spawned_pids or (
+                        prev_spawns == 0
+                        and child_pid in self.instrumented_pids
+                        and (now - self._instrumented_times.get(child_pid, 0.0)) > 1.0
+                    ):
+                        if child_pid in self.instrumented_pids:
+                            self.pid_reuse_detected = True
+                        self.instrumented_pids.discard(child_pid)
+                        self._instrumented_times.pop(child_pid, None)
+                    self.spawned_pids.pop(child_pid, None)
+                    self.spawned_pids[child_pid] = (child_path, now)
+                    self._pid_event_counter += 1
+                    if self._pid_event_counter % 256 == 0:
+                        self.prune_dead_pids(now=now)
+                    elif (
+                        len(self.spawned_pids) > self.max_tracked_pids
+                        or len(self.instrumented_pids) > self.max_tracked_pids
+                        or len(self._spawn_counts) > self.max_tracked_pids
+                    ):
+                        self._enforce_pid_capacity(now)
                     if self.loop and self.loop.is_running():
                         self.loop.call_later(0.5, self._check_single_descendant, child_pid, child_path)
 
