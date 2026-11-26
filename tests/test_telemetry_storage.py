@@ -488,25 +488,41 @@ def test_sr08_soak_verdict_reconciliation_repro_and_bounded_stderr(tmp_path, mon
     rep_empty_tel["summary"]["telemetry_completeness"] = {}
     assert soak_wrap.evaluate_soak_verdict(rep_empty_tel)["passed"] is False
 
-    # 3. verify_telemetry_completeness: exact protocol-event counts reconcile; archives/cap alone do NOT.
+    # 3. verify_telemetry_completeness: count-only fallback cannot certify completeness;
+    #    exact identity reconciliation certifies VERIFIED, while archives/cap alone do NOT.
+    from collections import Counter
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
-    (sessions_dir / "s.jsonl").write_text('{"kind":"protocol_request"}\n{"kind":"protocol_response"}\n', encoding="utf-8")
-    (sessions_dir / "s.jsonl.1").write_text('{"kind":"protocol_request"}\n{"kind":"protocol_response"}\n', encoding="utf-8")
+    (sessions_dir / "s.jsonl").write_text(
+        '{"session_id":"s","request_id":"1","kind":"protocol_request"}\n'
+        '{"session_id":"s","request_id":"1","kind":"protocol_response"}\n',
+        encoding="utf-8",
+    )
+    (sessions_dir / "s.jsonl.1").write_text(
+        '{"session_id":"s","request_id":"2","kind":"protocol_request"}\n'
+        '{"session_id":"s","request_id":"2","kind":"protocol_response"}\n',
+        encoding="utf-8",
+    )
     db_path = tmp_path / "telemetry.db"
     with sqlite3.connect(db_path) as conn:
-        conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, kind TEXT)")
-        for i in range(4):
-            conn.execute("INSERT INTO events (kind) VALUES (?)", ("protocol_request" if i % 2 == 0 else "protocol_response",))
+        conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, session_id TEXT, request_id TEXT, kind TEXT)")
+        for rid in ("1", "2"):
+            conn.execute("INSERT INTO events (session_id, request_id, kind) VALUES (?, ?, ?)", ("s", rid, "protocol_request"))
+            conn.execute("INSERT INTO events (session_id, request_id, kind) VALUES (?, ?, ?)", ("s", rid, "protocol_response"))
         conn.commit()
 
+    exp_ids = Counter({("1", "protocol_request"): 1, ("1", "protocol_response"): 1, ("2", "protocol_request"): 1, ("2", "protocol_response"): 1})
     rec_exact = soak_wrap.verify_telemetry_completeness(
-        tmp_path, 4, max_jsonl_bytes=100, max_jsonl_backups=1, max_sqlite_events=4
+        tmp_path, 4, expected_identities=exp_ids, max_jsonl_bytes=100, max_jsonl_backups=1, max_sqlite_events=4
     )
     assert rec_exact["rotated_jsonl_files"] == 1
     assert rec_exact["jsonl_protocol_events"] == 4
     assert rec_exact["unexpected_loss"] is False
     assert rec_exact["reconciled"] is True
+
+    # Count-only fallback without expected_identities must NOT certify completeness
+    rec_no_ids = soak_wrap.verify_telemetry_completeness(tmp_path, 4)
+    assert rec_no_ids["reconciled"] is False
 
     # Archives + DB at cap with fewer protocol rows than expected -> unverifiable, NOT reconciled
     rec_unverified = soak_wrap.verify_telemetry_completeness(
@@ -575,10 +591,10 @@ def test_sr08_identity_reconciliation_and_validation_profiles(tmp_path):
     # 1. Duplicate response (id=1 x2) masking missing response (id=2 x0) -> count=4 matches, identity FAILS
     (sessions_dir / "s1.jsonl").write_text(
         "\n".join([
-            '{"session_id":"s1","request_id":1,"kind":"protocol_request"}',
-            '{"session_id":"s1","request_id":1,"kind":"protocol_response"}',
-            '{"session_id":"s1","request_id":1,"kind":"protocol_response"}',
-            '{"session_id":"s1","request_id":2,"kind":"protocol_request"}',
+            '{"session_id":"s1","request_id":"1","kind":"protocol_request"}',
+            '{"session_id":"s1","request_id":"1","kind":"protocol_response"}',
+            '{"session_id":"s1","request_id":"1","kind":"protocol_response"}',
+            '{"session_id":"s1","request_id":"2","kind":"protocol_request"}',
         ]) + "\n",
         encoding="utf-8",
     )
@@ -608,10 +624,10 @@ def test_sr08_identity_reconciliation_and_validation_profiles(tmp_path):
     # 2. Separate JSONL (exact) vs SQLite (missing) discrepancy
     (sessions_dir / "s1.jsonl").write_text(
         "\n".join([
-            '{"session_id":"s1","request_id":1,"kind":"protocol_request"}',
-            '{"session_id":"s1","request_id":1,"kind":"protocol_response"}',
-            '{"session_id":"s1","request_id":2,"kind":"protocol_request"}',
-            '{"session_id":"s1","request_id":2,"kind":"protocol_response"}',
+            '{"session_id":"s1","request_id":"1","kind":"protocol_request"}',
+            '{"session_id":"s1","request_id":"1","kind":"protocol_response"}',
+            '{"session_id":"s1","request_id":"2","kind":"protocol_request"}',
+            '{"session_id":"s1","request_id":"2","kind":"protocol_response"}',
         ]) + "\n",
         encoding="utf-8",
     )
@@ -662,3 +678,60 @@ def test_sr08_identity_reconciliation_and_validation_profiles(tmp_path):
     v_bounded = soak_wrap.evaluate_soak_verdict(bounded_report)
     assert v_bounded["passed"] is True
     assert "bounded_retention_completeness_unverified" in v_bounded["limitations"]
+
+    # 5. Cross-session substitution, typed ID mismatch (1 vs "1"), and bounded-mode duplicate MUST fail
+    cross_dir = tmp_path / "cross"
+    (cross_dir / "sessions").mkdir(parents=True, exist_ok=True)
+    (cross_dir / "sessions" / "s.jsonl").write_text(
+        '{"session_id":"main","request_id":"a","kind":"protocol_request"}\n'
+        '{"session_id":"other","request_id":"a","kind":"protocol_response"}\n',
+        encoding="utf-8",
+    )
+    with sqlite3.connect(cross_dir / "telemetry.db") as conn:
+        conn.execute("CREATE TABLE events (session_id TEXT, request_id TEXT, kind TEXT)")
+        conn.executemany("INSERT INTO events VALUES (?, ?, ?)", [("main", "a", "protocol_request"), ("other", "a", "protocol_response")])
+        conn.commit()
+    res_cross = soak_wrap.verify_telemetry_completeness(
+        cross_dir, 2, expected_identities=Counter({("a", "protocol_request"): 1, ("a", "protocol_response"): 1})
+    )
+    assert res_cross["cross_session_mismatch"] is True
+    assert res_cross["reconciled"] is False
+
+    typed_dir = tmp_path / "typed"
+    (typed_dir / "sessions").mkdir(parents=True, exist_ok=True)
+    (typed_dir / "sessions" / "s.jsonl").write_text(
+        '{"session_id":"main","request_id":"1","kind":"protocol_request"}\n'
+        '{"session_id":"main","request_id":1,"kind":"protocol_response"}\n',
+        encoding="utf-8",
+    )
+    with sqlite3.connect(typed_dir / "telemetry.db") as conn:
+        conn.execute("CREATE TABLE events (session_id TEXT, request_id TEXT, kind TEXT)")
+        conn.executemany("INSERT INTO events VALUES (?, ?, ?)", [("main", "1", "protocol_request"), ("main", "1", "protocol_response")])
+        conn.commit()
+    res_typed = soak_wrap.verify_telemetry_completeness(
+        typed_dir, 2, expected_identities=Counter({("main", "1", "protocol_request"): 1, ("main", "1", "protocol_response"): 1})
+    )
+    assert res_typed["jsonl"]["reconciled"] is False
+
+    dup_bounded_dir = tmp_path / "dup_bounded"
+    (dup_bounded_dir / "sessions").mkdir(parents=True, exist_ok=True)
+    (dup_bounded_dir / "sessions" / "s.jsonl").write_text(
+        '{"session_id":"main","request_id":"a","kind":"protocol_request"}\n'
+        '{"session_id":"main","request_id":"a","kind":"protocol_response"}\n'
+        '{"session_id":"main","request_id":"a","kind":"protocol_response"}\n',
+        encoding="utf-8",
+    )
+    with sqlite3.connect(dup_bounded_dir / "telemetry.db") as conn:
+        conn.execute("CREATE TABLE events (session_id TEXT, request_id TEXT, kind TEXT)")
+        conn.executemany("INSERT INTO events VALUES (?, ?, ?)", [("main", "a", "protocol_request"), ("main", "a", "protocol_response")])
+        conn.commit()
+    res_dup_b = soak_wrap.verify_telemetry_completeness(
+        dup_bounded_dir, 2, expected_identities=Counter({("a", "protocol_request"): 1, ("a", "protocol_response"): 1}),
+        validation_profile="bounded", max_sqlite_events=2,
+    )
+    assert res_dup_b["known_correctness_failure"] is True
+    assert soak_wrap.evaluate_soak_verdict({
+        "soak_config": {"validation_profile": "bounded"},
+        "summary": {"exit_code": 0, "telemetry_completeness": res_dup_b},
+        "diagnostics": {"orphans_after_shutdown": False, "disconnect_checks_passed": True},
+    })["passed"] is False

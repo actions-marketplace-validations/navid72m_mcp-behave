@@ -807,12 +807,19 @@ class AttributionEngine:
                 target_lower = (event.target or "").lower()
                 is_crit = any(k in target_lower or k in reason.lower() for k in ("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "shadow", "master.passwd"))
                 sev = SEVERITY_CRITICAL if is_crit else SEVERITY_HIGH
+                if is_correlated or attribution_incomplete:
+                    bg_msg = (
+                        f"Security alert (correlated attribution): confidential path '{event.target}' ({reason}) "
+                        "was accessed; no active tool call could be reliably identified and unobserved activity may exist."
+                    )
+                else:
+                    bg_msg = f"Security alert: Server accessed confidential path '{event.target}' ({reason}) outside active tool call."
                 payload = {
                     "category": "background_sensitive_path_access",
                     "path": event.target,
                     "sensitive_target": reason,
                     "action": "file_write" if event.event == EVENT_FILE_WRITE else "file_open",
-                    "message": f"Security alert: Server accessed confidential path '{event.target}' ({reason}) outside active tool call.",
+                    "message": bg_msg,
                     "would_block": True,
                     "enforce": self.enforce,
                 }

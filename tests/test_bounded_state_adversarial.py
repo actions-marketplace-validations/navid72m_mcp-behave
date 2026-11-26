@@ -895,3 +895,22 @@ def test_task_b_conservative_vs_definitive_alert_wording():
     assert "Possible policy violation" in msg_net
     assert "correlated attribution" in msg_net
     assert "but connected to external host" not in msg_net
+
+    # 4. Background sensitive path finding: definitive when observed, uncertain when correlated
+    eng_bg_obs = AttributionEngine("srv-bg-obs")
+    _, bg_obs = eng_bg_obs.attribute_os_event(
+        BehavioralEvent(event=EVENT_FILE_OPEN, timestamp=100.0, target="/synthetic/.ssh/id_rsa")
+    )
+    assert len(bg_obs) == 1
+    assert bg_obs[0].evidence_tier == EVIDENCE_TIER_OBSERVED
+    assert "outside active tool call" in bg_obs[0].payload["message"]
+
+    eng_bg_corr = AttributionEngine("srv-bg-corr")
+    eng_bg_corr.record_unparseable_message("client_to_server", 50, 99.0)
+    _, bg_corr = eng_bg_corr.attribute_os_event(
+        BehavioralEvent(event=EVENT_FILE_OPEN, timestamp=100.0, target="/synthetic/.ssh/id_rsa")
+    )
+    assert len(bg_corr) == 1
+    assert bg_corr[0].evidence_tier == EVIDENCE_TIER_CORRELATED
+    assert "outside active tool call" not in bg_corr[0].payload["message"]
+    assert "unobserved activity may exist" in bg_corr[0].payload["message"]
