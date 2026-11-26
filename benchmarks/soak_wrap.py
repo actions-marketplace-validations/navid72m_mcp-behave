@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import deque
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import platform
 import random
+import re
 import signal
 import statistics
 import subprocess
@@ -20,7 +24,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "src"
@@ -167,30 +171,156 @@ def measure_storage_bytes(state_dir: Path) -> Dict[str, int]:
     }
 
 
-def verify_telemetry_completeness(state_dir: Path, expected_protocol_events: int) -> Dict[str, Any]:
-    """Independently verify JSONL + SQLite recorded telemetry completeness."""
+async def _drain_stderr_bounded(
+    stream: Optional[asyncio.StreamReader],
+    tail: Deque[str],
+    max_line_bytes: int = 512,
+) -> None:
+    """Drain subprocess stderr asynchronously into a bounded ring buffer to prevent pipe stalls."""
+    if stream is None:
+        return
+    try:
+        while True:
+            raw = await stream.readline()
+            if not raw:
+                break
+            if len(raw) > max_line_bytes:
+                line = raw[:max_line_bytes].decode("utf-8", errors="replace").rstrip("\r\n") + "...[truncated]"
+            else:
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            tail.append(line)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pass
+
+
+def _sha256_file(path: Path) -> Optional[str]:
+    try:
+        h = hashlib.sha256()
+        with path.open("rb") as fp:
+            while True:
+                chunk = fp.read(65536)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def collect_reproducibility_metadata(mode: str = "enforce_redact") -> Dict[str, Any]:
+    """Collect git, package, platform, and tracer identity metadata without sensitive paths or env."""
+    from mcp_behave import __version__ as pkg_version
+
+    git_commit: Optional[str] = None
+    git_dirty: Optional[bool] = None
+    dirty_source_hashes: Dict[str, str] = {}
+    try:
+        git_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(REPO_ROOT),
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2.0,
+        ).strip()
+        status_out = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            cwd=str(REPO_ROOT),
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2.0,
+        )
+        dirty_lines = [ln for ln in status_out.splitlines() if ln.strip()]
+        git_dirty = bool(dirty_lines)
+        for ln in dirty_lines:
+            rel = ln[3:].strip().split(" -> ")[-1]
+            if rel.startswith(("src/", "benchmarks/soak_wrap.py")):
+                p = REPO_ROOT / rel
+                if p.is_file():
+                    digest = _sha256_file(p)
+                    if digest:
+                        dirty_source_hashes[rel] = digest
+    except Exception:
+        pass
+
+    sys_name = platform.system()
+    if mode == "no_trace":
+        tracer_backend = "disabled"
+        tracer_bin: Optional[Path] = None
+    elif sys_name == "Darwin":
+        tracer_backend = "macos_dyld"
+        tracer_bin = SRC_DIR / "mcp_behave" / "c_tracer" / "macos_tracer.dylib"
+    elif sys_name == "Linux":
+        tracer_backend = "linux_ld_preload"
+        tracer_bin = SRC_DIR / "mcp_behave" / "c_tracer" / "linux_tracer.so"
+    else:
+        tracer_backend = f"unsupported_{sys_name.lower()}"
+        tracer_bin = None
+
+    return {
+        "git_commit": git_commit,
+        "git_dirty": git_dirty,
+        "dirty_source_hashes": dirty_source_hashes,
+        "package_version": pkg_version,
+        "python_version": platform.python_version(),
+        "os": sys_name,
+        "os_release": platform.release(),
+        "arch": platform.machine(),
+        "tracer_backend": tracer_backend,
+        "tracer_binary_sha256": _sha256_file(tracer_bin) if tracer_bin and tracer_bin.is_file() else None,
+    }
+
+
+def verify_telemetry_completeness(
+    state_dir: Path,
+    expected_protocol_events: int,
+    *,
+    max_jsonl_bytes: Optional[int] = None,
+    max_jsonl_backups: Optional[int] = None,
+    max_sqlite_events: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Independently reconcile JSONL (active + rotated) and SQLite telemetry completeness."""
     import sqlite3
 
     drops = 0
     jsonl_protocol = 0
     jsonl_total = 0
+    active_jsonl_files = 0
+    rotated_jsonl_files = 0
+    jsonl_read_errors = 0
+    jsonl_total_bytes = 0
     sessions_dir = state_dir / "sessions"
+    archive_re = re.compile(r"\.jsonl(?:\.(\d+))?$")
     if sessions_dir.exists():
-        for p in sessions_dir.glob("*.jsonl"):
+        for p in sorted(sessions_dir.glob("*.jsonl*")):
+            m = archive_re.search(p.name)
+            if not m or not p.is_file():
+                continue
+            if m.group(1) is None:
+                active_jsonl_files += 1
+            else:
+                rotated_jsonl_files += 1
             try:
+                jsonl_total_bytes += p.stat().st_size
                 for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
                     if not line:
                         continue
                     jsonl_total += 1
                     if '"telemetry_drop"' in line:
-                        drops += 1
+                        try:
+                            obj = json.loads(line)
+                            drops += int((obj.get("payload") or {}).get("dropped_count", 1))
+                        except Exception:
+                            drops += 1
                     if '"protocol_request"' in line or '"protocol_response"' in line:
                         jsonl_protocol += 1
             except OSError:
-                pass
+                jsonl_read_errors += 1
 
     sqlite_protocol = 0
     sqlite_total = 0
+    sqlite_error: Optional[str] = None
     db_path = state_dir / "telemetry.db"
     if db_path.exists():
         try:
@@ -199,8 +329,68 @@ def verify_telemetry_completeness(state_dir: Path, expected_protocol_events: int
                 sqlite_protocol = conn.execute(
                     "SELECT COUNT(*) FROM events WHERE kind IN ('protocol_request', 'protocol_response')"
                 ).fetchone()[0]
-        except Exception:
-            pass
+        except Exception as exc:
+            sqlite_error = repr(exc)
+    elif expected_protocol_events > 0:
+        sqlite_error = "missing_telemetry_db"
+
+    limitations: List[str] = []
+    # JSONL reconciliation
+    jsonl_rotation_pruned = bool(
+        rotated_jsonl_files > 0
+        or (
+            max_jsonl_bytes is not None
+            and max_jsonl_bytes > 0
+            and max_jsonl_backups is not None
+            and max_jsonl_backups == 0
+            and jsonl_protocol < expected_protocol_events
+        )
+    )
+    if jsonl_read_errors > 0:
+        jsonl_unexpected_loss = True
+        jsonl_reconciled = False
+        limitations.append("jsonl_read_errors")
+    elif expected_protocol_events > 0 and active_jsonl_files == 0 and rotated_jsonl_files == 0:
+        jsonl_unexpected_loss = True
+        jsonl_reconciled = False
+        limitations.append("missing_jsonl_files")
+    elif jsonl_protocol >= expected_protocol_events:
+        jsonl_unexpected_loss = False
+        jsonl_reconciled = True
+    elif jsonl_rotation_pruned and jsonl_protocol > 0:
+        jsonl_unexpected_loss = False
+        jsonl_reconciled = True
+        limitations.append("jsonl_older_archives_pruned_by_rotation")
+    else:
+        jsonl_unexpected_loss = True
+        jsonl_reconciled = False
+        limitations.append("jsonl_protocol_shortfall_without_rotation")
+
+    # SQLite reconciliation
+    sqlite_intentional_pruning = False
+    if sqlite_error is not None:
+        sqlite_unexpected_loss = True
+        sqlite_reconciled = False
+        limitations.append(f"sqlite_error:{sqlite_error}")
+    elif sqlite_protocol >= expected_protocol_events:
+        sqlite_unexpected_loss = False
+        sqlite_reconciled = True
+    elif (
+        max_sqlite_events is not None
+        and max_sqlite_events > 0
+        and sqlite_total == max_sqlite_events
+    ):
+        sqlite_intentional_pruning = True
+        sqlite_unexpected_loss = False
+        sqlite_reconciled = True
+        limitations.append("sqlite_older_rows_pruned_at_cap")
+    else:
+        sqlite_unexpected_loss = True
+        sqlite_reconciled = False
+        limitations.append("sqlite_protocol_shortfall_below_cap")
+
+    unexpected_loss = jsonl_unexpected_loss or sqlite_unexpected_loss or drops > 0
+    reconciled = jsonl_reconciled and sqlite_reconciled and drops == 0
 
     return {
         "reported_telemetry_drops": drops,
@@ -209,6 +399,108 @@ def verify_telemetry_completeness(state_dir: Path, expected_protocol_events: int
         "jsonl_total_events": jsonl_total,
         "sqlite_protocol_events": sqlite_protocol,
         "sqlite_total_events": sqlite_total,
+        "active_jsonl_files": active_jsonl_files,
+        "rotated_jsonl_files": rotated_jsonl_files,
+        "unexpected_loss": unexpected_loss,
+        "reconciled": reconciled,
+        "limitations": limitations,
+        "jsonl": {
+            "active_files": active_jsonl_files,
+            "rotated_files": rotated_jsonl_files,
+            "total_bytes": jsonl_total_bytes,
+            "protocol_events": jsonl_protocol,
+            "total_events": jsonl_total,
+            "read_errors": jsonl_read_errors,
+            "rotation_pruning_expected": jsonl_rotation_pruned,
+            "unexpected_loss": jsonl_unexpected_loss,
+            "reconciled": jsonl_reconciled,
+        },
+        "sqlite": {
+            "protocol_events": sqlite_protocol,
+            "total_events": sqlite_total,
+            "max_sqlite_events": max_sqlite_events,
+            "intentional_pruning_expected": sqlite_intentional_pruning,
+            "error": sqlite_error,
+            "unexpected_loss": sqlite_unexpected_loss,
+            "reconciled": sqlite_reconciled,
+        },
+    }
+
+
+def evaluate_soak_verdict(
+    report: Dict[str, Any],
+    *,
+    max_rss_mib: Optional[float] = None,
+    max_fds: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Evaluate strict pass/fail verdict from soak report without treating missing evidence as pass."""
+    reasons: List[str] = []
+    limitations: List[str] = []
+    summary = report.get("summary") or {}
+    diagnostics = report.get("diagnostics") or {}
+    requests = summary.get("requests") or {}
+    cfg = report.get("soak_config") or {}
+
+    if max_rss_mib is None:
+        max_rss_mib = cfg.get("max_rss_mib")
+    if max_fds is None:
+        max_fds = cfg.get("max_fds")
+
+    if summary.get("read_error") is not None:
+        reasons.append(f"read_error:{summary.get('read_error')}")
+
+    exit_code = summary.get("exit_code")
+    if exit_code != 0:
+        reasons.append(f"unexpected_exit_code:{exit_code}")
+
+    if requests.get("secret_leaked", 0) > 0:
+        reasons.append(f"secret_leaked:{requests['secret_leaked']}")
+    if requests.get("failed", 0) > 0:
+        reasons.append(f"unexpected_request_failures:{requests['failed']}")
+    if requests.get("timed_out", 0) > 0:
+        reasons.append(f"request_timeouts:{requests['timed_out']}")
+
+    orphans = diagnostics.get("orphans_after_shutdown")
+    if orphans is not False:
+        reasons.append(f"orphans_after_shutdown:{orphans}")
+
+    dc_passed = diagnostics.get("disconnect_checks_passed")
+    if dc_passed is not True:
+        reasons.append(f"disconnect_checks_passed:{dc_passed}")
+
+    if max_rss_mib is not None:
+        rss_peak = diagnostics.get("rss_peak_mib")
+        if rss_peak is None:
+            reasons.append("rss_peak_mib_unavailable")
+        elif rss_peak > max_rss_mib:
+            reasons.append(f"rss_peak_exceeded:{rss_peak}>{max_rss_mib}")
+
+    if max_fds is not None:
+        fd_peak = diagnostics.get("fd_peak")
+        if fd_peak is None:
+            reasons.append("fd_peak_unavailable")
+        elif fd_peak > max_fds:
+            reasons.append(f"fd_peak_exceeded:{fd_peak}>{max_fds}")
+
+    if summary.get("telemetry_drops", 0) > 0:
+        reasons.append(f"telemetry_drops:{summary['telemetry_drops']}")
+
+    tel = summary.get("telemetry_completeness")
+    if tel is None:
+        limitations.append("telemetry_completeness_unavailable")
+    else:
+        if tel.get("reported_telemetry_drops", 0) > 0:
+            reasons.append(f"reported_telemetry_drops:{tel['reported_telemetry_drops']}")
+        if tel.get("unexpected_loss") is True:
+            reasons.append("unexpected_telemetry_loss")
+        if tel.get("reconciled") is False:
+            reasons.append("telemetry_unreconciled")
+        limitations.extend(tel.get("limitations") or [])
+
+    return {
+        "passed": len(reasons) == 0,
+        "reasons": reasons,
+        "limitations": limitations,
     }
 
 
@@ -235,17 +527,20 @@ async def run_disconnect_scenario(
         "--", python_exe, str(crash_srv),
     ]
     proc: Optional[asyncio.subprocess.Process] = None
+    stderr_task: Optional[asyncio.Task[None]] = None
+    stderr_tail: Deque[str] = deque(maxlen=32)
     t0 = time.perf_counter()
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             env=env,
             start_new_session=True,
         )
         assert proc.stdin is not None and proc.stdout is not None
+        stderr_task = asyncio.create_task(_drain_stderr_bounded(proc.stderr, stderr_tail))
         lr = _LineReader(proc.stdout)
 
         init_req = b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"soak","version":"1"}}}\n'
@@ -273,15 +568,33 @@ async def run_disconnect_scenario(
             "exit_code": rc,
             "orphans_remaining": bool(tree_after),
             "elapsed_s": round(time.perf_counter() - t0, 3),
+            "stderr_tail": list(stderr_tail),
         }
     finally:
+        if stderr_task is not None:
+            stderr_task.cancel()
+            await asyncio.gather(stderr_task, return_exceptions=True)
         await _terminate_subprocess(proc)
 
 
 async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
+    from mcp_behave.telemetry import (
+        DEFAULT_MAX_JSONL_BACKUPS,
+        DEFAULT_MAX_JSONL_BYTES,
+        DEFAULT_MAX_SQLITE_EVENTS,
+        DEFAULT_RETENTION_INTERVAL_S,
+    )
+
     python_exe = args.python or sys.executable
     env_info = collect_environment_info(python_exe)
+    repro_meta = collect_reproducibility_metadata(args.mode)
+    start_time_utc = datetime.now(timezone.utc).isoformat()
     rng = random.Random(args.seed)
+
+    effective_max_jsonl_bytes = args.max_jsonl_bytes if args.max_jsonl_bytes is not None else DEFAULT_MAX_JSONL_BYTES
+    effective_max_jsonl_backups = args.max_jsonl_backups if args.max_jsonl_backups is not None else DEFAULT_MAX_JSONL_BACKUPS
+    effective_max_sqlite_events = args.max_sqlite_events if args.max_sqlite_events is not None else DEFAULT_MAX_SQLITE_EVENTS
+    effective_retention_interval = args.retention_interval if args.retention_interval is not None else DEFAULT_RETENTION_INTERVAL_S
 
     scenarios_enabled = (
         {
@@ -330,6 +643,8 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
         cmd.extend(["--", *server_cmd])
 
         proc: Optional[asyncio.subprocess.Process] = None
+        stderr_task: Optional[asyncio.Task[None]] = None
+        stderr_tail: Deque[str] = deque(maxlen=64)
         timeseries: List[Dict[str, Any]] = []
         disconnect_checks: List[Dict[str, Any]] = []
         scenario_counts: Dict[str, int] = {}
@@ -349,11 +664,12 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
                 env=env,
                 start_new_session=True,
             )
             assert proc.stdin is not None and proc.stdout is not None
+            stderr_task = asyncio.create_task(_drain_stderr_bounded(proc.stderr, stderr_tail))
             lr = _LineReader(proc.stdout)
 
             # Initial MCP handshake
@@ -607,9 +923,18 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
             post_shutdown_tree = sample_tree_with_pids(proc.pid)
             # Measure telemetry completeness AFTER wrap exits and flushes SQLite/JSONL
             expected_proto = 2 * (counts["success"] + counts["failed"] + 2)  # +2 for initialize & tools/list
-            tel_completeness = verify_telemetry_completeness(state_dir, expected_proto)
+            tel_completeness = verify_telemetry_completeness(
+                state_dir,
+                expected_proto,
+                max_jsonl_bytes=effective_max_jsonl_bytes,
+                max_jsonl_backups=effective_max_jsonl_backups,
+                max_sqlite_events=effective_max_sqlite_events,
+            )
 
         finally:
+            if stderr_task is not None:
+                stderr_task.cancel()
+                await asyncio.gather(stderr_task, return_exceptions=True)
             await _terminate_subprocess(proc)
 
     elapsed_total_s = round(time.monotonic() - start_mono, 2) if "start_mono" in locals() else 0.0
@@ -639,11 +964,14 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
         "orphans_after_shutdown": bool(post_shutdown_tree),
         "disconnect_checks_passed": all(d.get("passed") for d in disconnect_checks) if disconnect_checks else True,
         "stale_outstanding_at_drain": len(in_flight),
+        "stderr_tail": list(stderr_tail),
     }
 
-    return {
+    report: Dict[str, Any] = {
         "schema_version": "1.0",
+        "start_time_utc": start_time_utc,
         "environment": env_info,
+        "reproducibility": repro_meta,
         "soak_config": {
             "duration_s": args.duration,
             "sample_interval_s": args.sample_interval,
@@ -654,6 +982,12 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
             "seed": args.seed,
             "timeout_s": args.timeout,
             "scenarios": sorted(scenarios_enabled),
+            "max_jsonl_bytes": effective_max_jsonl_bytes,
+            "max_jsonl_backups": effective_max_jsonl_backups,
+            "max_sqlite_events": effective_max_sqlite_events,
+            "retention_interval_s": effective_retention_interval,
+            "max_rss_mib": args.max_rss_mib,
+            "max_fds": args.max_fds,
         },
         "summary": {
             "elapsed_s": elapsed_total_s,
@@ -672,6 +1006,12 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
         "diagnostics": diagnostics,
         "timeseries": timeseries,
     }
+    report["verdict"] = evaluate_soak_verdict(
+        report,
+        max_rss_mib=args.max_rss_mib,
+        max_fds=args.max_fds,
+    )
+    return report
 
 
 def print_soak_summary(report: Dict[str, Any]) -> None:
@@ -743,6 +1083,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("\nSoak cancelled by user.", file=sys.stderr)
         return 130
 
+    verdict = evaluate_soak_verdict(
+        report,
+        max_rss_mib=args.max_rss_mib,
+        max_fds=args.max_fds,
+    )
+    report.setdefault("verdict", verdict)
+
     print_soak_summary(report)
     if args.json_out:
         out = Path(args.json_out)
@@ -750,12 +1097,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(f"Wrote soak JSON report to: {out}")
 
-    ok = (
-        report["summary"]["read_error"] is None
-        and not report["diagnostics"]["orphans_after_shutdown"]
-        and report["diagnostics"]["disconnect_checks_passed"]
-    )
-    return 0 if ok else 1
+    return 0 if verdict["passed"] else 1
 
 
 if __name__ == "__main__":

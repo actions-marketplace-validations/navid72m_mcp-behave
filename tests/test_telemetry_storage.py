@@ -380,3 +380,113 @@ def test_sr07_sqlite_retention_preserves_exact_newest_n_rows(tmp_path):
     s0.close(timeout=3.0)
     with sqlite3.connect(s0.db_file) as conn:
         assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 6
+
+
+def test_sr08_soak_verdict_reconciliation_repro_and_bounded_stderr(tmp_path, monkeypatch):
+    """SR-08: Verify strict soak verdict, rotated+SQLite reconciliation, repro metadata, and bounded stderr."""
+    import sqlite3
+    from collections import deque
+    from benchmarks import soak_wrap
+
+    def base_report():
+        return {
+            "soak_config": {"max_rss_mib": 256.0, "max_fds": 128},
+            "summary": {
+                "read_error": None,
+                "exit_code": 0,
+                "telemetry_drops": 0,
+                "requests": {"success": 10, "failed": 0, "timed_out": 0, "secret_leaked": 0},
+                "telemetry_completeness": {
+                    "reported_telemetry_drops": 0,
+                    "unexpected_loss": False,
+                    "reconciled": True,
+                    "limitations": [],
+                },
+            },
+            "diagnostics": {
+                "orphans_after_shutdown": False,
+                "disconnect_checks_passed": True,
+                "rss_peak_mib": 40.0,
+                "fd_peak": 24,
+            },
+        }
+
+    # 1. Clean synthetic report passes via main([]) == 0
+    async def clean_run(_args):
+        return base_report()
+
+    monkeypatch.setattr(soak_wrap, "run_soak", clean_run)
+    monkeypatch.setattr(soak_wrap, "print_soak_summary", lambda _r: None)
+    assert soak_wrap.main([]) == 0
+
+    # 2. Secret leak, timeout, unexpected exit, resource threshold, unexpected loss -> fail
+    for mutator in [
+        lambda r: r["summary"]["requests"].__setitem__("secret_leaked", 1),
+        lambda r: r["summary"]["requests"].__setitem__("timed_out", 2),
+        lambda r: r["summary"].__setitem__("exit_code", 1),
+        lambda r: r["diagnostics"].__setitem__("rss_peak_mib", 512.0),
+        lambda r: r["diagnostics"].__setitem__("fd_peak", None),
+        lambda r: r["summary"]["telemetry_completeness"].__setitem__("unexpected_loss", True),
+    ]:
+        rep = base_report()
+        mutator(rep)
+        v = soak_wrap.evaluate_soak_verdict(rep)
+        assert v["passed"] is False and len(v["reasons"]) >= 1
+
+    # Missing telemetry_completeness is explicitly recorded in limitations
+    rep_no_tel = base_report()
+    rep_no_tel["summary"].pop("telemetry_completeness")
+    v_no_tel = soak_wrap.evaluate_soak_verdict(rep_no_tel)
+    assert "telemetry_completeness_unavailable" in v_no_tel["limitations"]
+
+    # 3. verify_telemetry_completeness: rotated archives + intentional SQLite pruning reconcile cleanly,
+    #    while unexpected shortfall below cap fails reconciliation.
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / "s.jsonl").write_text('{"kind":"protocol_request"}\n{"kind":"protocol_response"}\n', encoding="utf-8")
+    (sessions_dir / "s.jsonl.1").write_text('{"kind":"protocol_request"}\n{"kind":"protocol_response"}\n', encoding="utf-8")
+    db_path = tmp_path / "telemetry.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, kind TEXT)")
+        for i in range(4):
+            conn.execute("INSERT INTO events (kind) VALUES (?)", ("protocol_request" if i % 2 == 0 else "protocol_response",))
+        conn.commit()
+
+    rec_ok = soak_wrap.verify_telemetry_completeness(
+        tmp_path, 10, max_jsonl_bytes=100, max_jsonl_backups=1, max_sqlite_events=4
+    )
+    assert rec_ok["rotated_jsonl_files"] == 1
+    assert rec_ok["jsonl_protocol_events"] == 4
+    assert rec_ok["unexpected_loss"] is False
+    assert rec_ok["reconciled"] is True
+
+    rec_bad = soak_wrap.verify_telemetry_completeness(
+        tmp_path, 10, max_jsonl_bytes=100, max_jsonl_backups=1, max_sqlite_events=50
+    )
+    assert rec_bad["unexpected_loss"] is True
+    assert rec_bad["reconciled"] is False
+
+    # 4. Reproducibility metadata includes git/package/platform without personal home path
+    meta = soak_wrap.collect_reproducibility_metadata("enforce_redact")
+    assert meta["package_version"]
+    assert meta["python_version"]
+    assert meta["os"]
+
+    # 5. Heavy stderr output does not stall subprocess or exceed bounded deque size
+    async def run_noisy_stderr():
+        proc = await asyncio.create_subprocess_exec(
+            os.sys.executable,
+            "-c",
+            "import sys; [sys.stderr.write('noise-' + str(i) + '\\n') for i in range(5000)]; sys.stderr.flush()",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        tail = deque(maxlen=64)
+        t = asyncio.create_task(soak_wrap._drain_stderr_bounded(proc.stderr, tail))
+        rc = await asyncio.wait_for(proc.wait(), timeout=5.0)
+        await asyncio.wait_for(t, timeout=5.0)
+        assert rc == 0
+        assert len(tail) == 64
+        assert "noise-4999" in tail[-1]
+
+    asyncio.run(run_noisy_stderr())
