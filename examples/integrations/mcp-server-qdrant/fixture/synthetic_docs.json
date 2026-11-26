@@ -1,0 +1,23 @@
+[
+  {
+    "information": "mcp-behave monitors MCP servers using LD_PRELOAD on Linux and DYLD on macOS.",
+    "metadata": {
+      "topic": "architecture",
+      "env": "synthetic"
+    }
+  },
+  {
+    "information": "Excel MCP Server enforces folder confinement via --allow-dir and read-only mode via --read-only.",
+    "metadata": {
+      "topic": "excel",
+      "env": "synthetic"
+    }
+  },
+  {
+    "information": "DuckDB local files default to read-only mode in mcp-server-motherduck unless --read-write is passed.",
+    "metadata": {
+      "topic": "motherduck",
+      "env": "synthetic"
+    }
+  }
+]

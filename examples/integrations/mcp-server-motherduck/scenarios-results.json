@@ -1,0 +1,55 @@
+{
+  "wrap_passed": "7/7",
+  "enforce_passed": "7/7",
+  "scenarios": [
+    {
+      "name": "list_databases",
+      "category": "read_only",
+      "tool": "list_databases",
+      "expected_outcome": "success",
+      "is_error": false
+    },
+    {
+      "name": "list_tables",
+      "category": "read_only",
+      "tool": "list_tables",
+      "expected_outcome": "success",
+      "is_error": false
+    },
+    {
+      "name": "list_columns_items",
+      "category": "read_only",
+      "tool": "list_columns",
+      "expected_outcome": "success",
+      "is_error": false
+    },
+    {
+      "name": "select_item_revenue_view",
+      "category": "read_only",
+      "tool": "execute_query",
+      "expected_outcome": "success",
+      "is_error": false
+    },
+    {
+      "name": "write_blocked_in_readonly_mode",
+      "category": "permission_boundary",
+      "tool": "execute_query",
+      "expected_outcome": "error",
+      "is_error": true
+    },
+    {
+      "name": "local_fs_glob_in_readonly_mode",
+      "category": "documented_boundary",
+      "tool": "execute_query",
+      "expected_outcome": "success",
+      "is_error": false
+    },
+    {
+      "name": "invalid_table_query",
+      "category": "invalid_input",
+      "tool": "execute_query",
+      "expected_outcome": "error",
+      "is_error": true
+    }
+  ]
+}

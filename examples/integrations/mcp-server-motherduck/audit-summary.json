@@ -1,0 +1,47 @@
+{
+  "mcp_behave_version": "0.5.7",
+  "target": "mcp-server-motherduck",
+  "target_version": "1.1.1",
+  "target_commit": "181ad176d09993b10d6aa6073810a30fe12623db",
+  "manifest_sha256": "cfd7fd0cd6c1563ffc05a8d8c9daf858a4cd269226e6d80831deaaf18e363141",
+  "syscalls_available": true,
+  "audit_confidence": {
+    "score": "MEDIUM",
+    "tools_declared": 4,
+    "tools_exercised": 4,
+    "tools_executed": 3,
+    "tools_exec_pct": 75.0,
+    "tools_coverage_pct": 100.0,
+    "calls_total": 8,
+    "calls_transport_ok": 8,
+    "calls_executed_ok": 6,
+    "calls_validation_rejected": 0,
+    "calls_tool_error": 2,
+    "calls_ok": 6,
+    "calls_failed": 2,
+    "call_success_rate_pct": 75.0,
+    "probe_rounds": 2,
+    "tracer_backend": "preload",
+    "tracer_fidelity": "MEDIUM-HIGH",
+    "tracer_description": "Linux LD_PRELOAD library interposition",
+    "caveats": [
+      "Libc interposition cannot intercept statically linked binaries (Go, musl Rust) or raw direct kernel syscalls.",
+      "2 tool call(s) failed or timed out during probing."
+    ]
+  },
+  "declared": {
+    "tools": [
+      "execute_query",
+      "list_databases",
+      "list_tables",
+      "list_columns"
+    ],
+    "resources": [],
+    "prompts": []
+  },
+  "findings_count": 8,
+  "sarif_runs": 1,
+  "sarif_results": 8,
+  "subprocesses_observed": 0,
+  "network_connects_observed": 0
+}

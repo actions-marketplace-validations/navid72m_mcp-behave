@@ -1,0 +1,60 @@
+{
+  "$schema": "https://mcp-behave.dev/schemas/v1/lockfile.json",
+  "version": 1,
+  "created_at": "2026-11-26T14:13:44.154620+00:00",
+  "updated_at": "2026-11-26T14:13:44.154626+00:00",
+  "mcp_behave_version": "0.5.7",
+  "servers": {
+    "mcp-server-qdrant": {
+      "server_id": "mcp-server-qdrant",
+      "command": [
+        "/opt/target-venv/bin/mcp-server-qdrant"
+      ],
+      "environment": {},
+      "audit": {
+        "audited_at": "2026-11-26T14:13:44.154279+00:00",
+        "findings_count": 4
+      },
+      "manifest": {
+        "server_info": {},
+        "instructions_hash": "",
+        "capabilities": {},
+        "tools": {
+          "qdrant-find": {
+            "description_hash": "sha256:fd2b4b335e69783dd9d7f419e5de6d5a10f76630ee2de68b86012e21f6b9f28e",
+            "input_schema_hash": "sha256:e9ddb1c8f907d1152156ba33de0a45bb001bdac8c30fbfd1cb7127c5dd66bd22",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": true
+            }
+          },
+          "qdrant-store": {
+            "description_hash": "sha256:76e314d3ce6075f8414ccf5c514ed565775f1ab28afaeb1d3075b2a632e721eb",
+            "input_schema_hash": "sha256:167911ad6e4f5c01164b0e74f8be147b32cebbcd0d174c352737d4bd9a991921",
+            "annotations": {
+              "readOnlyHint": false,
+              "destructiveHint": true,
+              "idempotentHint": false,
+              "openWorldHint": true
+            }
+          }
+        },
+        "prompts": {},
+        "resources": {}
+      },
+      "package": {
+        "ecosystem": "native_binary",
+        "name": "mcp-server-qdrant",
+        "version": "",
+        "resolved_source": "local_binary",
+        "integrity": "sha256:d39f8d8611017332384fcc0c00fc27044a2bf5c63d17fa83761cce7ad5242f21"
+      },
+      "runtime": {
+        "executable_path": "/opt/target-venv/bin/mcp-server-qdrant",
+        "executable_sha256": "sha256:d39f8d8611017332384fcc0c00fc27044a2bf5c63d17fa83761cce7ad5242f21"
+      }
+    }
+  }
+}

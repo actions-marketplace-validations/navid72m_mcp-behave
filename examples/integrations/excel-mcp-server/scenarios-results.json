@@ -1,0 +1,62 @@
+{
+  "wrap_passed": "8/8",
+  "enforce_passed": "8/8",
+  "scenarios": [
+    {
+      "name": "list_workbooks_in_allowed_dir",
+      "category": "read_only",
+      "tool": "list_workbooks",
+      "expected_outcome": "success",
+      "is_error": false
+    },
+    {
+      "name": "describe_allowed_workbook",
+      "category": "read_only",
+      "tool": "describe_workbook",
+      "expected_outcome": "success",
+      "is_error": false
+    },
+    {
+      "name": "read_budget_range_with_formulas",
+      "category": "read_only",
+      "tool": "read_range",
+      "expected_outcome": "success",
+      "is_error": false
+    },
+    {
+      "name": "write_range_in_allowed_dir",
+      "category": "expected_write",
+      "tool": "write_range",
+      "expected_outcome": "success",
+      "is_error": false
+    },
+    {
+      "name": "blocked_formula_webservice",
+      "category": "security_boundary",
+      "tool": "write_range",
+      "expected_outcome": "error",
+      "is_error": true
+    },
+    {
+      "name": "confinement_outside_allow_dir",
+      "category": "permission_boundary",
+      "tool": "describe_workbook",
+      "expected_outcome": "error",
+      "is_error": true
+    },
+    {
+      "name": "confinement_path_traversal",
+      "category": "permission_boundary",
+      "tool": "read_range",
+      "expected_outcome": "error",
+      "is_error": true
+    },
+    {
+      "name": "invalid_nonexistent_sheet",
+      "category": "invalid_input",
+      "tool": "read_range",
+      "expected_outcome": "error",
+      "is_error": true
+    }
+  ]
+}

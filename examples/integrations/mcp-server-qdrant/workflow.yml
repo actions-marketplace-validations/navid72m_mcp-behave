@@ -1,0 +1,46 @@
+name: Behavioral Audit (mcp-behave)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mcp-behave-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install mcp-behave==0.5.7 and target
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc libc6-dev strace
+          pip install mcp-behave==0.5.7
+          python -m venv /tmp/target-venv
+          /tmp/target-venv/bin/pip install "mcp-server-qdrant==0.9.0"
+      - name: Warm up FastEmbed model cache
+        env:
+          FASTEMBED_CACHE_PATH: /tmp/fastembed_cache
+        run: |
+          mkdir -p /tmp/fastembed_cache
+          /tmp/target-venv/bin/python -c "from fastembed import TextEmbedding; list(TextEmbedding('sentence-transformers/all-MiniLM-L6-v2').embed(['warmup']))"
+      - name: Run behavioral audit (scorecard + JSON/SARIF)
+        env:
+          FASTEMBED_CACHE_PATH: /tmp/fastembed_cache
+          QDRANT_LOCAL_PATH: /tmp/qdrant_db
+        run: |
+          mkdir -p /tmp/qdrant_db
+          mcp-behave --json --no-dns --probe-rounds 2 --timeout 30 --fail-on high \
+            -- /tmp/target-venv/bin/mcp-server-qdrant > audit.json
+          mcp-behave --sarif --no-dns --probe-rounds 1 --timeout 30 --fail-on high \
+            -- /tmp/target-venv/bin/mcp-server-qdrant > audit.sarif.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcp-behave-qdrant
+          path: |
+            audit.json
+            audit.sarif.json

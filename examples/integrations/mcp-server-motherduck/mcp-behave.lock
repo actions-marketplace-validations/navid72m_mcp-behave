@@ -1,0 +1,262 @@
+{
+  "$schema": "https://raw.githubusercontent.com/navid72m/mcp-behave/main/schemas/lockfile.v1.json",
+  "lockfile_version": 1,
+  "mcp_behave_version": "0.5.7",
+  "generated_at": "2026-11-26T14:05:24.984096+00:00",
+  "server_cmd": [
+    "/opt/target-venv/bin/mcp-server-motherduck",
+    "--db-path",
+    "/workspace/sample.duckdb"
+  ],
+  "manifest_sha256": "cfd7fd0cd6c1563ffc05a8d8c9daf858a4cd269226e6d80831deaaf18e363141",
+  "declared_tools": [
+    "execute_query",
+    "list_columns",
+    "list_databases",
+    "list_tables"
+  ],
+  "baseline_behavior": {
+    "network_endpoints": [],
+    "sensitive_files": [],
+    "files_written": [
+      "/usr/local/lib/python3.12/__pycache__/contextvars.cpython-312.pyc.281473614099632",
+      "/usr/local/lib/python3.12/__pycache__/pprint.cpython-312.pyc.281473419657264",
+      "/usr/local/lib/python3.12/__pycache__/secrets.cpython-312.pyc.281473614089552",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/__init__.cpython-312.pyc.281473605452608",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/base_events.cpython-312.pyc.281473605362608",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/base_futures.cpython-312.pyc.281473605646384",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/base_subprocess.cpython-312.pyc.281473603513520",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/base_tasks.cpython-312.pyc.281473605646896",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/constants.cpython-312.pyc.281473605467056",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/coroutines.cpython-312.pyc.281473605693872",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/events.cpython-312.pyc.281473604502784",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/exceptions.cpython-312.pyc.281473605644848",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/format_helpers.cpython-312.pyc.281473605648176",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/futures.cpython-312.pyc.281473604504576",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/locks.cpython-312.pyc.281473604510624",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/log.cpython-312.pyc.281473604510064",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/mixins.cpython-312.pyc.281473604514544",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/protocols.cpython-312.pyc.281473604504576",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/queues.cpython-312.pyc.281473604515664",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/runners.cpython-312.pyc.281473604515664",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/selector_events.cpython-312.pyc.281473603510192",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/sslproto.cpython-312.pyc.281473604508272",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/staggered.cpython-312.pyc.281473604510512",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/streams.cpython-312.pyc.281473604515664",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/subprocess.cpython-312.pyc.281473605641136",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/taskgroups.cpython-312.pyc.281473605366192",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/tasks.cpython-312.pyc.281473604512640",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/threads.cpython-312.pyc.281473603145376",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/timeouts.cpython-312.pyc.281473604515664",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/transports.cpython-312.pyc.281473605693872",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/trsock.cpython-312.pyc.281473604515664",
+      "/usr/local/lib/python3.12/asyncio/__pycache__/unix_events.cpython-312.pyc.281473605366192",
+      "/usr/local/lib/python3.12/concurrent/__pycache__/__init__.cpython-312.pyc.281473605696432",
+      "/usr/local/lib/python3.12/concurrent/futures/__pycache__/__init__.cpython-312.pyc.281473605696304",
+      "/usr/local/lib/python3.12/concurrent/futures/__pycache__/_base.cpython-312.pyc.281473605695408",
+      "/usr/local/lib/python3.12/multiprocessing/__pycache__/__init__.cpython-312.pyc.281473583425584",
+      "/usr/local/lib/python3.12/multiprocessing/__pycache__/connection.cpython-312.pyc.281473583666096",
+      "/usr/local/lib/python3.12/multiprocessing/__pycache__/context.cpython-312.pyc.281473583425712",
+      "/usr/local/lib/python3.12/multiprocessing/__pycache__/process.cpython-312.pyc.281473583431088",
+      "/usr/local/lib/python3.12/multiprocessing/__pycache__/reduction.cpython-312.pyc.281473583426480",
+      "/usr/local/lib/python3.12/multiprocessing/__pycache__/util.cpython-312.pyc.281473583676848",
+      "/usr/local/lib/python3.12/zoneinfo/__pycache__/__init__.cpython-312.pyc.281473621947344",
+      "/usr/local/lib/python3.12/zoneinfo/__pycache__/_common.cpython-312.pyc.281473614088208",
+      "/usr/local/lib/python3.12/zoneinfo/__pycache__/_tzpath.cpython-312.pyc.281473621948688"
+    ],
+    "files_written_typed": [
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/__pycache__/contextvars.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/__pycache__/pprint.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/__pycache__/secrets.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/__init__.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/base_events.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/base_futures.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/base_subprocess.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/base_tasks.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/constants.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/coroutines.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/events.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/exceptions.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/format_helpers.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/futures.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/locks.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/log.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/mixins.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/protocols.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/queues.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/runners.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/selector_events.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/sslproto.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/staggered.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/streams.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/subprocess.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/taskgroups.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/tasks.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/threads.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/timeouts.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/transports.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/trsock.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/asyncio/__pycache__/unix_events.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/concurrent/__pycache__/__init__.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/concurrent/futures/__pycache__/__init__.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/concurrent/futures/__pycache__/_base.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/multiprocessing/__pycache__/__init__.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/multiprocessing/__pycache__/connection.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/multiprocessing/__pycache__/context.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/multiprocessing/__pycache__/process.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/multiprocessing/__pycache__/reduction.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/multiprocessing/__pycache__/util.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/zoneinfo/__pycache__/__init__.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/zoneinfo/__pycache__/_common.cpython-312.pyc"
+      },
+      {
+        "kind": "pyc_atomic_temp",
+        "path": "/usr/local/lib/python3.12/zoneinfo/__pycache__/_tzpath.cpython-312.pyc"
+      }
+    ],
+    "unix_sockets": [],
+    "subprocesses": []
+  },
+  "tool_behavior": {
+    "execute_query": {
+      "network_endpoints": []
+    },
+    "list_columns": {
+      "network_endpoints": []
+    },
+    "list_databases": {
+      "network_endpoints": []
+    },
+    "list_tables": {
+      "network_endpoints": []
+    }
+  }
+}

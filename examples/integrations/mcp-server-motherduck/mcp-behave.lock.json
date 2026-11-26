@@ -1,0 +1,82 @@
+{
+  "$schema": "https://mcp-behave.dev/schemas/v1/lockfile.json",
+  "version": 1,
+  "created_at": "2026-11-26T14:05:35.277796+00:00",
+  "updated_at": "2026-11-26T14:05:35.277820+00:00",
+  "mcp_behave_version": "0.5.7",
+  "servers": {
+    "mcp-server-motherduck": {
+      "server_id": "mcp-server-motherduck",
+      "command": [
+        "/opt/target-venv/bin/mcp-server-motherduck",
+        "--db-path",
+        "/workspace/sample.duckdb"
+      ],
+      "environment": {},
+      "audit": {
+        "audited_at": "2026-11-26T14:05:35.263455+00:00",
+        "findings_count": 8
+      },
+      "manifest": {
+        "server_info": {},
+        "instructions_hash": "",
+        "capabilities": {},
+        "tools": {
+          "execute_query": {
+            "description_hash": "sha256:f11fa5125583b46164390c8cbb68c23568ea0f9fead09f34564ae4f8967ee26d",
+            "input_schema_hash": "sha256:841b86a574c839b19f01feea87bfcbcdde40b71c927672b71c4c9197cf5effce",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "list_databases": {
+            "description_hash": "sha256:71cba568ef6331796a16b37f83f2e7ac210cdba0245654f1158d479eb8d68a97",
+            "input_schema_hash": "sha256:99334726611ccf58a148b0814696bfa6fe08c1b2d027e946beccf5a74331c9aa",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "list_tables": {
+            "description_hash": "sha256:6742fd0965fab7740adff674c16f61bc6adfee615689016c275fcaa51c8954f3",
+            "input_schema_hash": "sha256:7e2b7f53895d961f5afad21baba1c0afe647e3fa1e89972abe82952f753743c8",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          },
+          "list_columns": {
+            "description_hash": "sha256:e402add5a6b2e395ecc1dbcebe614c8128d030d0d009b9ad80270d6186adc52a",
+            "input_schema_hash": "sha256:4af6d7f465d74eed63aa4c6a3892164bd4addace87775697b6af3e11f7b17a93",
+            "annotations": {
+              "readOnlyHint": true,
+              "destructiveHint": false,
+              "idempotentHint": false,
+              "openWorldHint": false
+            }
+          }
+        },
+        "prompts": {},
+        "resources": {}
+      },
+      "package": {
+        "ecosystem": "native_binary",
+        "name": "mcp-server-motherduck",
+        "version": "",
+        "resolved_source": "local_binary",
+        "integrity": "sha256:6585a1e05e27ff1777efd9d34579748d83073f840626df08637569c086462050"
+      },
+      "runtime": {
+        "executable_path": "/opt/target-venv/bin/mcp-server-motherduck",
+        "executable_sha256": "sha256:6585a1e05e27ff1777efd9d34579748d83073f840626df08637569c086462050"
+      }
+    }
+  }
+}

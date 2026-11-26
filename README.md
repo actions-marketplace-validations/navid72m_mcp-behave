@@ -260,6 +260,17 @@ The repository includes benchmark corpora and reports covering paired benign/mal
 
 These are project-maintained evaluations on specified corpora and fixtures. Results are corpus-specific; they are not independent certification or a guarantee that an arbitrary MCP server is safe.
 
+## Real-world integrations
+
+Reproducible behavioral audits, controlled scenario harnesses, and optional CI workflow examples evaluated with published `mcp-behave==0.5.7` in isolated `--network none` Linux containers (`LD_PRELOAD` tracing):
+
+- [Integration examples index](examples/integrations/README.md)
+- [MotherDuck MCP `v1.1.1`](examples/integrations/mcp-server-motherduck/README.md) (`7/7` controlled scenarios in `wrap` and `--enforce`, `3/3` consecutive `init`/`check` passes, `78` dropped startup telemetry records)
+- [Excel MCP Server `v2.3.7`](examples/integrations/excel-mcp-server/README.md) (`8/8` controlled scenarios in `wrap` and `--enforce`, `3/3` consecutive `init`/`check` passes, `2.2%` automatic probing coverage, `11` dropped startup telemetry records)
+- [Qdrant MCP `v0.9.0`](examples/integrations/mcp-server-qdrant/README.md) (`4/4` controlled scenarios in `wrap` and `--enforce`, `HIGH` audit confidence, `init`/`check` retains `7` randomized `onnxruntime`/`/tmp` diffs, `127` dropped startup telemetry records)
+
+Across all three targets, `19/19` controlled scenarios passed, `--json` and `--sarif` outputs parsed cleanly, and deliberate filesystem writes were detected. These evaluations do not establish comprehensive server security or full tool coverage, and the included GitHub Actions workflows were validated locally rather than on GitHub-hosted runners.
+
 ## Documentation
 
 - [Architecture and data flow](ARCHITECTURE.md)
