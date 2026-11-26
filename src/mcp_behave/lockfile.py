@@ -479,7 +479,47 @@ def _diff_m3_lockfile(
 # Legacy Behavioral Lockfile & Regression Testing API
 # ---------------------------------------------------------------------------
 
-_PYC_ATOMIC_RE = re.compile(r"^(.*/__pycache__/[^/]+\.pyc)\.\d+$")
+_PYC_ATOMIC_RE = re.compile(r"\A(.*/__pycache__/[^/]+\.pyc)\.[0-9]+\Z")
+_SUPPORTED_TYPED_WRITE_KINDS = frozenset({"literal", "pyc_atomic_temp"})
+
+
+def _parse_typed_files_written(baseline: Dict[str, Any]) -> Optional[set[Tuple[str, str]]]:
+    """Strictly validate baseline_behavior['files_written_typed'] when present.
+
+    Returns None only when 'files_written_typed' is absent (genuine legacy lockfile).
+    Raises ValueError on any malformed container, entry, kind, or path without coercion
+    or fallback.
+    """
+    if "files_written_typed" not in baseline:
+        return None
+    raw = baseline["files_written_typed"]
+    if not isinstance(raw, list):
+        raise ValueError(
+            "Malformed lockfile: 'baseline_behavior.files_written_typed' must be a list"
+        )
+    parsed: set[Tuple[str, str]] = set()
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"Malformed lockfile: 'files_written_typed[{idx}]' must be an object"
+            )
+        if "kind" not in entry or "path" not in entry:
+            raise ValueError(
+                f"Malformed lockfile: 'files_written_typed[{idx}]' must contain 'kind' and 'path'"
+            )
+        kind = entry["kind"]
+        path = entry["path"]
+        if not isinstance(kind, str) or kind not in _SUPPORTED_TYPED_WRITE_KINDS:
+            raise ValueError(
+                f"Malformed lockfile: 'files_written_typed[{idx}].kind' must be one of "
+                f"{sorted(_SUPPORTED_TYPED_WRITE_KINDS)}, got {kind!r}"
+            )
+        if not isinstance(path, str) or not path:
+            raise ValueError(
+                f"Malformed lockfile: 'files_written_typed[{idx}].path' must be a nonempty string"
+            )
+        parsed.add((kind, path))
+    return parsed
 
 
 def classify_baseline_write(path: str) -> Tuple[str, str]:
@@ -576,12 +616,9 @@ def _diff_legacy_lockfile(lock_data: Dict[str, Any], manifest: Dict[str, Any], p
     # 3. File modifications/writes regression
     # Legacy lockfiles without files_written_typed are compared strictly as literal paths
     # (no silent broadening; require explicit regeneration via `mcp-behave init`).
-    if "files_written_typed" in baseline and isinstance(baseline["files_written_typed"], list):
-        base_written = {
-            (str(e.get("kind", "literal")), str(e.get("path", "")))
-            for e in baseline["files_written_typed"]
-            if isinstance(e, dict)
-        }
+    # If files_written_typed is present, validate strictly and never fall back to legacy.
+    base_written = _parse_typed_files_written(baseline)
+    if base_written is not None:
         curr_written_map: Dict[Tuple[str, str], str] = {}
         for w in profile.get("files_written", []):
             key = classify_baseline_write(w)
@@ -770,6 +807,13 @@ def main_check(argv=None) -> int:
         )
         return 1
 
+    if isinstance(lock_data, dict) and isinstance(lock_data.get("baseline_behavior"), dict):
+        try:
+            _parse_typed_files_written(lock_data["baseline_behavior"])
+        except ValueError as exc:
+            print(f"mcp-behave check: {exc}", file=sys.stderr)
+            return 2
+
     cmd = args.server_command
     if cmd and cmd[0] == "--":
         cmd = cmd[1:]
@@ -793,7 +837,11 @@ def main_check(argv=None) -> int:
             return 1
 
         manifest, profile = report_mod.load(tmpdir)
-        diffs = diff_against_lockfile(lock_data, manifest, profile)
+        try:
+            diffs = diff_against_lockfile(lock_data, manifest, profile)
+        except ValueError as exc:
+            print(f"mcp-behave check: {exc}", file=sys.stderr)
+            return 2
 
         if args.json:
             result = {

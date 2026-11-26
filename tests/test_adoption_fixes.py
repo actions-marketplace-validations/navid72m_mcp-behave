@@ -6,10 +6,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from mcp_behave.lockfile import (
     classify_baseline_write,
     diff_against_lockfile,
     generate_lockfile_data,
+    main_check,
 )
 from mcp_behave.tracer_server import TracerServer
 
@@ -34,6 +37,12 @@ def test_classify_baseline_write_pyc_atomic_vs_literal():
     assert classify_baseline_write("/usr/lib/__pycache__/evil.py") == ("literal", "/usr/lib/__pycache__/evil.py")
     assert classify_baseline_write("/usr/lib/__pycache__/mod.pyc.bak") == ("literal", "/usr/lib/__pycache__/mod.pyc.bak")
     assert classify_baseline_write("/tmp/mod.pyc.12345") == ("literal", "/tmp/mod.pyc.12345")
+
+    # Negative: Unicode digits (e.g. Arabic-Indic ١٢٣) and trailing newline must NOT match
+    arabic_pyc = "/usr/local/lib/python3.12/__pycache__/mod.pyc.١٢٣"
+    assert classify_baseline_write(arabic_pyc) == ("literal", arabic_pyc)
+    newline_pyc = "/usr/local/lib/python3.12/__pycache__/mod.pyc.123\n"
+    assert classify_baseline_write(newline_pyc) == ("literal", newline_pyc)
 
     # Negative: unresolved relative paths preserved verbatim
     assert classify_baseline_write("deviceid.tmp.1234") == ("literal", "deviceid.tmp.1234")
@@ -159,6 +168,60 @@ def test_legacy_lockfile_not_silently_broadened():
         "tool_network_connects": {},
     })
     assert len(diffs) == 2
+
+
+@pytest.mark.parametrize(
+    "bad_typed",
+    [
+        "not-a-list",
+        {"kind": "literal", "path": "/tmp/a"},
+        ["not-a-dict"],
+        [{"kind": "literal"}],
+        [{"path": "/tmp/a"}],
+        [{"kind": "unknown_kind", "path": "/tmp/a"}],
+        [{"kind": 123, "path": "/tmp/a"}],
+        [{"kind": None, "path": "/tmp/a"}],
+        [{"kind": "literal", "path": ""}],
+        [{"kind": "literal", "path": None}],
+        [{"kind": "literal", "path": 42}],
+        [{"kind": "literal", "path": True}],
+    ],
+)
+def test_malformed_files_written_typed_rejected_without_legacy_fallback(bad_typed, tmp_path: Path, capsys):
+    lock_data = {
+        "lockfile_version": 1,
+        "server_cmd": ["python", "srv.py"],
+        "manifest_sha256": "abc",
+        "declared_tools": ["ping"],
+        "baseline_behavior": {
+            "network_endpoints": [],
+            "sensitive_files": [],
+            "files_written": ["/tmp/a"],
+            "files_written_typed": bad_typed,
+            "unix_sockets": [],
+            "subprocesses": [],
+        },
+        "tool_behavior": {},
+    }
+    manifest = {"server_cmd": ["python", "srv.py"], "manifest_sha256": "abc", "tools": [{"name": "ping"}]}
+    profile = {
+        "files_opened": [],
+        "files_written": ["/tmp/a"],
+        "network_connects": [],
+        "unix_sockets": [],
+        "subprocesses": [],
+        "tool_network_connects": {},
+    }
+
+    with pytest.raises(ValueError, match="Malformed lockfile"):
+        diff_against_lockfile(lock_data, manifest, profile)
+
+    lock_file = tmp_path / "bad.lock"
+    lock_file.write_text(json.dumps(lock_data))
+    rc = main_check(["--lockfile", str(lock_file)])
+    assert rc != 0
+    captured = capsys.readouterr()
+    assert "Malformed lockfile" in captured.err
 
 
 # ---------------------------------------------------------------------------
