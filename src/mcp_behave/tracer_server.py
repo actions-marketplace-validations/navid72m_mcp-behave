@@ -48,7 +48,7 @@ class TracerServer:
         self.spawned_pids: Dict[int, Tuple[str, float]] = {}  # pid -> (path, timestamp)
         self._spawn_counts: Dict[int, int] = {}
         self._ready_counts: Dict[int, int] = {}
-        self._spawn_counter: int = 0
+        self._pid_event_counter: int = 0
         self.pid_tracking_degraded: bool = False
         self.evicted_pid_count: int = 0
         self.pid_reuse_detected: bool = False
@@ -155,6 +155,70 @@ class TracerServer:
             "tracked_instrumented_pids": len(self.instrumented_pids),
         }
 
+    def _emit_coverage_limited(self, cap_evicted: int, cur: float) -> None:
+        """Mark PID tracking degraded and emit a rate-limited coverage warning event."""
+        self.pid_tracking_degraded = True
+        self.evicted_pid_count += cap_evicted
+        if self._last_coverage_warn_ts is None or (cur - self._last_coverage_warn_ts) >= 5.0:
+            self._last_coverage_warn_ts = cur
+            self.on_event_fn(
+                BehavioralEvent(
+                    event="tracer_coverage_limited",
+                    session_id=self.session_id,
+                    kind="blind_spot",
+                    timestamp=cur,
+                    source="monitor",
+                    evidence_tier="observed",
+                    severity=SEVERITY_HIGH,
+                    payload={
+                        "status": "degraded",
+                        "reason": "pid_tracking_capacity_exceeded",
+                        "max_tracked_pids": self.max_tracked_pids,
+                        "evicted_pid_count": self.evicted_pid_count,
+                        "message": (
+                            f"Tracer PID tracking exceeded capacity ({self.max_tracked_pids}); "
+                            f"evicted {cap_evicted} PID(s); descendant coverage may be incomplete."
+                        ),
+                    },
+                )
+            )
+
+    def _enforce_pid_capacity(self, now: Optional[float] = None) -> int:
+        """Enforce O(1)-amortized max_tracked_pids bounds across all PID sets and auxiliary maps."""
+        cur = now if now is not None else time.time()
+        cap_evicted = 0
+
+        while len(self.spawned_pids) > self.max_tracked_pids:
+            oldest_pid = next(iter(self.spawned_pids))
+            self.spawned_pids.pop(oldest_pid, None)
+            if oldest_pid not in self.instrumented_pids:
+                self._spawn_counts.pop(oldest_pid, None)
+            cap_evicted += 1
+
+        while len(self.instrumented_pids) > self.max_tracked_pids or len(self._instrumented_times) > self.max_tracked_pids:
+            if self._instrumented_times:
+                oldest_pid = next(iter(self._instrumented_times))
+                self._instrumented_times.pop(oldest_pid, None)
+            else:
+                oldest_pid = next(iter(self.instrumented_pids))
+            if oldest_pid in self.instrumented_pids:
+                self.instrumented_pids.discard(oldest_pid)
+                cap_evicted += 1
+            self._ready_counts.pop(oldest_pid, None)
+            if oldest_pid not in self.spawned_pids:
+                self._spawn_counts.pop(oldest_pid, None)
+
+        while len(self._ready_counts) > self.max_tracked_pids:
+            self._ready_counts.pop(next(iter(self._ready_counts)), None)
+
+        while len(self._spawn_counts) > self.max_tracked_pids:
+            self._spawn_counts.pop(next(iter(self._spawn_counts)), None)
+
+        if cap_evicted > 0:
+            self._emit_coverage_limited(cap_evicted, cur)
+
+        return cap_evicted
+
     def prune_dead_pids(self, now: Optional[float] = None, min_age_s: float = 2.0) -> int:
         """Prune terminated PIDs (and enforce max_tracked_pids cap) to prevent stale PID reuse."""
         cur = now if now is not None else time.time()
@@ -178,54 +242,7 @@ class TracerServer:
                 self._ready_counts.pop(pid, None)
                 removed += 1
 
-        # Hard capacity bound in case many processes remain alive or synthetic PIDs are injected
-        cap_evicted = 0
-        if len(self.spawned_pids) > self.max_tracked_pids:
-            overflow = len(self.spawned_pids) - self.max_tracked_pids
-            oldest = sorted(self.spawned_pids.items(), key=lambda kv: kv[1][1])[:overflow]
-            for pid, _ in oldest:
-                self.spawned_pids.pop(pid, None)
-                self._spawn_counts.pop(pid, None)
-                removed += 1
-                cap_evicted += 1
-
-        if len(self.instrumented_pids) > self.max_tracked_pids:
-            overflow = len(self.instrumented_pids) - self.max_tracked_pids
-            oldest = sorted(
-                ((p, self._instrumented_times.get(p, 0.0)) for p in self.instrumented_pids),
-                key=lambda kv: kv[1],
-            )[:overflow]
-            for pid, _ in oldest:
-                self.instrumented_pids.discard(pid)
-                self._instrumented_times.pop(pid, None)
-                self._ready_counts.pop(pid, None)
-                removed += 1
-                cap_evicted += 1
-
-        if cap_evicted > 0:
-            self.pid_tracking_degraded = True
-            self.evicted_pid_count += cap_evicted
-            if self._last_coverage_warn_ts is None or (cur - self._last_coverage_warn_ts) >= 5.0:
-                self._last_coverage_warn_ts = cur
-                self.on_event_fn(
-                    BehavioralEvent(
-                        event="tracer_coverage_limited",
-                        session_id=self.session_id,
-                        kind="blind_spot",
-                        timestamp=cur,
-                        source="monitor",
-                        evidence_tier="observed",
-                        severity=SEVERITY_HIGH,
-                        payload={
-                            "status": "degraded",
-                            "reason": "pid_tracking_capacity_exceeded",
-                            "max_tracked_pids": self.max_tracked_pids,
-                            "evicted_pid_count": self.evicted_pid_count,
-                            "message": f"Tracer PID tracking exceeded capacity ({self.max_tracked_pids}); evicted {cap_evicted} PID(s); descendant coverage may be incomplete.",
-                        },
-                    )
-                )
-
+        removed += self._enforce_pid_capacity(cur)
         return removed
 
     def _check_single_descendant(self, pid: int, path: str) -> None:
@@ -279,9 +296,21 @@ class TracerServer:
                 parts = s.split()
                 if len(parts) >= 3 and parts[1].isdigit():
                     pid = int(parts[1])
+                    now = time.time()
                     self.instrumented_pids.add(pid)
-                    self._instrumented_times[pid] = time.time()
-                    self._ready_counts[pid] = self._ready_counts.get(pid, 0) + 1
+                    self._instrumented_times.pop(pid, None)
+                    self._instrumented_times[pid] = now
+                    prev_ready = self._ready_counts.pop(pid, 0)
+                    self._ready_counts[pid] = prev_ready + 1
+                    self._pid_event_counter += 1
+                    if self._pid_event_counter % 256 == 0:
+                        self.prune_dead_pids(now=now)
+                    elif (
+                        len(self.instrumented_pids) > self.max_tracked_pids
+                        or len(self._instrumented_times) > self.max_tracked_pids
+                        or len(self._ready_counts) > self.max_tracked_pids
+                    ):
+                        self._enforce_pid_capacity(now)
                 self.handshake_event.set()
                 continue
 
@@ -292,7 +321,7 @@ class TracerServer:
                     child_pid = int(x_parts[-1])
                     child_path = " ".join(x_parts[:-1])
                     now = time.time()
-                    prev_spawns = self._spawn_counts.get(child_pid, 0)
+                    prev_spawns = self._spawn_counts.pop(child_pid, 0)
                     self._spawn_counts[child_pid] = prev_spawns + 1
                     # Conservative PID-reuse handling: if child_pid was already spawned earlier
                     # in this session (even with duplicate READY datagrams), require a fresh READY
@@ -306,14 +335,17 @@ class TracerServer:
                             self.pid_reuse_detected = True
                         self.instrumented_pids.discard(child_pid)
                         self._instrumented_times.pop(child_pid, None)
+                    self.spawned_pids.pop(child_pid, None)
                     self.spawned_pids[child_pid] = (child_path, now)
-                    self._spawn_counter += 1
-                    if (
-                        self._spawn_counter % 256 == 0
-                        or len(self.spawned_pids) > self.max_tracked_pids
-                        or len(self.instrumented_pids) > self.max_tracked_pids
-                    ):
+                    self._pid_event_counter += 1
+                    if self._pid_event_counter % 256 == 0:
                         self.prune_dead_pids(now=now)
+                    elif (
+                        len(self.spawned_pids) > self.max_tracked_pids
+                        or len(self.instrumented_pids) > self.max_tracked_pids
+                        or len(self._spawn_counts) > self.max_tracked_pids
+                    ):
+                        self._enforce_pid_capacity(now)
                     if self.loop and self.loop.is_running():
                         self.loop.call_later(0.5, self._check_single_descendant, child_pid, child_path)
 

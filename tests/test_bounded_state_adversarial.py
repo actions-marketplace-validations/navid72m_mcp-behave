@@ -525,3 +525,109 @@ def test_sr02_unparseable_traffic_degrades_all_branches_and_recovers_only_on_res
         mon.close(timeout=2.0)
         bus.close()
         tel.close(timeout=2.0)
+
+
+def test_sr03_ready_spawn_and_auxiliary_pid_capacity_enforcement():
+    """SR-03: Enforce PID capacity and auxiliary map bounds on READY, spawn, and mixed paths."""
+    async def run():
+        # 1. READY-only traffic exceeding configured capacity (16)
+        events = []
+        srv_ready = TracerServer(
+            session_id="sr03-ready",
+            on_event_fn=events.append,
+            loop=asyncio.get_running_loop(),
+            max_tracked_pids=16,
+        )
+        for pid in range(100000, 100100):
+            srv_ready._handle_raw_data(f"T {pid} READY\n".encode())
+        assert len(srv_ready.instrumented_pids) <= 16
+        assert len(srv_ready._instrumented_times) <= 16
+        assert len(srv_ready._ready_counts) <= 16
+        assert len(srv_ready._spawn_counts) <= 16
+        h_ready = srv_ready.get_coverage_health()
+        assert h_ready["pid_tracking_degraded"] is True
+        assert h_ready["evicted_pid_count"] >= 84
+        assert any(e.event == "tracer_coverage_limited" for e in events)
+
+        # 2. Duplicate READY messages within capacity must not degrade or overflow
+        srv_dup = TracerServer(
+            session_id="sr03-dup",
+            on_event_fn=lambda e: None,
+            loop=asyncio.get_running_loop(),
+            max_tracked_pids=16,
+        )
+        for _ in range(50):
+            srv_dup._handle_raw_data(b"T 55001 READY\n")
+        assert srv_dup.instrumented_pids == {55001}
+        assert srv_dup._ready_counts[55001] == 50
+        assert srv_dup.get_coverage_health()["pid_tracking_degraded"] is False
+
+        # 3. READY-before-X ordering + delayed PID reuse
+        srv_order = TracerServer(
+            session_id="sr03-order",
+            on_event_fn=lambda e: None,
+            loop=asyncio.get_running_loop(),
+            max_tracked_pids=16,
+        )
+        srv_order._handle_raw_data(b"T 60001 READY\n")
+        srv_order._handle_raw_data(b"X /bin/echo 60001\n")
+        assert 60001 in srv_order.instrumented_pids
+
+        # Delayed X (>1.0s after stale READY without prior spawn) triggers reuse detection
+        srv_order.instrumented_pids.add(60002)
+        srv_order._instrumented_times[60002] = time.time() - 5.0
+        srv_order._handle_raw_data(b"X /bin/sh 60002\n")
+        assert 60002 not in srv_order.instrumented_pids
+        assert srv_order.get_coverage_health()["pid_reuse_detected"] is True
+
+        # 4. Spawn-only traffic exceeding capacity
+        srv_spawn = TracerServer(
+            session_id="sr03-spawn",
+            on_event_fn=lambda e: None,
+            loop=asyncio.get_running_loop(),
+            max_tracked_pids=16,
+        )
+        for pid in range(110000, 110060):
+            srv_spawn._handle_raw_data(f"X /bin/true {pid}\n".encode())
+        assert len(srv_spawn.spawned_pids) <= 16
+        assert len(srv_spawn._spawn_counts) <= 16
+        assert srv_spawn.get_coverage_health()["pid_tracking_degraded"] is True
+
+        # 5. Mixed READY and spawn traffic exceeding capacity
+        srv_mixed = TracerServer(
+            session_id="sr03-mixed",
+            on_event_fn=lambda e: None,
+            loop=asyncio.get_running_loop(),
+            max_tracked_pids=16,
+        )
+        for i in range(50):
+            srv_mixed._handle_raw_data(f"T {120000 + i} READY\nX /bin/cat {130000 + i}\n".encode())
+        assert len(srv_mixed.instrumented_pids) <= 16
+        assert len(srv_mixed._instrumented_times) <= 16
+        assert len(srv_mixed._ready_counts) <= 16
+        assert len(srv_mixed.spawned_pids) <= 16
+        assert len(srv_mixed._spawn_counts) <= 16
+        assert srv_mixed.get_coverage_health()["pid_tracking_degraded"] is True
+
+    asyncio.run(run())
+
+
+def test_sr03_default_cap_synthetic_records():
+    """SR-03: Verify default max_tracked_pids (4096) with synthetic READY records without spawning processes."""
+    async def run():
+        srv = TracerServer(
+            session_id="sr03-default",
+            on_event_fn=lambda e: None,
+            loop=asyncio.get_running_loop(),
+        )
+        assert srv.max_tracked_pids == 4096
+        for pid in range(200000, 204120):
+            srv._handle_raw_data(f"T {pid} READY\n".encode())
+        assert len(srv.instrumented_pids) == 4096
+        assert len(srv._instrumented_times) == 4096
+        assert len(srv._ready_counts) == 4096
+        health = srv.get_coverage_health()
+        assert health["pid_tracking_degraded"] is True
+        assert health["evicted_pid_count"] == 24
+
+    asyncio.run(run())
