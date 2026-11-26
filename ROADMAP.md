@@ -1,6 +1,6 @@
 # mcp-behave: Roadmap & Strategy
 
-Current state (**v0.5.6**): Completed Milestones 1 through 6 including bidirectional transparent stdio NDJSON wrapping (`mcp-behave wrap`), Unicode-safe enforcement/redaction optimization (`6.8×` higher concurrent throughput and `89.5%` lower `p50` latency vs `v0.5.5` in 10-rep paired testing), dynamic and cross-session manifest drift detection, cryptographic behavioral lockfiles (`mcp-behave init/check`), attribution engine with sticky session-level uncertainty on evictions/gaps/queue drops, structural large-message manifest and per-item batch secret scanning, bounded runtime state and `O(1)`-amortized PID capacity enforcement, `flock`-protected JSONL rotation and logical SQLite retention, and validated 5-minute lossless/bounded soaks on macOS and Linux ARM64 plus a 1-hour macOS bounded endurance soak.
+Current state (**v0.5.7**): Adoption and CI compatibility release building on **v0.5.6**, adding structured `pyc_atomic_temp` baseline identities with strict typed validation and ASCII-only temporary-file matching, clean `--json`/`--sarif` `stdout` separation, and zero-length datagram drain fixes. (`v0.5.6` benchmark baseline: `6.8×` higher concurrent throughput and `89.5%` lower `p50` latency vs `v0.5.5`, plus validated 5-minute macOS/Linux ARM64 soaks and 1-hour macOS endurance soak; benchmarks were not repeated for `v0.5.7`.)
 
 ---
 

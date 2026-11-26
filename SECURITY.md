@@ -40,11 +40,12 @@ Please do not disclose an unpatched vulnerability in a public GitHub issue, pull
 
 ### 1. Host Protection & Canary Isolation
 
-By default, `mcp-behave` executes target servers in a sandboxed canary environment:
+By default, `mcp-behave` runs target servers on the host with **canary `$HOME` redirection and environment scrubbing** (not an OS or container sandbox):
 
 - **`$HOME` Redirection:** `$HOME`, `$USERPROFILE`, and `$XDG_CONFIG_HOME` are redirected to a disposable, temporary directory. Attempts by an audited server to read or write files under `~` interact with planted canary files such as `.ssh/id_rsa`, `.aws/credentials`, `.env`, and `.netrc`.
 - **Environment Variable Scrubbing:** Host environment variables matching sensitive patterns (`AWS_*`, `GITHUB_*`, `ANTHROPIC_*`, `OPENAI_*`, `*_TOKEN`, `*_KEY`, `*_SECRET`) are stripped prior to launching target subprocesses.
-- **Opt-in Only:** Direct host execution requires the explicit `--unsafe-host` flag.
+- **OS / Container Sandboxing (`--sandbox`):** Default audit mode does not isolate filesystem, network, or process namespaces (`--sandbox none`). Use `--sandbox docker` / `--sandbox podman` (or `wrap --sandbox`) or run inside an isolated container/VM when auditing untrusted code.
+- **Opt-out (`--unsafe-host`):** Passing `--unsafe-host` disables canary `$HOME` redirection and environment scrubbing, exposing the real host environment.
 
 ### 2. MCP Server Interface (`mcp-behave serve`)
 

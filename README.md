@@ -25,11 +25,15 @@ It also provides `mcp-behave wrap`, a stdio proxy for monitoring MCP traffic whi
   </a>
 </p>
 
-## v0.5.6 Performance & Reliability
+## v0.5.7 Adoption & CI Compatibility
+
+`v0.5.7` is an adoption and CI compatibility release: it routes `[probe]` progress output to `stderr` for clean `--json`/`--sarif` `stdout`, adds strict typed `pyc_atomic_temp` identities with ASCII-only `[0-9]+` matching for `mcp-behave init`/`check` baseline stability (verified on Excel MCP Server `v2.3.7` and MotherDuck MCP `v1.1.1`), and fixes zero-length datagram handling in `TracerServer.drain_once()`. See [CHANGELOG.md](CHANGELOG.md) for full details and remaining limitations.
+
+## v0.5.6 Performance & Reliability (Measured on v0.5.6)
 
 | **6.8× higher throughput** | **89.5% lower median latency** |
 |---|---|
-| **101,052 successful endurance-test requests** | **467 passing product tests** |
+| **101,052 successful endurance-test requests** | **467 passing product tests (v0.5.6)** |
 
 In a 10-repetition alternating paired comparison (`v0.5.5` vs `v0.5.6`, concurrent `--enforce --redact`, `n=200`, `c=16`, macOS arm64 with native DYLD tracing active), median throughput rose from `185.4` to `1,266.2` RPS while `p50` latency dropped from `95.062` ms to `10.003` ms (`-89.5%`) and `p95` dropped from `167.835` ms to `20.851` ms (`-87.6%`). In a 1-hour bounded-retention soak (`enforce_redact`), `mcp-behave wrap` completed `101,052` requests with `0` failures, `0` timeouts, `0` secret leaks across `2,833` checks, peak RSS of `81.55 MiB`, and `18 -> 19` open FDs (full-run telemetry completeness is `UNVERIFIED` under bounded retention due to intentional pruning). These measurements apply to the tested concurrent stdio proxy workload and environments; see [BENCHMARK.md](BENCHMARK.md) and [v0.5.6 benchmark evidence](benchmarks/results/v0.5.6/README.md) for full details and limitations.
 
