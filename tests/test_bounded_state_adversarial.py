@@ -853,3 +853,45 @@ def test_sr05_single_message_escaped_secret_consistent_small_and_large(tmp_path,
         mon.close(timeout=2.0)
         bus.close()
         tel.close(timeout=2.0)
+
+
+def test_task_b_conservative_vs_definitive_alert_wording():
+    """Task B: Correlated/incomplete findings use uncertain wording; observed findings use definitive wording."""
+    from mcp_behave.events import EVENT_FILE_WRITE, EVENT_NETWORK_CONNECT
+
+    # 1. Genuinely observed finding -> definitive wording
+    eng_obs = AttributionEngine("srv-obs")
+    eng_obs.on_tool_call_start(1, "ro_obs", 100.0, {"readOnlyHint": True})
+    ev_obs, v_obs = eng_obs.attribute_os_event(
+        BehavioralEvent(event=EVENT_FILE_WRITE, timestamp=101.0, target="/tmp/obs.txt")
+    )
+    assert ev_obs.evidence_tier == EVIDENCE_TIER_OBSERVED
+    assert len(v_obs) == 1
+    assert "declared readOnlyHint=True but performed file write" in v_obs[0].payload["message"]
+
+    # 2. Correlated finding with multiple concurrent candidates -> uncertain wording
+    eng_corr = AttributionEngine("srv-corr")
+    eng_corr.on_tool_call_start(1, "ro_cand", 100.0, {"readOnlyHint": True})
+    eng_corr.on_tool_call_start(2, "perm_cand", 100.5, {"readOnlyHint": False})
+    ev_corr, v_corr = eng_corr.attribute_os_event(
+        BehavioralEvent(event=EVENT_FILE_WRITE, timestamp=101.0, target="/tmp/corr.txt")
+    )
+    assert ev_corr.evidence_tier == EVIDENCE_TIER_CORRELATED
+    assert len(v_corr) == 1
+    msg_ro = v_corr[0].payload["message"]
+    assert "Possible policy violation" in msg_ro
+    assert "correlated attribution" in msg_ro
+    assert "but performed file write" not in msg_ro
+
+    # 3. Correlated openWorldHint finding -> uncertain wording
+    eng_net = AttributionEngine("srv-net")
+    eng_net.on_tool_call_start(1, "cw_cand", 100.0, {"openWorldHint": False})
+    eng_net.record_unparseable_message("client_to_server", 100, 100.5)
+    _, v_net = eng_net.attribute_os_event(
+        BehavioralEvent(event=EVENT_NETWORK_CONNECT, timestamp=101.0, destination_ip="93.184.216.34", destination_port=443)
+    )
+    assert len(v_net) == 1
+    msg_net = v_net[0].payload["message"]
+    assert "Possible policy violation" in msg_net
+    assert "correlated attribution" in msg_net
+    assert "but connected to external host" not in msg_net

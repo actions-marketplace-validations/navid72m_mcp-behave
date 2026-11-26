@@ -553,3 +553,112 @@ def test_sr08_soak_verdict_reconciliation_repro_and_bounded_stderr(tmp_path, mon
         assert "noise-4999" in tail[-1]
 
     asyncio.run(run_noisy_stderr())
+
+
+def test_sr08_identity_reconciliation_and_validation_profiles(tmp_path):
+    """Task A: Identity-based reconciliation detects duplicates/missing/unexpected and separates profiles."""
+    import sqlite3
+    from collections import Counter
+    from benchmarks import soak_wrap
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    db_path = tmp_path / "telemetry.db"
+
+    expected = Counter({
+        ("1", "protocol_request"): 1,
+        ("1", "protocol_response"): 1,
+        ("2", "protocol_request"): 1,
+        ("2", "protocol_response"): 1,
+    })
+
+    # 1. Duplicate response (id=1 x2) masking missing response (id=2 x0) -> count=4 matches, identity FAILS
+    (sessions_dir / "s1.jsonl").write_text(
+        "\n".join([
+            '{"session_id":"s1","request_id":1,"kind":"protocol_request"}',
+            '{"session_id":"s1","request_id":1,"kind":"protocol_response"}',
+            '{"session_id":"s1","request_id":1,"kind":"protocol_response"}',
+            '{"session_id":"s1","request_id":2,"kind":"protocol_request"}',
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, session_id TEXT, request_id TEXT, kind TEXT)")
+        conn.executemany(
+            "INSERT INTO events (session_id, request_id, kind) VALUES (?, ?, ?)",
+            [
+                ("s1", "1", "protocol_request"),
+                ("s1", "1", "protocol_response"),
+                ("s1", "2", "protocol_request"),
+                ("s1", "2", "protocol_response"),
+                ("s1", "99", "protocol_response"),  # unexpected identity
+            ],
+        )
+        conn.commit()
+
+    res_discrepancy = soak_wrap.verify_telemetry_completeness(
+        tmp_path, 4, expected_identities=expected, validation_profile="lossless"
+    )
+    assert res_discrepancy["reconciled"] is False
+    assert res_discrepancy["completeness_status"] == "FAILED"
+    assert res_discrepancy["jsonl"]["identity_reconciliation"]["missing_count"] == 1
+    assert res_discrepancy["jsonl"]["identity_reconciliation"]["duplicate_count"] == 1
+    assert res_discrepancy["sqlite"]["identity_reconciliation"]["unexpected_count"] == 1
+
+    # 2. Separate JSONL (exact) vs SQLite (missing) discrepancy
+    (sessions_dir / "s1.jsonl").write_text(
+        "\n".join([
+            '{"session_id":"s1","request_id":1,"kind":"protocol_request"}',
+            '{"session_id":"s1","request_id":1,"kind":"protocol_response"}',
+            '{"session_id":"s1","request_id":2,"kind":"protocol_request"}',
+            '{"session_id":"s1","request_id":2,"kind":"protocol_response"}',
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM events WHERE request_id IN ('2', '99')")
+        conn.commit()
+
+    res_split = soak_wrap.verify_telemetry_completeness(
+        tmp_path, 4, expected_identities=expected, validation_profile="lossless"
+    )
+    assert res_split["jsonl"]["reconciled"] is True
+    assert res_split["sqlite"]["reconciled"] is False
+    assert res_split["reconciled"] is False
+
+    # 3. Exact lossless reconciliation -> VERIFIED
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO events (session_id, request_id, kind) VALUES (?, ?, ?)",
+            [("s1", "2", "protocol_request"), ("s1", "2", "protocol_response")],
+        )
+        conn.commit()
+    res_exact = soak_wrap.verify_telemetry_completeness(
+        tmp_path, 4, expected_identities=expected, validation_profile="lossless"
+    )
+    assert res_exact["reconciled"] is True
+    assert res_exact["completeness_status"] == "VERIFIED"
+
+    # 4. Bounded retention with pruning -> completeness_status == "UNVERIFIED", verdict passes on bounded profile
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM events WHERE request_id = '1'")
+        conn.commit()
+    res_bounded = soak_wrap.verify_telemetry_completeness(
+        tmp_path, 4, expected_identities=expected, validation_profile="bounded", max_sqlite_events=2
+    )
+    assert res_bounded["reconciled"] is False
+    assert res_bounded["completeness_status"] == "UNVERIFIED"
+    bounded_report = {
+        "soak_config": {"validation_profile": "bounded"},
+        "summary": {
+            "read_error": None,
+            "exit_code": 0,
+            "telemetry_drops": 0,
+            "requests": {"success": 2, "failed": 0, "timed_out": 0, "secret_leaked": 0},
+            "telemetry_completeness": res_bounded,
+        },
+        "diagnostics": {"orphans_after_shutdown": False, "disconnect_checks_passed": True},
+    }
+    v_bounded = soak_wrap.evaluate_soak_verdict(bounded_report)
+    assert v_bounded["passed"] is True
+    assert "bounded_retention_completeness_unverified" in v_bounded["limitations"]

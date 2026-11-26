@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -310,15 +310,65 @@ def collect_reproducibility_metadata(mode: str = "enforce_redact") -> Dict[str, 
     }
 
 
+def _reconcile_identity_counter(
+    expected: Counter[Tuple[Any, ...]],
+    recorded_full: Counter[Tuple[Optional[str], Optional[str], str]],
+) -> Dict[str, Any]:
+    """Compare expected vs recorded (session_id, request_id, kind) preserving multiplicity."""
+    if not expected:
+        return {
+            "missing_count": 0,
+            "duplicate_count": 0,
+            "unexpected_count": sum(recorded_full.values()),
+            "missing_sample": [],
+            "duplicate_sample": [],
+            "unexpected_sample": [list(k) for k in list(recorded_full.keys())[:10]],
+            "exact_match": len(recorded_full) == 0,
+        }
+
+    sample_key = next(iter(expected))
+    if len(sample_key) == 2:
+        projected: Counter[Tuple[Any, ...]] = Counter()
+        for (_sid, rid, kind), cnt in recorded_full.items():
+            projected[(rid, kind)] += cnt
+    else:
+        projected = Counter(recorded_full)
+
+    missing_c = expected - projected
+    extra_c = projected - expected
+    duplicate_items: Dict[Tuple[Any, ...], int] = {}
+    unexpected_items: Dict[Tuple[Any, ...], int] = {}
+    for k, cnt in extra_c.items():
+        if k in expected:
+            duplicate_items[k] = cnt
+        else:
+            unexpected_items[k] = cnt
+
+    missing_count = sum(missing_c.values())
+    duplicate_count = sum(duplicate_items.values())
+    unexpected_count = sum(unexpected_items.values())
+    return {
+        "missing_count": missing_count,
+        "duplicate_count": duplicate_count,
+        "unexpected_count": unexpected_count,
+        "missing_sample": [list(k) for k in list(missing_c.keys())[:10]],
+        "duplicate_sample": [list(k) for k in list(duplicate_items.keys())[:10]],
+        "unexpected_sample": [list(k) for k in list(unexpected_items.keys())[:10]],
+        "exact_match": missing_count == 0 and duplicate_count == 0 and unexpected_count == 0,
+    }
+
+
 def verify_telemetry_completeness(
     state_dir: Path,
     expected_protocol_events: int,
     *,
+    expected_identities: Optional[Counter[Tuple[Any, ...]]] = None,
+    validation_profile: str = "lossless",
     max_jsonl_bytes: Optional[int] = None,
     max_jsonl_backups: Optional[int] = None,
     max_sqlite_events: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Independently reconcile JSONL (active + rotated) and SQLite telemetry completeness."""
+    """Independently reconcile JSONL (active + rotated) and SQLite telemetry by event identity."""
     import sqlite3
 
     drops = 0
@@ -328,6 +378,7 @@ def verify_telemetry_completeness(
     rotated_jsonl_files = 0
     jsonl_read_errors = 0
     jsonl_total_bytes = 0
+    jsonl_identities: Counter[Tuple[Optional[str], Optional[str], str]] = Counter()
     sessions_dir = state_dir / "sessions"
     archive_re = re.compile(r"\.jsonl(?:\.(\d+))?$")
     if sessions_dir.exists():
@@ -358,28 +409,43 @@ def verify_telemetry_completeness(
                         drops += int((obj.get("payload") or {}).get("dropped_count", 1))
                     if kind in ("protocol_request", "protocol_response"):
                         jsonl_protocol += 1
+                        rid = obj.get("request_id")
+                        rid_norm = str(rid) if rid is not None else None
+                        jsonl_identities[(obj.get("session_id"), rid_norm, kind)] += 1
             except OSError:
                 jsonl_read_errors += 1
 
     sqlite_protocol = 0
     sqlite_total = 0
     sqlite_error: Optional[str] = None
+    sqlite_identities: Counter[Tuple[Optional[str], Optional[str], str]] = Counter()
     db_path = state_dir / "telemetry.db"
     if db_path.exists():
         try:
             with sqlite3.connect(db_path, timeout=5.0) as conn:
                 sqlite_total = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-                sqlite_protocol = conn.execute(
-                    "SELECT COUNT(*) FROM events WHERE kind IN ('protocol_request', 'protocol_response')"
-                ).fetchone()[0]
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(events)").fetchall()}
+                if {"session_id", "request_id", "kind"}.issubset(cols):
+                    rows = conn.execute(
+                        "SELECT session_id, request_id, kind FROM events WHERE kind IN ('protocol_request', 'protocol_response')"
+                    ).fetchall()
+                else:
+                    rows = [
+                        (None, None, r[0])
+                        for r in conn.execute(
+                            "SELECT kind FROM events WHERE kind IN ('protocol_request', 'protocol_response')"
+                        ).fetchall()
+                    ]
+                sqlite_protocol = len(rows)
+                for sid, rid, kind in rows:
+                    rid_norm = str(rid) if rid is not None else None
+                    sqlite_identities[(sid, rid_norm, kind)] += 1
         except Exception as exc:
             sqlite_error = repr(exc)
-    elif expected_protocol_events > 0:
+    elif expected_protocol_events > 0 or (expected_identities and len(expected_identities) > 0):
         sqlite_error = "missing_telemetry_db"
 
     limitations: List[str] = []
-    # JSONL reconciliation: require exact protocol-event coverage unless an explicit
-    # bounded-retention configuration is unverifiable without per-archive drop/event accounting.
     jsonl_rotation_configured = bool(
         rotated_jsonl_files > 0
         or (
@@ -390,19 +456,43 @@ def verify_telemetry_completeness(
             and jsonl_protocol < expected_protocol_events
         )
     )
+
+    jsonl_id_diff = (
+        _reconcile_identity_counter(expected_identities, jsonl_identities)
+        if expected_identities is not None
+        else None
+    )
+    sqlite_id_diff = (
+        _reconcile_identity_counter(expected_identities, sqlite_identities)
+        if expected_identities is not None
+        else None
+    )
+
+    # JSONL reconciliation
     if jsonl_read_errors > 0:
         jsonl_unexpected_loss = True
         jsonl_reconciled = False
         limitations.append("jsonl_read_errors")
-    elif expected_protocol_events > 0 and active_jsonl_files == 0 and rotated_jsonl_files == 0:
+    elif (expected_protocol_events > 0 or (expected_identities and len(expected_identities) > 0)) and active_jsonl_files == 0 and rotated_jsonl_files == 0:
         jsonl_unexpected_loss = True
         jsonl_reconciled = False
         limitations.append("missing_jsonl_files")
+    elif jsonl_id_diff is not None:
+        jsonl_reconciled = bool(jsonl_id_diff["exact_match"])
+        jsonl_unexpected_loss = bool(jsonl_id_diff["missing_count"] > 0 and not jsonl_rotation_configured)
+        if not jsonl_reconciled:
+            if jsonl_rotation_configured:
+                limitations.append("jsonl_rotation_pruning_unverifiable")
+            if jsonl_id_diff["missing_count"] > 0:
+                limitations.append(f"jsonl_missing_identities:{jsonl_id_diff['missing_count']}")
+            if jsonl_id_diff["duplicate_count"] > 0:
+                limitations.append(f"jsonl_duplicate_identities:{jsonl_id_diff['duplicate_count']}")
+            if jsonl_id_diff["unexpected_count"] > 0:
+                limitations.append(f"jsonl_unexpected_identities:{jsonl_id_diff['unexpected_count']}")
     elif jsonl_protocol >= expected_protocol_events:
         jsonl_unexpected_loss = False
         jsonl_reconciled = True
     elif jsonl_rotation_configured:
-        # Cannot prove missing protocol events or archived drop markers were only removed by rotation
         jsonl_unexpected_loss = False
         jsonl_reconciled = False
         limitations.append("jsonl_rotation_pruning_unverifiable")
@@ -411,20 +501,36 @@ def verify_telemetry_completeness(
         jsonl_reconciled = False
         limitations.append("jsonl_protocol_shortfall_without_rotation")
 
-    # SQLite reconciliation: never infer intentional protocol-event pruning from row count at cap alone.
+    # SQLite reconciliation
     sqlite_intentional_pruning_unverified = False
+    sqlite_at_cap = bool(
+        max_sqlite_events is not None
+        and max_sqlite_events > 0
+        and sqlite_total >= max_sqlite_events
+    )
     if sqlite_error is not None:
         sqlite_unexpected_loss = True
         sqlite_reconciled = False
         limitations.append(f"sqlite_error:{sqlite_error}")
+    elif sqlite_id_diff is not None:
+        sqlite_reconciled = bool(sqlite_id_diff["exact_match"])
+        if not sqlite_reconciled and sqlite_at_cap and sqlite_id_diff["duplicate_count"] == 0 and sqlite_id_diff["unexpected_count"] == 0:
+            sqlite_intentional_pruning_unverified = True
+            sqlite_unexpected_loss = False
+            limitations.append("sqlite_pruning_unverifiable_without_per_kind_accounting")
+        else:
+            sqlite_unexpected_loss = not sqlite_reconciled
+        if not sqlite_reconciled:
+            if sqlite_id_diff["missing_count"] > 0:
+                limitations.append(f"sqlite_missing_identities:{sqlite_id_diff['missing_count']}")
+            if sqlite_id_diff["duplicate_count"] > 0:
+                limitations.append(f"sqlite_duplicate_identities:{sqlite_id_diff['duplicate_count']}")
+            if sqlite_id_diff["unexpected_count"] > 0:
+                limitations.append(f"sqlite_unexpected_identities:{sqlite_id_diff['unexpected_count']}")
     elif sqlite_protocol >= expected_protocol_events:
         sqlite_unexpected_loss = False
         sqlite_reconciled = True
-    elif (
-        max_sqlite_events is not None
-        and max_sqlite_events > 0
-        and sqlite_total >= max_sqlite_events
-    ):
+    elif sqlite_at_cap:
         sqlite_intentional_pruning_unverified = True
         sqlite_unexpected_loss = False
         sqlite_reconciled = False
@@ -436,8 +542,16 @@ def verify_telemetry_completeness(
 
     unexpected_loss = jsonl_unexpected_loss or sqlite_unexpected_loss or drops > 0
     reconciled = jsonl_reconciled and sqlite_reconciled and drops == 0
+    if reconciled:
+        completeness_status = "VERIFIED"
+    elif validation_profile == "bounded":
+        completeness_status = "UNVERIFIED"
+    else:
+        completeness_status = "FAILED"
 
     return {
+        "validation_profile": validation_profile,
+        "completeness_status": completeness_status,
         "reported_telemetry_drops": drops,
         "expected_protocol_events": expected_protocol_events,
         "jsonl_protocol_events": jsonl_protocol,
@@ -459,6 +573,7 @@ def verify_telemetry_completeness(
             "rotation_pruning_configured": jsonl_rotation_configured,
             "unexpected_loss": jsonl_unexpected_loss,
             "reconciled": jsonl_reconciled,
+            "identity_reconciliation": jsonl_id_diff,
         },
         "sqlite": {
             "protocol_events": sqlite_protocol,
@@ -468,6 +583,7 @@ def verify_telemetry_completeness(
             "error": sqlite_error,
             "unexpected_loss": sqlite_unexpected_loss,
             "reconciled": sqlite_reconciled,
+            "identity_reconciliation": sqlite_id_diff,
         },
     }
 
@@ -531,6 +647,7 @@ def evaluate_soak_verdict(
         reasons.append(f"telemetry_drops:{summary['telemetry_drops']}")
 
     tel = summary.get("telemetry_completeness")
+    validation_profile = cfg.get("validation_profile") or (tel.get("validation_profile") if isinstance(tel, dict) else "lossless")
     if not isinstance(tel, dict) or not tel:
         reasons.append("telemetry_completeness_missing_or_empty")
         limitations.append("telemetry_completeness_unavailable")
@@ -539,8 +656,11 @@ def evaluate_soak_verdict(
             reasons.append(f"reported_telemetry_drops:{tel['reported_telemetry_drops']}")
         if tel.get("unexpected_loss") is True:
             reasons.append("unexpected_telemetry_loss")
-        if tel.get("reconciled") is not True:
-            reasons.append("telemetry_unreconciled")
+        if validation_profile == "lossless":
+            if tel.get("reconciled") is not True:
+                reasons.append("telemetry_unreconciled")
+        elif tel.get("reconciled") is not True:
+            limitations.append("bounded_retention_completeness_unverified")
         limitations.extend(tel.get("limitations") or [])
 
     return {
@@ -701,6 +821,7 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
 
         # Shared mutable state for concurrent dispatch/reader/sampler
         in_flight: Dict[str, Tuple[int, str]] = {}  # req_id -> (t0_ns, kind)
+        expected_identities: Counter[Tuple[str, str]] = Counter()
         interval_latencies_ms: List[float] = []
         all_latencies_ms: List[float] = []
         ping_latencies_ms: List[float] = []
@@ -724,13 +845,17 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
 
             # Initial MCP handshake
             init_req = b'{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"soak","version":"1"}}}\n'
+            expected_identities[("init-1", "protocol_request")] += 1
             proc.stdin.write(init_req)
             await proc.stdin.drain()
             await asyncio.wait_for(lr.readline_bytes(), timeout=args.timeout)
+            expected_identities[("init-1", "protocol_response")] += 1
             proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n')
+            expected_identities[("list-1", "protocol_request")] += 1
             proc.stdin.write(b'{"jsonrpc":"2.0","id":"list-1","method":"tools/list","params":{}}\n')
             await proc.stdin.drain()
             await asyncio.wait_for(lr.readline_bytes(), timeout=args.timeout)
+            expected_identities[("list-1", "protocol_response")] += 1
 
             large_str = "L" * args.large_bytes
             medium_str = "M" * 8192
@@ -758,6 +883,7 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
                         entry = in_flight.pop(rid, None)
                         if entry is None:
                             continue
+                        expected_identities[(str(rid), "protocol_response")] += 1
                         t0_ns, req_kind = entry
                         lat_ms = (t1_ns - t0_ns) / 1_000_000.0
                         interval_latencies_ms.append(lat_ms)
@@ -863,6 +989,7 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
                     separators=(",", ":"),
                 ).encode("utf-8") + b"\n"
                 in_flight[rid] = (time.perf_counter_ns(), kind)
+                expected_identities[(rid, "protocol_request")] += 1
                 proc.stdin.write(payload)
                 await proc.stdin.drain()
 
@@ -972,10 +1099,13 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
 
             post_shutdown_tree = sample_tree_with_pids(proc.pid)
             # Measure telemetry completeness AFTER wrap exits and flushes SQLite/JSONL
-            expected_proto = 2 * (counts["success"] + counts["failed"] + 2)  # +2 for initialize & tools/list
+            expected_proto = sum(expected_identities.values())
+            validation_profile = getattr(args, "validation_profile", "lossless")
             tel_completeness = verify_telemetry_completeness(
                 state_dir,
                 expected_proto,
+                expected_identities=expected_identities,
+                validation_profile=validation_profile,
                 max_jsonl_bytes=effective_max_jsonl_bytes,
                 max_jsonl_backups=effective_max_jsonl_backups,
                 max_sqlite_events=effective_max_sqlite_events,
@@ -1029,6 +1159,7 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
         "environment": env_info,
         "reproducibility": repro_meta,
         "soak_config": {
+            "validation_profile": getattr(args, "validation_profile", "lossless"),
             "duration_s": args.duration,
             "sample_interval_s": args.sample_interval,
             "mode": args.mode,
@@ -1126,6 +1257,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--max-jsonl-backups", type=int, default=None, help="Override wrap --max-jsonl-backups.")
     p.add_argument("--max-sqlite-events", type=int, default=None, help="Override wrap --max-sqlite-events.")
     p.add_argument("--retention-interval", type=float, default=None, help="Override wrap --retention-interval.")
+    p.add_argument("--validation-profile", choices=("lossless", "bounded"), default="lossless", help="Validation profile: lossless (exact reconciliation required) or bounded (completeness marked UNVERIFIED when pruned).")
     p.add_argument("--scenarios", default="all", help="Comma-separated scenarios or 'all'.")
     p.add_argument("--json-out", default=None, help="Optional path to write JSON time-series output.")
     return p.parse_args(argv)

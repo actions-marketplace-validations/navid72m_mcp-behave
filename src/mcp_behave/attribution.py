@@ -587,13 +587,21 @@ class AttributionEngine:
         # Policy 1: readOnlyHint violation
         # readOnlyHint=True prohibits file writes and file modifications
         if ann.get("readOnlyHint", False) and event.event == EVENT_FILE_WRITE:
+            if is_correlated or attribution_incomplete:
+                msg = (
+                    f"Possible policy violation: file write to '{event.target}' occurred while "
+                    f"readOnlyHint=True tool '{ctx.tool_name}' was active "
+                    "(correlated attribution; may involve other concurrent or unobserved calls)."
+                )
+            else:
+                msg = f"Tool '{ctx.tool_name}' declared readOnlyHint=True but performed file write to '{event.target}'."
             payload = {
                 "category": "read_only_violation",
                 "tool": ctx.tool_name,
                 "target": event.target,
                 "declared_read_only": True,
                 "action": "file_write",
-                "message": f"Tool '{ctx.tool_name}' declared readOnlyHint=True but performed file write to '{event.target}'.",
+                "message": msg,
                 "would_block": True,
                 "enforce": self.enforce,
             }
@@ -619,6 +627,15 @@ class AttributionEngine:
         # openWorldHint=False prohibits outbound non-loopback network egress
         if not ann.get("openWorldHint", True) and event.event == EVENT_NETWORK_CONNECT:
             if not is_loopback_address(event.destination_ip):
+                if is_correlated or attribution_incomplete:
+                    msg = (
+                        f"Possible policy violation: outbound network connect to "
+                        f"'{event.destination_ip}:{event.destination_port}' occurred while "
+                        f"openWorldHint=False tool '{ctx.tool_name}' was active "
+                        "(correlated attribution; may involve other concurrent or unobserved calls)."
+                    )
+                else:
+                    msg = f"Tool '{ctx.tool_name}' declared openWorldHint=False but connected to external host '{event.destination_ip}:{event.destination_port}'."
                 payload = {
                     "category": "open_world_violation",
                     "tool": ctx.tool_name,
@@ -626,7 +643,7 @@ class AttributionEngine:
                     "destination_port": event.destination_port,
                     "declared_open_world": False,
                     "action": "network_connect",
-                    "message": f"Tool '{ctx.tool_name}' declared openWorldHint=False but connected to external host '{event.destination_ip}:{event.destination_port}'.",
+                    "message": msg,
                     "would_block": True,
                     "enforce": self.enforce,
                 }
@@ -656,13 +673,20 @@ class AttributionEngine:
                 target_lower = (event.target or "").lower()
                 is_crit = any(k in target_lower or k in reason.lower() for k in ("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "shadow", "master.passwd"))
                 sev = SEVERITY_CRITICAL if is_crit else SEVERITY_HIGH
+                if is_correlated or attribution_incomplete:
+                    sens_msg = (
+                        f"Security alert (correlated attribution): confidential path '{event.target}' ({reason}) "
+                        f"was accessed while tool '{ctx.tool_name}' was active; attribution is uncertain."
+                    )
+                else:
+                    sens_msg = f"Security alert: Tool '{ctx.tool_name}' accessed confidential path '{event.target}' ({reason})."
                 payload = {
                     "category": "sensitive_path_access",
                     "tool": ctx.tool_name,
                     "path": event.target,
                     "sensitive_target": reason,
                     "action": "file_write" if event.event == EVENT_FILE_WRITE else "file_open",
-                    "message": f"Security alert: Tool '{ctx.tool_name}' accessed confidential path '{event.target}' ({reason}).",
+                    "message": sens_msg,
                     "would_block": True,
                     "enforce": self.enforce,
                 }
