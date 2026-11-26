@@ -15,7 +15,7 @@
 | **Median `p50` / `p95` / `p99` Latency** | **10.003 / 20.851 / 24.075 ms** | `-89.5%` p50, `-87.6%` p95, `~8×` p99 vs `v0.5.5` on same workload |
 | **1-Hour Bounded-Retention Soak** | **101,052 ok / 0 fail / 0 timeouts** | `2,833` secrets verified, `0` leaks, `567/567` disconnect checks; completeness `UNVERIFIED` (pruned) |
 | **5-Minute Lossless Soaks** | **VERIFIED** exact identity reconciliation | Both macOS arm64 (`8,490` ok) and Linux aarch64 (`8,387` ok), `0` missing/dup/unexpected |
-| **Regression Suites** | **467 passed** (macOS), **464 passed / 3 skipped** (Linux) | Plus **23/23** independent review regressions & probes |
+| **Regression Suites** | **467 passed** (macOS), **464 passed / 3 skipped** (Linux) | Plus **23/23** reviewer-authored regression and corrective probe tests (rerun locally) |
 
 ---
 
@@ -83,7 +83,7 @@ Executed on macOS arm64 (`25.6.0`, Python `3.12.7`, `macos_dyld` tracer `sha256=
 
 - **macOS (`arm64`, macOS `25.6.0`, Python `3.12.3` / `3.12.7`)**:
   - **467 / 467** product tests passed (`tests/`).
-  - **23 / 23** independent review regressions and corrective probes passed (`report/MCP-2-review/test_review_regressions.py` + `test_final_identity_and_wording.py`).
+  - **23 / 23** reviewer-authored regression and corrective probe tests passed when rerun locally (`report/MCP-2-review/test_review_regressions.py` + `test_final_identity_and_wording.py`).
   - Native `DYLD_INSERT_LIBRARIES` tracer (`libmcpbehave_trace.dylib`, `sha256=75fdf9c8...`) verified active on unhardened Python (`3.12.7`).
   - 5-minute lossless (`VERIFIED`) and 5-minute + 1-hour bounded (`UNVERIFIED`) soaks passed.
 - **Linux (`aarch64` Docker `python:3.12-slim`, kernel `7.0.14-orbstack`)**:

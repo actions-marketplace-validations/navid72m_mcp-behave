@@ -98,7 +98,17 @@ async def run_one_conc_redact(
         env["PYTHONPATH"] = str(src_dir)
 
         cmd = [
-            py_exe, "-m", "mcp_behave.cli", "wrap",
+            py_exe, "-c",
+            (
+                "import os, pathlib, runpy, sys, mcp_behave.enforce as e; "
+                "exp = pathlib.Path(sys.argv[1]).resolve(); "
+                "got = pathlib.Path(e.__file__).resolve(); "
+                "assert str(got).startswith(str(exp) + os.sep), f'Wrong import: {got} not under {exp}'; "
+                "sys.argv = ['mcp-behave'] + sys.argv[2:]; "
+                "runpy.run_module('mcp_behave.cli', run_name='__main__')"
+            ),
+            str(src_dir),
+            "wrap",
             "--state-dir", str(state_dir),
             "--server-id", "bench_srv",
             "--grace-period", "1.5",
