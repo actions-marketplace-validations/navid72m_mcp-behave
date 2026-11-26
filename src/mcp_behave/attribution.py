@@ -70,6 +70,8 @@ class AttributionEngine:
         max_events_per_call: int = 1000,
         max_total_buffered_events: int = 5000,
         max_total_buffered_bytes: int = 2 * 1024 * 1024,
+        evicted_policy_ttl: float = 3600.0,
+        max_evicted_policies: int = 64,
         gap_emit_interval_s: float = 5.0,
         on_event_fn: Optional[Callable[[BehavioralEvent], None]] = None,
     ):
@@ -81,6 +83,8 @@ class AttributionEngine:
         self.max_events_per_call = max(1, max_events_per_call)
         self.max_total_buffered_events = max(1, max_total_buffered_events)
         self.max_total_buffered_bytes = max(256, max_total_buffered_bytes)
+        self.evicted_policy_ttl = max(0.0, evicted_policy_ttl)
+        self.max_evicted_policies = max(1, max_evicted_policies)
         self.gap_emit_interval_s = max(0.0, gap_emit_interval_s)
         self.on_event_fn = on_event_fn
 
@@ -89,8 +93,10 @@ class AttributionEngine:
         self._total_buffered_events: int = 0
         self._total_buffered_bytes: int = 0
         self._ctx_buffered_bytes: Dict[Union[int, str], int] = {}
-        self._evicted_read_only_tools: deque[str] = deque(maxlen=64)
-        self._evicted_closed_world_tools: deque[str] = deque(maxlen=64)
+        self._evicted_read_only_tools: Dict[str, float] = {}
+        self._evicted_closed_world_tools: Dict[str, float] = {}
+        self._last_eviction_ts: Optional[float] = None
+        self._unparseable_gap_active: bool = False
         self._last_gap_emit_ts: Dict[str, float] = {}
         self.evicted_stale_calls: int = 0
         self.evicted_overflow_calls: int = 0
@@ -111,17 +117,41 @@ class AttributionEngine:
         ctx_bytes = self._ctx_buffered_bytes.pop(ctx.request_id, 0)
         self._total_buffered_bytes = max(0, self._total_buffered_bytes - ctx_bytes)
 
-    def _track_evicted_policies_locked(self, ctx: ToolCallContext) -> None:
-        if ctx.annotations.get("readOnlyHint", False) and ctx.tool_name not in self._evicted_read_only_tools:
-            self._evicted_read_only_tools.append(ctx.tool_name)
-        if not ctx.annotations.get("openWorldHint", True) and ctx.tool_name not in self._evicted_closed_world_tools:
-            self._evicted_closed_world_tools.append(ctx.tool_name)
+    def _track_evicted_policies_locked(self, ctx: ToolCallContext, now: float) -> None:
+        self._last_eviction_ts = now
+        if ctx.annotations.get("readOnlyHint", False):
+            if ctx.tool_name not in self._evicted_read_only_tools and len(self._evicted_read_only_tools) >= self.max_evicted_policies:
+                oldest = next(iter(self._evicted_read_only_tools))
+                self._evicted_read_only_tools.pop(oldest, None)
+            self._evicted_read_only_tools[ctx.tool_name] = now
+        if not ctx.annotations.get("openWorldHint", True):
+            if ctx.tool_name not in self._evicted_closed_world_tools and len(self._evicted_closed_world_tools) >= self.max_evicted_policies:
+                oldest = next(iter(self._evicted_closed_world_tools))
+                self._evicted_closed_world_tools.pop(oldest, None)
+            self._evicted_closed_world_tools[ctx.tool_name] = now
+
+    def _prune_evicted_policies_locked(self, now: float) -> None:
+        """Expire retained evicted-call uncertainty after evicted_policy_ttl."""
+        if self.evicted_policy_ttl <= 0.0:
+            return
+        for store in (self._evicted_read_only_tools, self._evicted_closed_world_tools):
+            expired = [t for t, ts in store.items() if (now - ts) > self.evicted_policy_ttl]
+            for t in expired:
+                store.pop(t, None)
+        if (
+            self._last_eviction_ts is not None
+            and (now - self._last_eviction_ts) > self.evicted_policy_ttl
+            and not self._evicted_read_only_tools
+            and not self._evicted_closed_world_tools
+        ):
+            self._last_eviction_ts = None
 
     def record_unparseable_message(self, direction: str, size_bytes: int, now: float) -> None:
         """Mark attribution incomplete when a protocol message cannot be parsed."""
         gap_evt: Optional[BehavioralEvent] = None
         with self._lock:
             self.unparseable_protocol_messages += 1
+            self._unparseable_gap_active = True
             self.incomplete_attribution = True
             if self._should_emit_gap_locked("unparseable_protocol_message", now):
                 gap_evt = self._build_incomplete_event(
@@ -132,6 +162,14 @@ class AttributionEngine:
                 )
         if gap_evt and self.on_event_fn:
             self.on_event_fn(gap_evt)
+
+    def on_protocol_resync(self) -> bool:
+        """Clear protocol-gap uncertainty only at a clean resynchronization boundary (no active calls)."""
+        with self._lock:
+            if self._active_calls:
+                return False
+            self._unparseable_gap_active = False
+            return True
 
     def _should_emit_gap_locked(self, reason: str, now: float) -> bool:
         """Rate-limit attribution_incomplete notifications per reason to prevent telemetry amplification."""
@@ -193,7 +231,7 @@ class AttributionEngine:
             if ctx is None:
                 continue
             self._release_context_accounting_locked(ctx)
-            self._track_evicted_policies_locked(ctx)
+            self._track_evicted_policies_locked(ctx, now)
             self.evicted_stale_calls += 1
             self.incomplete_attribution = True
             evicted_count += 1
@@ -253,7 +291,7 @@ class AttributionEngine:
             if request_id in self._active_calls:
                 prev = self._active_calls.pop(request_id)
                 self._release_context_accounting_locked(prev)
-                self._track_evicted_policies_locked(prev)
+                self._track_evicted_policies_locked(prev, start_ts)
                 self.evicted_overflow_calls += 1
                 self.incomplete_attribution = True
                 if self._should_emit_gap_locked("reused_active_request_id", start_ts):
@@ -270,7 +308,7 @@ class AttributionEngine:
                 oldest_id = next(iter(self._active_calls))
                 evicted = self._active_calls.pop(oldest_id)
                 self._release_context_accounting_locked(evicted)
-                self._track_evicted_policies_locked(evicted)
+                self._track_evicted_policies_locked(evicted, start_ts)
                 self.evicted_overflow_calls += 1
                 self.incomplete_attribution = True
                 if self._should_emit_gap_locked("active_call_limit_exceeded", start_ts):
@@ -374,20 +412,30 @@ class AttributionEngine:
         now = event.timestamp or time.time()
         with self._lock:
             violations.extend(self._prune_stale_locked(now))
+            self._prune_evicted_policies_locked(now)
             active = list(self._active_calls.values())
             prior_evictions = self.evicted_stale_calls + self.evicted_overflow_calls
+            has_eviction_uncertainty = (
+                self._last_eviction_ts is not None
+                or bool(self._evicted_read_only_tools)
+                or bool(self._evicted_closed_world_tools)
+            )
+            degraded = has_eviction_uncertainty or self._unparseable_gap_active
 
             event.server_id = self.server_id
 
-            # 1. Single tool in flight -> Observed unless earlier uncompleted calls were evicted
+            # 1. Single tool in flight -> Observed unless eviction or protocol-gap uncertainty exists
             if len(active) == 1:
                 ctx = active[0]
                 event.current_tool = ctx.tool_name
                 event.request_id = ctx.request_id
-                if prior_evictions > 0:
+                if degraded:
                     event.evidence_tier = EVIDENCE_TIER_CORRELATED
                     event.payload["attribution_incomplete"] = True
-                    event.payload["evicted_calls_active_risk"] = prior_evictions
+                    if has_eviction_uncertainty:
+                        event.payload["evicted_calls_active_risk"] = prior_evictions
+                    if self._unparseable_gap_active:
+                        event.payload["unparseable_protocol_messages"] = self.unparseable_protocol_messages
                 else:
                     event.evidence_tier = EVIDENCE_TIER_OBSERVED
                 event.payload["current_tool"] = ctx.tool_name
@@ -396,7 +444,12 @@ class AttributionEngine:
                 if trunc_evt:
                     violations.append(trunc_evt)
 
-                tool_violations = self._evaluate_tool_policies(ctx, event, is_correlated=(prior_evictions > 0))
+                tool_violations = self._evaluate_tool_policies(
+                    ctx,
+                    event,
+                    is_correlated=degraded,
+                    attribution_incomplete=degraded,
+                )
                 violations.extend(tool_violations)
 
             # 2. Concurrent tools in flight -> Ambiguous attribution (correlated)
@@ -405,34 +458,60 @@ class AttributionEngine:
                 event.evidence_tier = EVIDENCE_TIER_CORRELATED
                 event.payload["ambiguous"] = True
                 event.payload["candidate_tools"] = [c.tool_name for c in active]
-                if prior_evictions > 0:
+                if degraded:
                     event.payload["attribution_incomplete"] = True
-                    event.payload["evicted_calls_active_risk"] = prior_evictions
+                    if has_eviction_uncertainty:
+                        event.payload["evicted_calls_active_risk"] = prior_evictions
+                    if self._unparseable_gap_active:
+                        event.payload["unparseable_protocol_messages"] = self.unparseable_protocol_messages
 
                 for c in active:
                     trunc_evt = self._record_context_event_locked(c, event, now)
                     if trunc_evt:
                         violations.append(trunc_evt)
-                    tool_violations = self._evaluate_tool_policies(c, event, is_correlated=True)
+                    tool_violations = self._evaluate_tool_policies(
+                        c,
+                        event,
+                        is_correlated=True,
+                        attribution_incomplete=degraded,
+                    )
                     violations.extend(tool_violations)
 
-            # 3. No tools in flight -> Lifecycle / background activity (downgrade if prior calls evicted or unparseable)
+            # 3. No tools in flight -> Lifecycle / background activity (downgrade if degraded)
             else:
-                degraded = prior_evictions > 0 or self.unparseable_protocol_messages > 0
                 event.current_tool = None
                 event.request_id = None
                 if degraded:
                     event.evidence_tier = EVIDENCE_TIER_CORRELATED
                     event.payload["attribution_incomplete"] = True
-                    event.payload["evicted_calls_active_risk"] = prior_evictions
+                    if has_eviction_uncertainty:
+                        event.payload["evicted_calls_active_risk"] = prior_evictions
+                    if self._unparseable_gap_active:
+                        event.payload["unparseable_protocol_messages"] = self.unparseable_protocol_messages
                 else:
                     event.evidence_tier = EVIDENCE_TIER_OBSERVED
                 event.payload["scope"] = "lifecycle"
 
-                bg_violations = self._evaluate_background_policies(event)
+                bg_violations = self._evaluate_background_policies(
+                    event,
+                    is_correlated=degraded,
+                    attribution_incomplete=degraded,
+                )
                 violations.extend(bg_violations)
-                if prior_evictions > 0:
-                    violations.extend(self._evaluate_evicted_tool_policies_locked(event))
+
+            # Evaluate retained evicted-call policies across ALL active-call counts (0, 1, or >1),
+            # avoiding duplicate findings when an active call already triggered the same category.
+            if has_eviction_uncertainty:
+                has_ro = any(v.payload.get("category") == "read_only_violation" for v in violations)
+                has_ow = any(v.payload.get("category") == "open_world_violation" for v in violations)
+                violations.extend(
+                    self._evaluate_evicted_tool_policies_locked(
+                        event,
+                        active_tools=[c.tool_name for c in active],
+                        skip_read_only=has_ro,
+                        skip_open_world=has_ow,
+                    )
+                )
 
         return event, violations
 
@@ -441,6 +520,7 @@ class AttributionEngine:
         ctx: ToolCallContext,
         event: BehavioralEvent,
         is_correlated: bool = False,
+        attribution_incomplete: bool = False,
     ) -> List[BehavioralEvent]:
         """Evaluate declared safety annotations against observed tool action."""
         violations: List[BehavioralEvent] = []
@@ -450,6 +530,18 @@ class AttributionEngine:
         # Policy 1: readOnlyHint violation
         # readOnlyHint=True prohibits file writes and file modifications
         if ann.get("readOnlyHint", False) and event.event == EVENT_FILE_WRITE:
+            payload = {
+                "category": "read_only_violation",
+                "tool": ctx.tool_name,
+                "target": event.target,
+                "declared_read_only": True,
+                "action": "file_write",
+                "message": f"Tool '{ctx.tool_name}' declared readOnlyHint=True but performed file write to '{event.target}'.",
+                "would_block": True,
+                "enforce": self.enforce,
+            }
+            if attribution_incomplete:
+                payload["attribution_incomplete"] = True
             v_evt = BehavioralEvent(
                 event="policy_violation",
                 session_id=event.session_id,
@@ -462,16 +554,7 @@ class AttributionEngine:
                 request_id=ctx.request_id,
                 target=event.target,
                 timestamp=event.timestamp,
-                payload={
-                    "category": "read_only_violation",
-                    "tool": ctx.tool_name,
-                    "target": event.target,
-                    "declared_read_only": True,
-                    "action": "file_write",
-                    "message": f"Tool '{ctx.tool_name}' declared readOnlyHint=True but performed file write to '{event.target}'.",
-                    "would_block": True,
-                    "enforce": self.enforce,
-                },
+                payload=payload,
             )
             violations.append(v_evt)
 
@@ -479,6 +562,19 @@ class AttributionEngine:
         # openWorldHint=False prohibits outbound non-loopback network egress
         if not ann.get("openWorldHint", True) and event.event == EVENT_NETWORK_CONNECT:
             if not is_loopback_address(event.destination_ip):
+                payload = {
+                    "category": "open_world_violation",
+                    "tool": ctx.tool_name,
+                    "destination_ip": event.destination_ip,
+                    "destination_port": event.destination_port,
+                    "declared_open_world": False,
+                    "action": "network_connect",
+                    "message": f"Tool '{ctx.tool_name}' declared openWorldHint=False but connected to external host '{event.destination_ip}:{event.destination_port}'.",
+                    "would_block": True,
+                    "enforce": self.enforce,
+                }
+                if attribution_incomplete:
+                    payload["attribution_incomplete"] = True
                 v_evt = BehavioralEvent(
                     event="policy_violation",
                     session_id=event.session_id,
@@ -491,17 +587,7 @@ class AttributionEngine:
                     request_id=ctx.request_id,
                     target=f"{event.destination_ip}:{event.destination_port}",
                     timestamp=event.timestamp,
-                    payload={
-                        "category": "open_world_violation",
-                        "tool": ctx.tool_name,
-                        "destination_ip": event.destination_ip,
-                        "destination_port": event.destination_port,
-                        "declared_open_world": False,
-                        "action": "network_connect",
-                        "message": f"Tool '{ctx.tool_name}' declared openWorldHint=False but connected to external host '{event.destination_ip}:{event.destination_port}'.",
-                        "would_block": True,
-                        "enforce": self.enforce,
-                    },
+                    payload=payload,
                 )
                 violations.append(v_evt)
 
@@ -513,6 +599,18 @@ class AttributionEngine:
                 target_lower = (event.target or "").lower()
                 is_crit = any(k in target_lower or k in reason.lower() for k in ("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "shadow", "master.passwd"))
                 sev = SEVERITY_CRITICAL if is_crit else SEVERITY_HIGH
+                payload = {
+                    "category": "sensitive_path_access",
+                    "tool": ctx.tool_name,
+                    "path": event.target,
+                    "sensitive_target": reason,
+                    "action": "file_write" if event.event == EVENT_FILE_WRITE else "file_open",
+                    "message": f"Security alert: Tool '{ctx.tool_name}' accessed confidential path '{event.target}' ({reason}).",
+                    "would_block": True,
+                    "enforce": self.enforce,
+                }
+                if attribution_incomplete:
+                    payload["attribution_incomplete"] = True
                 s_evt = BehavioralEvent(
                     event="secret_exposure",
                     session_id=event.session_id,
@@ -525,26 +623,37 @@ class AttributionEngine:
                     request_id=ctx.request_id,
                     target=event.target,
                     timestamp=event.timestamp,
-                    payload={
-                        "category": "sensitive_path_access",
-                        "tool": ctx.tool_name,
-                        "path": event.target,
-                        "sensitive_target": reason,
-                        "action": "file_write" if event.event == EVENT_FILE_WRITE else "file_open",
-                        "message": f"Security alert: Tool '{ctx.tool_name}' accessed confidential path '{event.target}' ({reason}).",
-                        "would_block": True,
-                        "enforce": self.enforce,
-                    },
+                    payload=payload,
                 )
                 violations.append(s_evt)
 
         return violations
 
-    def _evaluate_evicted_tool_policies_locked(self, event: BehavioralEvent) -> List[BehavioralEvent]:
-        """Propagate safety-hint policy checks from evicted uncompleted calls into degraded background evaluation."""
+    def _evaluate_evicted_tool_policies_locked(
+        self,
+        event: BehavioralEvent,
+        *,
+        active_tools: Optional[List[str]] = None,
+        skip_read_only: bool = False,
+        skip_open_world: bool = False,
+    ) -> List[BehavioralEvent]:
+        """Propagate safety-hint policy checks from evicted uncompleted calls across any active-call count."""
         violations: List[BehavioralEvent] = []
-        if event.event == EVENT_FILE_WRITE and self._evicted_read_only_tools:
-            tools = list(self._evicted_read_only_tools)
+        if not skip_read_only and event.event == EVENT_FILE_WRITE and self._evicted_read_only_tools:
+            tools = list(self._evicted_read_only_tools.keys())
+            payload: Dict[str, Any] = {
+                "category": "read_only_violation",
+                "candidate_tools": tools,
+                "target": event.target,
+                "declared_read_only": True,
+                "action": "file_write",
+                "attribution_incomplete": True,
+                "message": f"File write to '{event.target}' occurred while uncompleted readOnlyHint=True tool(s) {tools} were evicted.",
+                "would_block": True,
+                "enforce": self.enforce,
+            }
+            if active_tools:
+                payload["active_tools"] = list(active_tools)
             violations.append(
                 BehavioralEvent(
                     event="policy_violation",
@@ -554,24 +663,30 @@ class AttributionEngine:
                     source="monitor",
                     evidence_tier=EVIDENCE_TIER_CORRELATED,
                     severity=SEVERITY_HIGH,
+                    current_tool=None,
+                    request_id=None,
                     target=event.target,
                     timestamp=event.timestamp,
-                    payload={
-                        "category": "read_only_violation",
-                        "candidate_tools": tools,
-                        "target": event.target,
-                        "declared_read_only": True,
-                        "action": "file_write",
-                        "attribution_incomplete": True,
-                        "message": f"File write to '{event.target}' occurred after uncompleted readOnlyHint=True tool(s) {tools} were evicted.",
-                        "would_block": True,
-                        "enforce": self.enforce,
-                    },
+                    payload=payload,
                 )
             )
-        if event.event == EVENT_NETWORK_CONNECT and self._evicted_closed_world_tools:
+        if not skip_open_world and event.event == EVENT_NETWORK_CONNECT and self._evicted_closed_world_tools:
             if not is_loopback_address(event.destination_ip):
-                tools = list(self._evicted_closed_world_tools)
+                tools = list(self._evicted_closed_world_tools.keys())
+                payload = {
+                    "category": "open_world_violation",
+                    "candidate_tools": tools,
+                    "destination_ip": event.destination_ip,
+                    "destination_port": event.destination_port,
+                    "declared_open_world": False,
+                    "action": "network_connect",
+                    "attribution_incomplete": True,
+                    "message": f"Outbound network connect to '{event.destination_ip}:{event.destination_port}' occurred while uncompleted openWorldHint=False tool(s) {tools} were evicted.",
+                    "would_block": True,
+                    "enforce": self.enforce,
+                }
+                if active_tools:
+                    payload["active_tools"] = list(active_tools)
                 violations.append(
                     BehavioralEvent(
                         event="policy_violation",
@@ -581,27 +696,24 @@ class AttributionEngine:
                         source="monitor",
                         evidence_tier=EVIDENCE_TIER_CORRELATED,
                         severity=SEVERITY_HIGH,
+                        current_tool=None,
+                        request_id=None,
                         target=f"{event.destination_ip}:{event.destination_port}",
                         timestamp=event.timestamp,
-                        payload={
-                            "category": "open_world_violation",
-                            "candidate_tools": tools,
-                            "destination_ip": event.destination_ip,
-                            "destination_port": event.destination_port,
-                            "declared_open_world": False,
-                            "action": "network_connect",
-                            "attribution_incomplete": True,
-                            "message": f"Outbound network connect to '{event.destination_ip}:{event.destination_port}' occurred after uncompleted openWorldHint=False tool(s) {tools} were evicted.",
-                            "would_block": True,
-                            "enforce": self.enforce,
-                        },
+                        payload=payload,
                     )
                 )
         return violations
 
-    def _evaluate_background_policies(self, event: BehavioralEvent) -> List[BehavioralEvent]:
+    def _evaluate_background_policies(
+        self,
+        event: BehavioralEvent,
+        is_correlated: bool = False,
+        attribution_incomplete: bool = False,
+    ) -> List[BehavioralEvent]:
         """Evaluate policies for actions occurring outside tool execution."""
         violations: List[BehavioralEvent] = []
+        tier = EVIDENCE_TIER_CORRELATED if is_correlated else EVIDENCE_TIER_OBSERVED
 
         # Sensitive credential theft during background/startup
         if event.target and event.event in (EVENT_FILE_OPEN, EVENT_FILE_WRITE):
@@ -610,26 +722,29 @@ class AttributionEngine:
                 target_lower = (event.target or "").lower()
                 is_crit = any(k in target_lower or k in reason.lower() for k in ("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "shadow", "master.passwd"))
                 sev = SEVERITY_CRITICAL if is_crit else SEVERITY_HIGH
+                payload = {
+                    "category": "background_sensitive_path_access",
+                    "path": event.target,
+                    "sensitive_target": reason,
+                    "action": "file_write" if event.event == EVENT_FILE_WRITE else "file_open",
+                    "message": f"Security alert: Server accessed confidential path '{event.target}' ({reason}) outside active tool call.",
+                    "would_block": True,
+                    "enforce": self.enforce,
+                }
+                if attribution_incomplete:
+                    payload["attribution_incomplete"] = True
                 s_evt = BehavioralEvent(
                     event="secret_exposure",
                     session_id=event.session_id,
                     server_id=self.server_id,
                     kind="secret_exposure",
                     source="monitor",
-                    evidence_tier=EVIDENCE_TIER_OBSERVED,
+                    evidence_tier=tier,
                     severity=sev,
                     current_tool=None,
                     target=event.target,
                     timestamp=event.timestamp,
-                    payload={
-                        "category": "background_sensitive_path_access",
-                        "path": event.target,
-                        "sensitive_target": reason,
-                        "action": "file_write" if event.event == EVENT_FILE_WRITE else "file_open",
-                        "message": f"Security alert: Server accessed confidential path '{event.target}' ({reason}) outside active tool call.",
-                        "would_block": True,
-                        "enforce": self.enforce,
-                    },
+                    payload=payload,
                 )
                 violations.append(s_evt)
 

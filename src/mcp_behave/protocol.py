@@ -415,8 +415,12 @@ class ProtocolMonitor:
             for item in data:
                 if isinstance(item, dict):
                     self._handle_single_message_sync(item, len(line_bytes), direction, now)
+                elif self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+                    self.attribution_engine.record_unparseable_message(direction, len(line_bytes), now)
         elif isinstance(data, dict):
             self._handle_single_message_sync(data, len(line_bytes), direction, now)
+        elif self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+            self.attribution_engine.record_unparseable_message(direction, len(line_bytes), now)
 
     def _handle_single_message_sync(
         self, msg: Dict[str, Any], total_bytes: int, direction: str, now: float
@@ -729,13 +733,20 @@ class ProtocolMonitor:
         prefix = raw_bytes[:4].decode("utf-8", errors="replace")
         hashed_summary = {"sha256": h, "prefix": prefix, "length": len(raw_bytes)}
 
-        items = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
-        for msg in items:
-            if not isinstance(msg, dict):
-                continue
+        if isinstance(data, list):
+            for msg in data:
+                if isinstance(msg, dict):
+                    self._handle_large_single_message_sync(
+                        msg, raw_bytes, total_bytes, hashed_summary, direction, now
+                    )
+                elif self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+                    self.attribution_engine.record_unparseable_message(direction, total_bytes, now)
+        elif isinstance(data, dict):
             self._handle_large_single_message_sync(
-                msg, raw_bytes, total_bytes, hashed_summary, direction, now
+                data, raw_bytes, total_bytes, hashed_summary, direction, now
             )
+        elif self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+            self.attribution_engine.record_unparseable_message(direction, total_bytes, now)
 
     def _handle_large_single_message_sync(
         self,

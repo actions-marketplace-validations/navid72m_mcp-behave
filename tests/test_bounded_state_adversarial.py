@@ -431,3 +431,97 @@ def test_tracer_duplicate_ready_and_pid_reuse():
         assert health["identity_assurance"] == "best_effort_pid_only"
 
     asyncio.run(run())
+
+
+def test_sr01_evicted_policies_across_zero_one_multiple_active_and_ttl_expiry():
+    from mcp_behave.events import EVENT_FILE_WRITE, EVENT_NETWORK_CONNECT
+
+    # 1. Capacity eviction with 1 permissive active call -> correlated read_only_violation & open_world_violation,
+    #    no false observed accusation against the surviving permissive call.
+    eng = AttributionEngine("srv1", max_active_calls=1, evicted_policy_ttl=60.0)
+    eng.on_tool_call_start(1, "restricted_ro_cw", 1000.0, {"readOnlyHint": True, "openWorldHint": False})
+    eng.on_tool_call_start(2, "permissive", 1001.0, {"readOnlyHint": False, "openWorldHint": True})
+
+    w_evt, w_viols = eng.attribute_os_event(BehavioralEvent(event=EVENT_FILE_WRITE, timestamp=1002.0, target="/tmp/w.txt"))
+    ro_viols = [v for v in w_viols if v.payload.get("category") == "read_only_violation"]
+    assert len(ro_viols) == 1
+    assert ro_viols[0].evidence_tier == EVIDENCE_TIER_CORRELATED
+    assert ro_viols[0].current_tool is None
+    assert "restricted_ro_cw" in ro_viols[0].payload["candidate_tools"]
+    assert ro_viols[0].payload["attribution_incomplete"] is True
+
+    n_evt, n_viols = eng.attribute_os_event(
+        BehavioralEvent(event=EVENT_NETWORK_CONNECT, timestamp=1003.0, destination_ip="93.184.216.34", destination_port=443)
+    )
+    ow_viols = [v for v in n_viols if v.payload.get("category") == "open_world_violation"]
+    assert len(ow_viols) == 1
+    assert ow_viols[0].evidence_tier == EVIDENCE_TIER_CORRELATED
+    assert "restricted_ro_cw" in ow_viols[0].payload["candidate_tools"]
+
+    # 2. Multiple surviving active calls (one restrictive, one permissive) -> no duplicate findings
+    eng2 = AttributionEngine("srv1", max_active_calls=2, stale_call_ttl=10.0, evicted_policy_ttl=60.0)
+    eng2.on_tool_call_start(1, "evicted_ro", 1000.0, {"readOnlyHint": True})
+    eng2.on_tool_call_start(2, "active_ro", 1006.0, {"readOnlyHint": True})
+    eng2.on_tool_call_start(3, "active_perm", 1007.0, {"readOnlyHint": False})
+    # At t=1012, call 1 expires via TTL while 2 & 3 survive
+    _, v_multi = eng2.attribute_os_event(BehavioralEvent(event=EVENT_FILE_WRITE, timestamp=1012.0, target="/tmp/m.txt"))
+    ro_multi = [v for v in v_multi if v.payload.get("category") == "read_only_violation"]
+    assert len(ro_multi) == 1  # active_ro already triggered; no duplicate from evicted_ro
+
+    # 3. Expiration of retained uncertainty after evicted_policy_ttl
+    eng.on_tool_call_end(2, 1004.0)
+    _, v_after_ttl = eng.attribute_os_event(BehavioralEvent(event=EVENT_FILE_WRITE, timestamp=1100.0, target="/tmp/clean.txt"))
+    assert not any(v.payload.get("category") == "read_only_violation" for v in v_after_ttl)
+
+
+def test_sr02_unparseable_traffic_degrades_all_branches_and_recovers_only_on_resync(tmp_path):
+    from mcp_behave.events import EVENT_FILE_WRITE
+
+    eng = AttributionEngine("srv1")
+    eng.on_tool_call_start(1, "ro_tool", 1000.0, {"readOnlyHint": True})
+    eng.record_unparseable_message("client_to_server", 512, 1001.0)
+
+    # 1. Single active call + derived policy finding must be CORRELATED with attribution_incomplete=True
+    ev1, v1 = eng.attribute_os_event(BehavioralEvent(event=EVENT_FILE_WRITE, timestamp=1002.0, target="/tmp/x.txt"))
+    assert ev1.evidence_tier == EVIDENCE_TIER_CORRELATED
+    assert ev1.payload.get("attribution_incomplete") is True
+    assert len(v1) == 1
+    assert v1[0].evidence_tier == EVIDENCE_TIER_CORRELATED
+    assert v1[0].payload.get("attribution_incomplete") is True
+
+    # 2. Multiple active calls must carry attribution_incomplete=True
+    eng.on_tool_call_start(2, "other_tool", 1003.0)
+    ev2, _ = eng.attribute_os_event(BehavioralEvent(event=EVENT_FILE_OPEN, timestamp=1004.0, target="/tmp/y.txt"))
+    assert ev2.evidence_tier == EVIDENCE_TIER_CORRELATED
+    assert ev2.payload.get("attribution_incomplete") is True
+
+    # 3. Elapsed time alone does NOT restore confidence; resync fails while calls active
+    assert eng.on_protocol_resync() is False
+    eng.on_tool_call_end(1, 1005.0)
+    eng.on_tool_call_end(2, 1005.0)
+    ev3, _ = eng.attribute_os_event(BehavioralEvent(event=EVENT_FILE_OPEN, timestamp=5000.0, target="/tmp/bg.txt"))
+    assert ev3.evidence_tier == EVIDENCE_TIER_CORRELATED
+    assert ev3.payload.get("attribution_incomplete") is True
+
+    # 4. Clean resync with 0 active calls restores confidence for subsequent clean traffic
+    assert eng.on_protocol_resync() is True
+    eng.on_tool_call_start(3, "clean_tool", 5001.0)
+    ev4, _ = eng.attribute_os_event(BehavioralEvent(event=EVENT_FILE_OPEN, timestamp=5002.0, target="/tmp/ok.txt"))
+    assert ev4.evidence_tier == EVIDENCE_TIER_OBSERVED
+    assert "attribution_incomplete" not in ev4.payload
+
+    # 5. ProtocolMonitor: excessive nesting (RecursionError) and unsupported JSON structures trigger record_unparseable_message
+    bus = EventBus()
+    tel = TelemetryStore(session_id="sr02-s", server_id="sr02-srv", state_dir=tmp_path)
+    eng2 = AttributionEngine("sr02-srv")
+    mon = ProtocolMonitor("sr02-s", "sr02-srv", bus, tel, enable_reverify=False, attribution_engine=eng2)
+    try:
+        deep = b"[" * 2000 + b"1" + b"]" * 2000 + b"\n"
+        mon._sync_process_line(deep, "client_to_server", 100.0)
+        mon._sync_process_line(b"42\n", "client_to_server", 101.0)
+        assert eng2.unparseable_protocol_messages == 2
+        assert eng2.incomplete_attribution is True
+    finally:
+        mon.close(timeout=2.0)
+        bus.close()
+        tel.close(timeout=2.0)
