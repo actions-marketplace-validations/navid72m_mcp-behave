@@ -227,7 +227,7 @@ Native interposers observe selected dynamically linked libc calls. Direct syscal
 uvx mcp-behave --probe-rounds 3 --fuzz python -m my_mcp_server
 ```
 
-Clean reports, trace and sandbox statuses, redaction, and baselines provide evidence bounded by the configuration and observations. Review baseline changes before approving them.
+Clean reports, trace and sandbox statuses, redaction, and baselines provide evidence bounded by the configuration and observations. Review baseline changes before approving them. In `wrap`, PID-only tracer tracking is best-effort (`best_effort_pid_only`), parser gaps or queue drops degrade attribution to `correlated` until a trusted lifecycle resync, SQLite row caps bound logical row counts rather than physical disk size without `VACUUM`, bounded-retention runs leave full-run completeness `UNVERIFIED`, Linux validation was executed in ARM64 containers, and post-shutdown orphan checks are point-in-time `ps` snapshots.
 
 ## Evaluation
 
@@ -238,6 +238,7 @@ Clean reports, trace and sandbox statuses, redaction, and baselines provide evid
 The repository includes benchmark corpora and reports covering paired benign/malicious server fixtures, multi-server authorization scenarios, deterministic runtime-policy tests, and audits of reference MCP servers. The README intentionally keeps detailed tables out of the getting-started path:
 
 - [Benchmark methodology and results](BENCHMARK.md)
+- [v0.5.6 performance and endurance validation](benchmarks/results/v0.5.6/README.md) (10-rep paired concurrent enforcement+redaction comparison, macOS and Linux 5-minute lossless/bounded soaks, and 1-hour endurance validation)
 - [CrossMCP-Bench report](docs/benchmarks/crossmcp_bench_report.md)
 - [MCP-GuardBench report](docs/benchmarks/guardbench_report.md)
 - [Pluto MCP Visibility report](docs/benchmarks/pluto_visibility_bench.md)

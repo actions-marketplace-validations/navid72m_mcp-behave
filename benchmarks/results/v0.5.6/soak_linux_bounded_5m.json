@@ -1,0 +1,1618 @@
+{
+  "schema_version": "1.0",
+  "start_time_utc": "2026-11-26T08:58:36.106777+00:00",
+  "environment": {
+    "platform": "Linux-7.0.14-orbstack-00380-ga7e0a2dc9535-aarch64-with-glibc2.41",
+    "system": "Linux",
+    "release": "7.0.14-orbstack-00380-ga7e0a2dc9535",
+    "machine": "aarch64",
+    "cpu_count": 8,
+    "python_version": "3.12.16",
+    "python_executable": "/usr/local/bin/python3",
+    "python_hardened": null,
+    "native_tracer_available": true,
+    "native_tracer_env": {
+      "LD_PRELOAD": "/root/.cache/mcp-behave/libmcpbehave_trace.so"
+    },
+    "native_tracer_reason": null
+  },
+  "reproducibility": {
+    "git_commit": null,
+    "git_dirty": null,
+    "dirty_source_hashes": {},
+    "package_version": "0.5.5",
+    "python_version": "3.12.16",
+    "os": "Linux",
+    "os_release": "7.0.14-orbstack-00380-ga7e0a2dc9535",
+    "arch": "aarch64",
+    "tracer_backend": "linux_ld_preload",
+    "tracer_binary_sha256": "6ca109bdede14271099d261ca66fb1a17e8327991e1f69620139f514a29c1781"
+  },
+  "soak_config": {
+    "validation_profile": "bounded",
+    "duration_s": 300.0,
+    "sample_interval_s": 10.0,
+    "mode": "enforce_redact",
+    "rate_rps": 25.0,
+    "concurrency": 16,
+    "large_bytes": 131072,
+    "seed": 42,
+    "timeout_s": 10.0,
+    "scenarios": [
+      "burst",
+      "disconnect",
+      "idle_burst",
+      "large",
+      "reverify",
+      "secret",
+      "sustained",
+      "tracer_fs"
+    ],
+    "max_jsonl_bytes": 1048576,
+    "max_jsonl_backups": 2,
+    "max_sqlite_events": 2000,
+    "retention_interval_s": 10.0,
+    "max_rss_mib": 256.0,
+    "max_fds": 128
+  },
+  "summary": {
+    "elapsed_s": 300.26,
+    "shutdown_s": 0.138,
+    "exit_code": 0,
+    "requests": {
+      "success": 8517,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 239,
+      "secret_leaked": 0
+    },
+    "overall_latency": {
+      "count": 8517,
+      "min_ms": 0.1788,
+      "p50_ms": 5.7648,
+      "p95_ms": 17.6094,
+      "p99_ms": 21.5493,
+      "max_ms": 70.5182,
+      "mean_ms": 7.1081,
+      "rps": 28.37,
+      "wall_s": 300.26
+    },
+    "scenario_cycles": {
+      "sustained": 240,
+      "burst": 239,
+      "large": 239,
+      "secret": 239,
+      "reverify": 239,
+      "tracer_fs": 239,
+      "disconnect": 47,
+      "idle_burst": 78
+    },
+    "disconnect_checks": [
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.402,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.449,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.321,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.425,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.388,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.335,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.343,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.387,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.321,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.35,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.35,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.342,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.384,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.43,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.485,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.356,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.351,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.497,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.333,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.337,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.326,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.367,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.358,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.328,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.387,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.628,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.399,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.312,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.377,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.34,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.348,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.367,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.354,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.494,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.368,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.441,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.407,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.329,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.522,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.444,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.366,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.357,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.319,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.382,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.353,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.404,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      },
+      {
+        "passed": true,
+        "exit_code": 42,
+        "inventory_available": true,
+        "orphans_remaining": false,
+        "elapsed_s": 0.37,
+        "stderr_tail": [
+          "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+        ]
+      }
+    ],
+    "final_storage_kib": 5163.8,
+    "telemetry_drops": 0,
+    "telemetry_completeness": {
+      "validation_profile": "bounded",
+      "completeness_status": "UNVERIFIED",
+      "cross_session_mismatch": false,
+      "known_correctness_failure": false,
+      "reported_telemetry_drops": 0,
+      "expected_protocol_events": 17038,
+      "jsonl_protocol_events": 3549,
+      "jsonl_total_events": 3650,
+      "sqlite_protocol_events": 1943,
+      "sqlite_total_events": 2000,
+      "active_jsonl_files": 1,
+      "rotated_jsonl_files": 2,
+      "unexpected_loss": false,
+      "reconciled": false,
+      "limitations": [
+        "jsonl_rotation_pruning_unverifiable",
+        "jsonl_missing_identities:13489",
+        "sqlite_pruning_unverifiable_without_per_kind_accounting",
+        "sqlite_missing_identities:15095"
+      ],
+      "jsonl": {
+        "active_files": 1,
+        "rotated_files": 2,
+        "total_bytes": 2266002,
+        "protocol_events": 3549,
+        "total_events": 3650,
+        "read_errors": 0,
+        "rotation_pruning_configured": true,
+        "unexpected_loss": false,
+        "reconciled": false,
+        "identity_reconciliation": {
+          "missing_count": 13489,
+          "duplicate_count": 0,
+          "unexpected_count": 0,
+          "missing_sample": [
+            [
+              [
+                "str",
+                "init-1"
+              ],
+              "protocol_request"
+            ],
+            [
+              [
+                "str",
+                "init-1"
+              ],
+              "protocol_response"
+            ],
+            [
+              [
+                "str",
+                "list-1"
+              ],
+              "protocol_request"
+            ],
+            [
+              [
+                "str",
+                "list-1"
+              ],
+              "protocol_response"
+            ],
+            [
+              [
+                "str",
+                "bdd640fb-0667-4ad1-9c80-317fa3b1799d"
+              ],
+              "protocol_request"
+            ],
+            [
+              [
+                "str",
+                "bdd640fb-0667-4ad1-9c80-317fa3b1799d"
+              ],
+              "protocol_response"
+            ],
+            [
+              [
+                "str",
+                "23b8c1e9-3924-46de-beb1-3b9046685257"
+              ],
+              "protocol_request"
+            ],
+            [
+              [
+                "str",
+                "23b8c1e9-3924-46de-beb1-3b9046685257"
+              ],
+              "protocol_response"
+            ],
+            [
+              [
+                "str",
+                "bd9c66b3-ad3c-4d6d-9a3d-1fa7bc8960a9"
+              ],
+              "protocol_request"
+            ],
+            [
+              [
+                "str",
+                "bd9c66b3-ad3c-4d6d-9a3d-1fa7bc8960a9"
+              ],
+              "protocol_response"
+            ]
+          ],
+          "duplicate_sample": [],
+          "unexpected_sample": [],
+          "exact_match": false
+        }
+      },
+      "sqlite": {
+        "protocol_events": 1943,
+        "total_events": 2000,
+        "max_sqlite_events": 2000,
+        "intentional_pruning_unverified": true,
+        "error": null,
+        "unexpected_loss": false,
+        "reconciled": false,
+        "identity_reconciliation": {
+          "missing_count": 15095,
+          "duplicate_count": 0,
+          "unexpected_count": 0,
+          "missing_sample": [
+            [
+              [
+                "str",
+                "init-1"
+              ],
+              "protocol_request"
+            ],
+            [
+              [
+                "str",
+                "init-1"
+              ],
+              "protocol_response"
+            ],
+            [
+              [
+                "str",
+                "list-1"
+              ],
+              "protocol_request"
+            ],
+            [
+              [
+                "str",
+                "list-1"
+              ],
+              "protocol_response"
+            ],
+            [
+              [
+                "str",
+                "bdd640fb-0667-4ad1-9c80-317fa3b1799d"
+              ],
+              "protocol_request"
+            ],
+            [
+              [
+                "str",
+                "bdd640fb-0667-4ad1-9c80-317fa3b1799d"
+              ],
+              "protocol_response"
+            ],
+            [
+              [
+                "str",
+                "23b8c1e9-3924-46de-beb1-3b9046685257"
+              ],
+              "protocol_request"
+            ],
+            [
+              [
+                "str",
+                "23b8c1e9-3924-46de-beb1-3b9046685257"
+              ],
+              "protocol_response"
+            ],
+            [
+              [
+                "str",
+                "bd9c66b3-ad3c-4d6d-9a3d-1fa7bc8960a9"
+              ],
+              "protocol_request"
+            ],
+            [
+              [
+                "str",
+                "bd9c66b3-ad3c-4d6d-9a3d-1fa7bc8960a9"
+              ],
+              "protocol_response"
+            ]
+          ],
+          "duplicate_sample": [],
+          "unexpected_sample": [],
+          "exact_match": false
+        }
+      }
+    },
+    "final_cpu_s": 15.0,
+    "read_error": null
+  },
+  "diagnostics": {
+    "rss_first_mib": 67.53,
+    "rss_last_mib": 69.5,
+    "rss_peak_mib": 69.5,
+    "rss_delta_mib": 1.97,
+    "fd_first": 19,
+    "fd_last": 19,
+    "fd_peak": 19,
+    "fd_delta": 0,
+    "p95_early_median_ms": 16.864,
+    "p95_late_median_ms": 17.567,
+    "orphans_after_shutdown": false,
+    "process_inventory_available": true,
+    "disconnect_checks_passed": true,
+    "stale_outstanding_at_drain": 0,
+    "stderr_tail": [
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "",
+      "[mcp-behave] WARNING: High-severity behavioral drift detected (enforcement_action): ",
+      "mcp-behave wrap: incomplete cleanup of tracer telemetry: possible loss of unread datagrams at shutdown"
+    ]
+  },
+  "timeseries": [
+    {
+      "elapsed_s": 10.04,
+      "proxy_rss_mib": 56.66,
+      "child_rss_mib": 10.88,
+      "total_rss_mib": 67.53,
+      "proxy_cpu_s": 0.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 313,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 9,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 1212.9,
+      "jsonl_kib": 394.0,
+      "interval_p50_ms": 5.9332,
+      "interval_p95_ms": 17.245,
+      "interval_p99_ms": 19.9813,
+      "interval_max_ms": 24.6107,
+      "interval_count": 313,
+      "harness_loop_lag_p95_ms": 5.678,
+      "proxy_ping_p95_ms": 19.781
+    },
+    {
+      "elapsed_s": 20.06,
+      "proxy_rss_mib": 57.09,
+      "child_rss_mib": 10.88,
+      "total_rss_mib": 67.96,
+      "proxy_cpu_s": 1.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 570,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 16,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 1509.3,
+      "jsonl_kib": 686.2,
+      "interval_p50_ms": 7.1514,
+      "interval_p95_ms": 17.8455,
+      "interval_p99_ms": 20.9213,
+      "interval_max_ms": 31.2676,
+      "interval_count": 257,
+      "harness_loop_lag_p95_ms": 5.809,
+      "proxy_ping_p95_ms": 18.524
+    },
+    {
+      "elapsed_s": 30.11,
+      "proxy_rss_mib": 57.71,
+      "child_rss_mib": 10.88,
+      "total_rss_mib": 68.59,
+      "proxy_cpu_s": 1.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 848,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 24,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2107.0,
+      "jsonl_kib": 1074.7,
+      "interval_p50_ms": 6.0111,
+      "interval_p95_ms": 16.0922,
+      "interval_p99_ms": 19.4677,
+      "interval_max_ms": 21.5518,
+      "interval_count": 278,
+      "harness_loop_lag_p95_ms": 5.694,
+      "proxy_ping_p95_ms": 17.232
+    },
+    {
+      "elapsed_s": 40.16,
+      "proxy_rss_mib": 58.0,
+      "child_rss_mib": 10.88,
+      "total_rss_mib": 68.88,
+      "proxy_cpu_s": 2.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 1169,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 33,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2207.6,
+      "jsonl_kib": 1459.6,
+      "interval_p50_ms": 6.8917,
+      "interval_p95_ms": 16.1077,
+      "interval_p99_ms": 19.5675,
+      "interval_max_ms": 20.9631,
+      "interval_count": 321,
+      "harness_loop_lag_p95_ms": 6.369,
+      "proxy_ping_p95_ms": 19.883
+    },
+    {
+      "elapsed_s": 50.23,
+      "proxy_rss_mib": 58.11,
+      "child_rss_mib": 10.88,
+      "total_rss_mib": 68.98,
+      "proxy_cpu_s": 2.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 1428,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 40,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2596.6,
+      "jsonl_kib": 1753.3,
+      "interval_p50_ms": 4.7948,
+      "interval_p95_ms": 14.7602,
+      "interval_p99_ms": 19.3321,
+      "interval_max_ms": 21.5635,
+      "interval_count": 259,
+      "harness_loop_lag_p95_ms": 5.792,
+      "proxy_ping_p95_ms": 18.841
+    },
+    {
+      "elapsed_s": 60.28,
+      "proxy_rss_mib": 58.18,
+      "child_rss_mib": 10.88,
+      "total_rss_mib": 69.05,
+      "proxy_cpu_s": 2.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 1704,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 48,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2764.8,
+      "jsonl_kib": 2141.9,
+      "interval_p50_ms": 5.7371,
+      "interval_p95_ms": 16.5641,
+      "interval_p99_ms": 20.6645,
+      "interval_max_ms": 21.0313,
+      "interval_count": 276,
+      "harness_loop_lag_p95_ms": 5.849,
+      "proxy_ping_p95_ms": 21.031
+    },
+    {
+      "elapsed_s": 70.35,
+      "proxy_rss_mib": 58.2,
+      "child_rss_mib": 10.88,
+      "total_rss_mib": 69.07,
+      "proxy_cpu_s": 3.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 2004,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 56,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2933.7,
+      "jsonl_kib": 2480.8,
+      "interval_p50_ms": 6.7976,
+      "interval_p95_ms": 16.9011,
+      "interval_p99_ms": 19.8894,
+      "interval_max_ms": 22.248,
+      "interval_count": 300,
+      "harness_loop_lag_p95_ms": 4.804,
+      "proxy_ping_p95_ms": 17.478
+    },
+    {
+      "elapsed_s": 80.4,
+      "proxy_rss_mib": 58.2,
+      "child_rss_mib": 10.88,
+      "total_rss_mib": 69.07,
+      "proxy_cpu_s": 3.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 2259,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 63,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2933.7,
+      "jsonl_kib": 2820.3,
+      "interval_p50_ms": 4.0899,
+      "interval_p95_ms": 16.8641,
+      "interval_p99_ms": 21.5311,
+      "interval_max_ms": 22.3797,
+      "interval_count": 255,
+      "harness_loop_lag_p95_ms": 6.707,
+      "proxy_ping_p95_ms": 21.011
+    },
+    {
+      "elapsed_s": 90.5,
+      "proxy_rss_mib": 58.23,
+      "child_rss_mib": 10.88,
+      "total_rss_mib": 69.1,
+      "proxy_cpu_s": 4.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 2560,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 72,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2933.7,
+      "jsonl_kib": 3181.7,
+      "interval_p50_ms": 6.1339,
+      "interval_p95_ms": 19.1873,
+      "interval_p99_ms": 24.896,
+      "interval_max_ms": 26.2574,
+      "interval_count": 301,
+      "harness_loop_lag_p95_ms": 5.637,
+      "proxy_ping_p95_ms": 24.896
+    },
+    {
+      "elapsed_s": 100.56,
+      "proxy_rss_mib": 58.23,
+      "child_rss_mib": 10.88,
+      "total_rss_mib": 69.11,
+      "proxy_cpu_s": 4.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 1,
+      "success": 2857,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 80,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2945.7,
+      "jsonl_kib": 2478.5,
+      "interval_p50_ms": 5.4457,
+      "interval_p95_ms": 18.1651,
+      "interval_p99_ms": 20.9088,
+      "interval_max_ms": 21.8876,
+      "interval_count": 297,
+      "harness_loop_lag_p95_ms": 5.337,
+      "proxy_ping_p95_ms": 18.806
+    },
+    {
+      "elapsed_s": 110.61,
+      "proxy_rss_mib": 58.23,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.1,
+      "proxy_cpu_s": 5.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 3095,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 87,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2945.7,
+      "jsonl_kib": 2812.4,
+      "interval_p50_ms": 4.8414,
+      "interval_p95_ms": 19.965,
+      "interval_p99_ms": 22.697,
+      "interval_max_ms": 64.7292,
+      "interval_count": 238,
+      "harness_loop_lag_p95_ms": 5.829,
+      "proxy_ping_p95_ms": 22.151
+    },
+    {
+      "elapsed_s": 120.67,
+      "proxy_rss_mib": 58.48,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.35,
+      "proxy_cpu_s": 5.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 3416,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 96,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2945.7,
+      "jsonl_kib": 2149.8,
+      "interval_p50_ms": 4.663,
+      "interval_p95_ms": 16.7436,
+      "interval_p99_ms": 19.8383,
+      "interval_max_ms": 22.9296,
+      "interval_count": 321,
+      "harness_loop_lag_p95_ms": 5.576,
+      "proxy_ping_p95_ms": 19.968
+    },
+    {
+      "elapsed_s": 130.75,
+      "proxy_rss_mib": 58.48,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.35,
+      "proxy_cpu_s": 6.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 3706,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 104,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2945.7,
+      "jsonl_kib": 2489.3,
+      "interval_p50_ms": 5.0592,
+      "interval_p95_ms": 16.3529,
+      "interval_p99_ms": 20.8617,
+      "interval_max_ms": 21.2012,
+      "interval_count": 290,
+      "harness_loop_lag_p95_ms": 5.647,
+      "proxy_ping_p95_ms": 20.826
+    },
+    {
+      "elapsed_s": 140.79,
+      "proxy_rss_mib": 58.48,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.35,
+      "proxy_cpu_s": 6.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 3959,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 111,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2945.7,
+      "jsonl_kib": 2817.4,
+      "interval_p50_ms": 5.2714,
+      "interval_p95_ms": 17.9654,
+      "interval_p99_ms": 26.6554,
+      "interval_max_ms": 27.0955,
+      "interval_count": 253,
+      "harness_loop_lag_p95_ms": 6.378,
+      "proxy_ping_p95_ms": 26.88
+    },
+    {
+      "elapsed_s": 150.92,
+      "proxy_rss_mib": 58.48,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.35,
+      "proxy_cpu_s": 7.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 4272,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 120,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2945.7,
+      "jsonl_kib": 2154.6,
+      "interval_p50_ms": 6.1038,
+      "interval_p95_ms": 16.3857,
+      "interval_p99_ms": 23.7109,
+      "interval_max_ms": 25.0339,
+      "interval_count": 313,
+      "harness_loop_lag_p95_ms": 5.595,
+      "proxy_ping_p95_ms": 24.803
+    },
+    {
+      "elapsed_s": 160.98,
+      "proxy_rss_mib": 58.48,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.35,
+      "proxy_cpu_s": 7.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 4531,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 127,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2945.7,
+      "jsonl_kib": 2481.9,
+      "interval_p50_ms": 4.7257,
+      "interval_p95_ms": 17.9463,
+      "interval_p99_ms": 20.5094,
+      "interval_max_ms": 21.2081,
+      "interval_count": 259,
+      "harness_loop_lag_p95_ms": 5.73,
+      "proxy_ping_p95_ms": 20.51
+    },
+    {
+      "elapsed_s": 171.05,
+      "proxy_rss_mib": 58.48,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.35,
+      "proxy_cpu_s": 8.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 4807,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 135,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2945.7,
+      "jsonl_kib": 2828.3,
+      "interval_p50_ms": 6.0223,
+      "interval_p95_ms": 18.6065,
+      "interval_p99_ms": 24.4973,
+      "interval_max_ms": 31.6104,
+      "interval_count": 276,
+      "harness_loop_lag_p95_ms": 4.69,
+      "proxy_ping_p95_ms": 24.493
+    },
+    {
+      "elapsed_s": 181.11,
+      "proxy_rss_mib": 58.48,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.35,
+      "proxy_cpu_s": 8.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 5128,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 144,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2945.7,
+      "jsonl_kib": 2183.7,
+      "interval_p50_ms": 6.7721,
+      "interval_p95_ms": 17.166,
+      "interval_p99_ms": 19.234,
+      "interval_max_ms": 23.9022,
+      "interval_count": 321,
+      "harness_loop_lag_p95_ms": 7.015,
+      "proxy_ping_p95_ms": 19.284
+    },
+    {
+      "elapsed_s": 191.15,
+      "proxy_rss_mib": 58.54,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.41,
+      "proxy_cpu_s": 8.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 5383,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 151,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2957.7,
+      "jsonl_kib": 2473.8,
+      "interval_p50_ms": 6.7258,
+      "interval_p95_ms": 18.0606,
+      "interval_p99_ms": 23.318,
+      "interval_max_ms": 24.3781,
+      "interval_count": 255,
+      "harness_loop_lag_p95_ms": 5.616,
+      "proxy_ping_p95_ms": 24.108
+    },
+    {
+      "elapsed_s": 201.21,
+      "proxy_rss_mib": 58.54,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.41,
+      "proxy_cpu_s": 9.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 5663,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 159,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2957.7,
+      "jsonl_kib": 2862.3,
+      "interval_p50_ms": 6.0237,
+      "interval_p95_ms": 16.259,
+      "interval_p99_ms": 20.0884,
+      "interval_max_ms": 23.7426,
+      "interval_count": 280,
+      "harness_loop_lag_p95_ms": 5.353,
+      "proxy_ping_p95_ms": 19.879
+    },
+    {
+      "elapsed_s": 211.29,
+      "proxy_rss_mib": 58.54,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.41,
+      "proxy_cpu_s": 9.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 5961,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 167,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2957.7,
+      "jsonl_kib": 3180.6,
+      "interval_p50_ms": 6.535,
+      "interval_p95_ms": 18.8239,
+      "interval_p99_ms": 56.5135,
+      "interval_max_ms": 70.5182,
+      "interval_count": 298,
+      "harness_loop_lag_p95_ms": 5.68,
+      "proxy_ping_p95_ms": 52.429
+    },
+    {
+      "elapsed_s": 221.37,
+      "proxy_rss_mib": 58.56,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.43,
+      "proxy_cpu_s": 10.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 6215,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 174,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2985.7,
+      "jsonl_kib": 2479.6,
+      "interval_p50_ms": 5.0513,
+      "interval_p95_ms": 16.5834,
+      "interval_p99_ms": 20.0524,
+      "interval_max_ms": 22.01,
+      "interval_count": 254,
+      "harness_loop_lag_p95_ms": 6.221,
+      "proxy_ping_p95_ms": 19.804
+    },
+    {
+      "elapsed_s": 231.44,
+      "proxy_rss_mib": 58.56,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.43,
+      "proxy_cpu_s": 10.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 6519,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 183,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2985.7,
+      "jsonl_kib": 2850.5,
+      "interval_p50_ms": 7.9022,
+      "interval_p95_ms": 17.0628,
+      "interval_p99_ms": 22.7385,
+      "interval_max_ms": 23.5598,
+      "interval_count": 304,
+      "harness_loop_lag_p95_ms": 5.521,
+      "proxy_ping_p95_ms": 22.185
+    },
+    {
+      "elapsed_s": 241.48,
+      "proxy_rss_mib": 58.59,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.46,
+      "proxy_cpu_s": 11.0,
+      "child_cpu_s": 0.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 6807,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 191,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2985.7,
+      "jsonl_kib": 2139.1,
+      "interval_p50_ms": 5.4987,
+      "interval_p95_ms": 17.4116,
+      "interval_p99_ms": 19.9532,
+      "interval_max_ms": 21.6102,
+      "interval_count": 288,
+      "harness_loop_lag_p95_ms": 5.683,
+      "proxy_ping_p95_ms": 19.943
+    },
+    {
+      "elapsed_s": 251.58,
+      "proxy_rss_mib": 58.62,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.5,
+      "proxy_cpu_s": 11.0,
+      "child_cpu_s": 1.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 7054,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 198,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2985.7,
+      "jsonl_kib": 2473.0,
+      "interval_p50_ms": 7.474,
+      "interval_p95_ms": 19.2806,
+      "interval_p99_ms": 20.3409,
+      "interval_max_ms": 22.0301,
+      "interval_count": 247,
+      "harness_loop_lag_p95_ms": 5.662,
+      "proxy_ping_p95_ms": 20.336
+    },
+    {
+      "elapsed_s": 261.65,
+      "proxy_rss_mib": 58.62,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.5,
+      "proxy_cpu_s": 12.0,
+      "child_cpu_s": 1.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 7375,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 207,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2985.7,
+      "jsonl_kib": 2866.5,
+      "interval_p50_ms": 6.6774,
+      "interval_p95_ms": 17.3127,
+      "interval_p99_ms": 20.1358,
+      "interval_max_ms": 23.2514,
+      "interval_count": 321,
+      "harness_loop_lag_p95_ms": 6.086,
+      "proxy_ping_p95_ms": 17.553
+    },
+    {
+      "elapsed_s": 271.7,
+      "proxy_rss_mib": 58.62,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.5,
+      "proxy_cpu_s": 12.0,
+      "child_cpu_s": 1.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 7664,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 215,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2985.7,
+      "jsonl_kib": 2148.8,
+      "interval_p50_ms": 5.8175,
+      "interval_p95_ms": 18.1943,
+      "interval_p99_ms": 20.7872,
+      "interval_max_ms": 24.4955,
+      "interval_count": 289,
+      "harness_loop_lag_p95_ms": 5.242,
+      "proxy_ping_p95_ms": 20.787
+    },
+    {
+      "elapsed_s": 281.78,
+      "proxy_rss_mib": 58.62,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.5,
+      "proxy_cpu_s": 13.0,
+      "child_cpu_s": 1.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 7910,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 222,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2985.7,
+      "jsonl_kib": 2482.9,
+      "interval_p50_ms": 6.5346,
+      "interval_p95_ms": 17.5675,
+      "interval_p99_ms": 19.4562,
+      "interval_max_ms": 23.0226,
+      "interval_count": 246,
+      "harness_loop_lag_p95_ms": 5.432,
+      "proxy_ping_p95_ms": 18.603
+    },
+    {
+      "elapsed_s": 291.85,
+      "proxy_rss_mib": 58.62,
+      "child_rss_mib": 10.87,
+      "total_rss_mib": 69.5,
+      "proxy_cpu_s": 13.0,
+      "child_cpu_s": 1.0,
+      "open_fds": 19,
+      "descendant_count": 1,
+      "outstanding_requests": 0,
+      "success": 8231,
+      "failed": 0,
+      "timed_out": 0,
+      "secret_verified": 231,
+      "secret_leaked": 0,
+      "telemetry_drops": 0,
+      "sqlite_kib": 2985.7,
+      "jsonl_kib": 2882.7,
+      "interval_p50_ms": 5.3991,
+      "interval_p95_ms": 18.0691,
+      "interval_p99_ms": 21.7483,
+      "interval_max_ms": 22.9924,
+      "interval_count": 321,
+      "harness_loop_lag_p95_ms": 5.342,
+      "proxy_ping_p95_ms": 21.783
+    }
+  ],
+  "verdict": {
+    "passed": true,
+    "reasons": [],
+    "limitations": [
+      "bounded_retention_completeness_unverified",
+      "jsonl_rotation_pruning_unverifiable",
+      "jsonl_missing_identities:13489",
+      "sqlite_pruning_unverifiable_without_per_kind_accounting",
+      "sqlite_missing_identities:15095"
+    ]
+  }
+}
