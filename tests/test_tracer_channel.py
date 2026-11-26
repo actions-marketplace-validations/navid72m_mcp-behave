@@ -162,7 +162,15 @@ def test_tracer_burst_and_cleanup():
         try:
             count = 200
             for i in range(count):
-                client_sock.sendto(f"F /tmp/file_{i}.txt\n".encode(), server.sock_path)
+                payload = f"F /tmp/file_{i}.txt\n".encode()
+                while True:
+                    try:
+                        client_sock.sendto(payload, server.sock_path)
+                        break
+                    except BlockingIOError:
+                        # Yield to the event loop so TracerServer drains the datagram socket
+                        # when OS AF_UNIX max_dgram_qlen < burst count (e.g. Linux default).
+                        await asyncio.sleep(0.001)
 
             await asyncio.sleep(0.1)
             assert len(events) == count
