@@ -1,3 +1,4 @@
+# EXAMPLE WORKFLOW — validated syntactically and via local Docker reproduction; not executed on GitHub-hosted CI runners.
 name: Behavioral Audit (mcp-behave)
 
 on:
