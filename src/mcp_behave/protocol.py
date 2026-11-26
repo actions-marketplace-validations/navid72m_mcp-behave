@@ -315,6 +315,8 @@ class ProtocolMonitor:
         try:
             self._line_queue.put_nowait((line_bytes, direction, now))
         except queue.Full:
+            if self.attribution_engine and hasattr(self.attribution_engine, "record_queue_drop"):
+                self.attribution_engine.record_queue_drop(direction, len(line_bytes), now)
             drop_event = BehavioralEvent(
                 event="telemetry_drop",
                 session_id=self.session_id,
@@ -338,6 +340,8 @@ class ProtocolMonitor:
         try:
             self._line_queue.put_nowait((line_bytes, direction, now))
         except queue.Full:
+            if self.attribution_engine and hasattr(self.attribution_engine, "record_queue_drop"):
+                self.attribution_engine.record_queue_drop(direction, len(line_bytes), now)
             drop_event = BehavioralEvent(
                 event="telemetry_drop",
                 session_id=self.session_id,

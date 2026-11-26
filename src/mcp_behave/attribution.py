@@ -95,12 +95,17 @@ class AttributionEngine:
         self._ctx_buffered_bytes: Dict[Union[int, str], int] = {}
         self._evicted_read_only_tools: Dict[str, float] = {}
         self._evicted_closed_world_tools: Dict[str, float] = {}
+        self._eviction_uncertainty_active: bool = False
+        self._evicted_read_only_ever: bool = False
+        self._evicted_closed_world_ever: bool = False
+        self._evicted_policy_overflow: bool = False
         self._last_eviction_ts: Optional[float] = None
         self._unparseable_gap_active: bool = False
         self._last_gap_emit_ts: Dict[str, float] = {}
         self.evicted_stale_calls: int = 0
         self.evicted_overflow_calls: int = 0
         self.unparseable_protocol_messages: int = 0
+        self.dropped_monitor_lines: int = 0
         self.dropped_observed_events: int = 0
         self.incomplete_attribution: bool = False
 
@@ -119,32 +124,34 @@ class AttributionEngine:
 
     def _track_evicted_policies_locked(self, ctx: ToolCallContext, now: float) -> None:
         self._last_eviction_ts = now
+        self._eviction_uncertainty_active = True
         if ctx.annotations.get("readOnlyHint", False):
+            self._evicted_read_only_ever = True
             if ctx.tool_name not in self._evicted_read_only_tools and len(self._evicted_read_only_tools) >= self.max_evicted_policies:
                 oldest = next(iter(self._evicted_read_only_tools))
                 self._evicted_read_only_tools.pop(oldest, None)
+                self._evicted_policy_overflow = True
+            self._evicted_read_only_tools.pop(ctx.tool_name, None)
             self._evicted_read_only_tools[ctx.tool_name] = now
         if not ctx.annotations.get("openWorldHint", True):
+            self._evicted_closed_world_ever = True
             if ctx.tool_name not in self._evicted_closed_world_tools and len(self._evicted_closed_world_tools) >= self.max_evicted_policies:
                 oldest = next(iter(self._evicted_closed_world_tools))
                 self._evicted_closed_world_tools.pop(oldest, None)
+                self._evicted_policy_overflow = True
+            self._evicted_closed_world_tools.pop(ctx.tool_name, None)
             self._evicted_closed_world_tools[ctx.tool_name] = now
 
     def _prune_evicted_policies_locked(self, now: float) -> None:
-        """Expire retained evicted-call uncertainty after evicted_policy_ttl."""
+        """Bound retained evicted-tool names after evicted_policy_ttl without clearing sticky uncertainty."""
         if self.evicted_policy_ttl <= 0.0:
             return
         for store in (self._evicted_read_only_tools, self._evicted_closed_world_tools):
             expired = [t for t, ts in store.items() if (now - ts) > self.evicted_policy_ttl]
+            if expired:
+                self._evicted_policy_overflow = True
             for t in expired:
                 store.pop(t, None)
-        if (
-            self._last_eviction_ts is not None
-            and (now - self._last_eviction_ts) > self.evicted_policy_ttl
-            and not self._evicted_read_only_tools
-            and not self._evicted_closed_world_tools
-        ):
-            self._last_eviction_ts = None
 
     def record_unparseable_message(self, direction: str, size_bytes: int, now: float) -> None:
         """Mark attribution incomplete when a protocol message cannot be parsed."""
@@ -163,12 +170,37 @@ class AttributionEngine:
         if gap_evt and self.on_event_fn:
             self.on_event_fn(gap_evt)
 
-    def on_protocol_resync(self) -> bool:
-        """Clear protocol-gap uncertainty only at a clean resynchronization boundary (no active calls)."""
+    def record_queue_drop(self, direction: str, dropped_bytes: int = 0, now: Optional[float] = None) -> None:
+        """Mark attribution incomplete when monitor queue overflow drops protocol lines."""
+        ts = now if now is not None else time.time()
+        gap_evt: Optional[BehavioralEvent] = None
         with self._lock:
-            if self._active_calls:
+            self.dropped_monitor_lines += 1
+            self._unparseable_gap_active = True
+            self.incomplete_attribution = True
+            if self._should_emit_gap_locked("monitor_queue_drop", ts):
+                gap_evt = self._build_incomplete_event(
+                    "monitor_queue_drop",
+                    f"Monitor queue dropped {direction} protocol line ({dropped_bytes} bytes); attribution coverage is incomplete.",
+                    timestamp=ts,
+                    extra={"direction": direction, "size_bytes": dropped_bytes},
+                )
+        if gap_evt and self.on_event_fn:
+            self.on_event_fn(gap_evt)
+
+    def on_protocol_resync(self, *, trusted_boundary: bool = False) -> bool:
+        """Clear session uncertainty only at a demonstrably trustworthy lifecycle boundary with no active calls."""
+        with self._lock:
+            if not trusted_boundary or self._active_calls:
                 return False
             self._unparseable_gap_active = False
+            self._eviction_uncertainty_active = False
+            self._evicted_read_only_ever = False
+            self._evicted_closed_world_ever = False
+            self._evicted_policy_overflow = False
+            self._evicted_read_only_tools.clear()
+            self._evicted_closed_world_tools.clear()
+            self._last_eviction_ts = None
             return True
 
     def _should_emit_gap_locked(self, reason: str, now: float) -> bool:
@@ -416,7 +448,8 @@ class AttributionEngine:
             active = list(self._active_calls.values())
             prior_evictions = self.evicted_stale_calls + self.evicted_overflow_calls
             has_eviction_uncertainty = (
-                self._last_eviction_ts is not None
+                self._eviction_uncertainty_active
+                or self._last_eviction_ts is not None
                 or bool(self._evicted_read_only_tools)
                 or bool(self._evicted_closed_world_tools)
             )
@@ -500,10 +533,34 @@ class AttributionEngine:
                 violations.extend(bg_violations)
 
             # Evaluate retained evicted-call policies across ALL active-call counts (0, 1, or >1),
-            # avoiding duplicate findings when an active call already triggered the same category.
+            # preserving evicted candidate awareness even when an active call already triggered the category.
             if has_eviction_uncertainty:
                 has_ro = any(v.payload.get("category") == "read_only_violation" for v in violations)
                 has_ow = any(v.payload.get("category") == "open_world_violation" for v in violations)
+                if has_ro and (self._evicted_read_only_tools or self._evicted_read_only_ever):
+                    ro_cands = list(self._evicted_read_only_tools.keys())
+                    for v in violations:
+                        if v.payload.get("category") == "read_only_violation":
+                            existing = list(v.payload.get("candidate_tools") or [])
+                            for t in ro_cands:
+                                if t not in existing:
+                                    existing.append(t)
+                            if existing:
+                                v.payload["candidate_tools"] = existing
+                            if self._evicted_policy_overflow:
+                                v.payload["evicted_policy_overflow"] = True
+                if has_ow and (self._evicted_closed_world_tools or self._evicted_closed_world_ever):
+                    ow_cands = list(self._evicted_closed_world_tools.keys())
+                    for v in violations:
+                        if v.payload.get("category") == "open_world_violation":
+                            existing = list(v.payload.get("candidate_tools") or [])
+                            for t in ow_cands:
+                                if t not in existing:
+                                    existing.append(t)
+                            if existing:
+                                v.payload["candidate_tools"] = existing
+                            if self._evicted_policy_overflow:
+                                v.payload["evicted_policy_overflow"] = True
                 violations.extend(
                     self._evaluate_evicted_tool_policies_locked(
                         event,
@@ -639,7 +696,7 @@ class AttributionEngine:
     ) -> List[BehavioralEvent]:
         """Propagate safety-hint policy checks from evicted uncompleted calls across any active-call count."""
         violations: List[BehavioralEvent] = []
-        if not skip_read_only and event.event == EVENT_FILE_WRITE and self._evicted_read_only_tools:
+        if not skip_read_only and event.event == EVENT_FILE_WRITE and (self._evicted_read_only_tools or self._evicted_read_only_ever):
             tools = list(self._evicted_read_only_tools.keys())
             payload: Dict[str, Any] = {
                 "category": "read_only_violation",
@@ -648,10 +705,12 @@ class AttributionEngine:
                 "declared_read_only": True,
                 "action": "file_write",
                 "attribution_incomplete": True,
-                "message": f"File write to '{event.target}' occurred while uncompleted readOnlyHint=True tool(s) {tools} were evicted.",
+                "message": f"File write to '{event.target}' occurred while uncompleted readOnlyHint=True tool(s) {tools or ['<evicted>']} were evicted.",
                 "would_block": True,
                 "enforce": self.enforce,
             }
+            if self._evicted_policy_overflow:
+                payload["evicted_policy_overflow"] = True
             if active_tools:
                 payload["active_tools"] = list(active_tools)
             violations.append(
@@ -670,7 +729,7 @@ class AttributionEngine:
                     payload=payload,
                 )
             )
-        if not skip_open_world and event.event == EVENT_NETWORK_CONNECT and self._evicted_closed_world_tools:
+        if not skip_open_world and event.event == EVENT_NETWORK_CONNECT and (self._evicted_closed_world_tools or self._evicted_closed_world_ever):
             if not is_loopback_address(event.destination_ip):
                 tools = list(self._evicted_closed_world_tools.keys())
                 payload = {
@@ -681,10 +740,12 @@ class AttributionEngine:
                     "declared_open_world": False,
                     "action": "network_connect",
                     "attribution_incomplete": True,
-                    "message": f"Outbound network connect to '{event.destination_ip}:{event.destination_port}' occurred while uncompleted openWorldHint=False tool(s) {tools} were evicted.",
+                    "message": f"Outbound network connect to '{event.destination_ip}:{event.destination_port}' occurred while uncompleted openWorldHint=False tool(s) {tools or ['<evicted>']} were evicted.",
                     "would_block": True,
                     "enforce": self.enforce,
                 }
+                if self._evicted_policy_overflow:
+                    payload["evicted_policy_overflow"] = True
                 if active_tools:
                     payload["active_tools"] = list(active_tools)
                 violations.append(

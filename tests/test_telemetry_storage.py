@@ -328,6 +328,51 @@ def test_sr06_retention_protects_active_writers_and_detects_external_unlink(tmp_
     assert store3.jsonl_file.exists()
     assert "post_unlink" in store3.jsonl_file.read_text(encoding="utf-8")
 
+    # 3. External replacement at rotation threshold must NOT silently archive replacement file
+    store4 = TelemetryStore("sr06-s4", "srv", state_dir=tmp_path, max_jsonl_bytes=1)
+    store4.close(timeout=3.0)
+    fp4 = store4._open_jsonl()
+    try:
+        fp4 = store4._flush_batch([BehavioralEvent(event="first")], fp4, None)
+        assert fp4 is not None
+        store4.jsonl_file.unlink()
+        store4.jsonl_file.write_text("replacement\n", encoding="utf-8")
+        fp4 = store4._flush_batch([BehavioralEvent(event="second")], fp4, None)
+    finally:
+        if fp4 is not None:
+            fp4.close()
+    health4 = store4.get_storage_health()
+    assert health4["storage_degraded"] is True
+    assert health4["complete_observation"] is False
+    assert not (store4.sessions_dir / "sr06-s4.jsonl.1").exists()
+
+    # 4. Raw fd is closed if stream open() fails in _open_jsonl
+    import mcp_behave.telemetry as tel_mod
+    store5 = TelemetryStore("sr06-s5", "srv", state_dir=tmp_path)
+    store5.close(timeout=3.0)
+    opened_fds = []
+    orig_open = open
+    def fail_stream_open(fd, *args, **kwargs):
+        if isinstance(fd, int):
+            opened_fds.append(fd)
+            raise OSError("injected open failure")
+        return orig_open(fd, *args, **kwargs)
+    orig_mod_open = getattr(tel_mod, "open", None)
+    tel_mod.open = fail_stream_open
+    try:
+        assert store5._open_jsonl() is None
+    finally:
+        if orig_mod_open is None:
+            delattr(tel_mod, "open")
+        else:
+            tel_mod.open = orig_mod_open
+    assert len(opened_fds) == 1
+    try:
+        os.fstat(opened_fds[0])
+        assert False, "raw fd leaked after stream open failure"
+    except OSError:
+        pass
+
 
 def test_sr07_sqlite_retention_preserves_exact_newest_n_rows(tmp_path):
     """SR-07: SQLite pruning preserves exactly newest N rows for N=1, small N, noncontiguous IDs, and N=0."""
@@ -433,14 +478,17 @@ def test_sr08_soak_verdict_reconciliation_repro_and_bounded_stderr(tmp_path, mon
         v = soak_wrap.evaluate_soak_verdict(rep)
         assert v["passed"] is False and len(v["reasons"]) >= 1
 
-    # Missing telemetry_completeness is explicitly recorded in limitations
+    # Missing or empty telemetry_completeness MUST fail verdict
     rep_no_tel = base_report()
     rep_no_tel["summary"].pop("telemetry_completeness")
     v_no_tel = soak_wrap.evaluate_soak_verdict(rep_no_tel)
-    assert "telemetry_completeness_unavailable" in v_no_tel["limitations"]
+    assert v_no_tel["passed"] is False
+    assert "telemetry_completeness_missing_or_empty" in v_no_tel["reasons"]
+    rep_empty_tel = base_report()
+    rep_empty_tel["summary"]["telemetry_completeness"] = {}
+    assert soak_wrap.evaluate_soak_verdict(rep_empty_tel)["passed"] is False
 
-    # 3. verify_telemetry_completeness: rotated archives + intentional SQLite pruning reconcile cleanly,
-    #    while unexpected shortfall below cap fails reconciliation.
+    # 3. verify_telemetry_completeness: exact protocol-event counts reconcile; archives/cap alone do NOT.
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     (sessions_dir / "s.jsonl").write_text('{"kind":"protocol_request"}\n{"kind":"protocol_response"}\n', encoding="utf-8")
@@ -452,13 +500,19 @@ def test_sr08_soak_verdict_reconciliation_repro_and_bounded_stderr(tmp_path, mon
             conn.execute("INSERT INTO events (kind) VALUES (?)", ("protocol_request" if i % 2 == 0 else "protocol_response",))
         conn.commit()
 
-    rec_ok = soak_wrap.verify_telemetry_completeness(
+    rec_exact = soak_wrap.verify_telemetry_completeness(
+        tmp_path, 4, max_jsonl_bytes=100, max_jsonl_backups=1, max_sqlite_events=4
+    )
+    assert rec_exact["rotated_jsonl_files"] == 1
+    assert rec_exact["jsonl_protocol_events"] == 4
+    assert rec_exact["unexpected_loss"] is False
+    assert rec_exact["reconciled"] is True
+
+    # Archives + DB at cap with fewer protocol rows than expected -> unverifiable, NOT reconciled
+    rec_unverified = soak_wrap.verify_telemetry_completeness(
         tmp_path, 10, max_jsonl_bytes=100, max_jsonl_backups=1, max_sqlite_events=4
     )
-    assert rec_ok["rotated_jsonl_files"] == 1
-    assert rec_ok["jsonl_protocol_events"] == 4
-    assert rec_ok["unexpected_loss"] is False
-    assert rec_ok["reconciled"] is True
+    assert rec_unverified["reconciled"] is False
 
     rec_bad = soak_wrap.verify_telemetry_completeness(
         tmp_path, 10, max_jsonl_bytes=100, max_jsonl_backups=1, max_sqlite_events=50
@@ -472,12 +526,21 @@ def test_sr08_soak_verdict_reconciliation_repro_and_bounded_stderr(tmp_path, mon
     assert meta["python_version"]
     assert meta["os"]
 
-    # 5. Heavy stderr output does not stall subprocess or exceed bounded deque size
+    # 5. Unavailable process inventory is distinguished from verified absence
+    import subprocess as sp_mod
+    monkeypatch.setattr(soak_wrap.subprocess, "check_output", lambda *a, **k: (_ for _ in ()).throw(PermissionError("denied")))
+    unavail = soak_wrap.sample_tree_with_pids(100)
+    assert unavail["inventory_available"] is False
+    monkeypatch.setattr(soak_wrap.subprocess, "check_output", lambda *a, **k: "101 1 8192 00:00.00\n")
+    absent = soak_wrap.sample_tree_with_pids(100)
+    assert absent["inventory_available"] is True and absent["root_present"] is False
+
+    # 6. Heavy & oversized (>64 KiB line) stderr output does not stall or abort drainage
     async def run_noisy_stderr():
         proc = await asyncio.create_subprocess_exec(
             os.sys.executable,
             "-c",
-            "import sys; [sys.stderr.write('noise-' + str(i) + '\\n') for i in range(5000)]; sys.stderr.flush()",
+            "import sys; sys.stderr.write('x'*70000 + '\\n'); [sys.stderr.write('noise-' + str(i) + '\\n') for i in range(5000)]; sys.stderr.flush()",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )

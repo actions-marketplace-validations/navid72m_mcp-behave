@@ -391,6 +391,8 @@ class TelemetryStore:
 
     def _open_jsonl(self):
         """Open active session JSONL file with 0o600 permissions inside sessions_dir."""
+        fd: Optional[int] = None
+        fp = None
         try:
             if self.jsonl_file.resolve().parent != self.sessions_dir.resolve():
                 raise ValueError("jsonl_file escaped sessions_dir")
@@ -401,12 +403,13 @@ class TelemetryStore:
                 except OSError:
                     pass
             fp = open(fd, "a", encoding="utf-8")
+            fd = None  # ownership transferred to fp
             try:
                 os.chmod(self.jsonl_file, 0o600)
             except OSError:
                 pass
             try:
-                st = os.fstat(fd)
+                st = os.fstat(fp.fileno())
                 self._jsonl_bytes_written = st.st_size
                 self._active_jsonl_stat = (st.st_dev, st.st_ino)
             except OSError:
@@ -414,6 +417,16 @@ class TelemetryStore:
                 self._active_jsonl_stat = None
             return fp
         except Exception as exc:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if fp is not None:
+                try:
+                    fp.close()
+                except Exception:
+                    pass
             self._active_jsonl_stat = None
             self._record_storage_error("jsonl", exc)
             return None
@@ -591,10 +604,7 @@ class TelemetryStore:
         db_conn: Optional[sqlite3.Connection],
     ):
         """Write a batch of events to JSONL (with rotation) and SQLite."""
-        # 1. JSONL
-        if self.max_jsonl_bytes > 0 and self._jsonl_bytes_written >= self.max_jsonl_bytes:
-            jsonl_fp = self._rotate_jsonl(jsonl_fp)
-
+        # 1. JSONL: verify active file identity BEFORE rotation so external replacement is never silently archived
         jsonl_ok = False
         if jsonl_fp is not None and self._active_jsonl_stat is not None:
             try:
@@ -609,6 +619,9 @@ class TelemetryStore:
                     pass
                 jsonl_fp = None
                 self._active_jsonl_stat = None
+
+        if jsonl_fp is not None and self.max_jsonl_bytes > 0 and self._jsonl_bytes_written >= self.max_jsonl_bytes:
+            jsonl_fp = self._rotate_jsonl(jsonl_fp)
 
         if jsonl_fp is None:
             jsonl_fp = self._open_jsonl()

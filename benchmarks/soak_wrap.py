@@ -91,8 +91,8 @@ def sample_tree_with_pids(root_pid: int) -> Dict[str, Any]:
             stderr=subprocess.DEVNULL,
             timeout=2.0,
         )
-    except Exception:
-        return {}
+    except Exception as exc:
+        return {"inventory_available": False, "error": repr(exc)}
 
     from bench_wrap import _parse_ps_cputime
 
@@ -113,7 +113,7 @@ def sample_tree_with_pids(root_pid: int) -> Dict[str, Any]:
         stats[pid] = (rss_kib, cpu_s)
 
     if root_pid not in stats:
-        return {}
+        return {"inventory_available": True, "root_present": False}
 
     root_rss, root_cpu = stats[root_pid]
     desc_pids: List[int] = []
@@ -132,6 +132,8 @@ def sample_tree_with_pids(root_pid: int) -> Dict[str, Any]:
     desc_cpu = sum(stats[p][1] for p in desc_pids)
     all_pids = [root_pid] + desc_pids
     return {
+        "inventory_available": True,
+        "root_present": True,
         "root_rss_kib": root_rss,
         "desc_rss_kib": desc_rss,
         "total_rss_kib": root_rss + desc_rss,
@@ -175,19 +177,48 @@ async def _drain_stderr_bounded(
     stream: Optional[asyncio.StreamReader],
     tail: Deque[str],
     max_line_bytes: int = 512,
+    chunk_size: int = 8192,
 ) -> None:
-    """Drain subprocess stderr asynchronously into a bounded ring buffer to prevent pipe stalls."""
+    """Drain subprocess stderr in bounded chunks so oversized lines never stall or abort drainage."""
     if stream is None:
         return
+    buf = bytearray()
+    oversized = False
     try:
         while True:
-            raw = await stream.readline()
-            if not raw:
+            chunk = await stream.read(chunk_size)
+            if not chunk:
                 break
-            if len(raw) > max_line_bytes:
-                line = raw[:max_line_bytes].decode("utf-8", errors="replace").rstrip("\r\n") + "...[truncated]"
-            else:
-                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            start = 0
+            while start < len(chunk):
+                nl = chunk.find(b"\n", start)
+                if nl == -1:
+                    seg = chunk[start:]
+                    if not oversized:
+                        rem = max_line_bytes - len(buf)
+                        if rem > 0:
+                            buf.extend(seg[:rem])
+                        if len(seg) > rem:
+                            oversized = True
+                    break
+                seg = chunk[start:nl]
+                if not oversized:
+                    rem = max_line_bytes - len(buf)
+                    if rem > 0:
+                        buf.extend(seg[:rem])
+                    if len(seg) > rem:
+                        oversized = True
+                line = bytes(buf).decode("utf-8", errors="replace").rstrip("\r")
+                if oversized:
+                    line += "...[truncated]"
+                tail.append(line)
+                buf.clear()
+                oversized = False
+                start = nl + 1
+        if buf or oversized:
+            line = bytes(buf).decode("utf-8", errors="replace").rstrip("\r")
+            if oversized:
+                line += "...[truncated]"
             tail.append(line)
     except asyncio.CancelledError:
         raise
@@ -248,15 +279,22 @@ def collect_reproducibility_metadata(mode: str = "enforce_redact") -> Dict[str, 
     if mode == "no_trace":
         tracer_backend = "disabled"
         tracer_bin: Optional[Path] = None
-    elif sys_name == "Darwin":
-        tracer_backend = "macos_dyld"
-        tracer_bin = SRC_DIR / "mcp_behave" / "c_tracer" / "macos_tracer.dylib"
-    elif sys_name == "Linux":
-        tracer_backend = "linux_ld_preload"
-        tracer_bin = SRC_DIR / "mcp_behave" / "c_tracer" / "linux_tracer.so"
     else:
-        tracer_backend = f"unsupported_{sys_name.lower()}"
-        tracer_bin = None
+        from mcp_behave.probe import _tracer_cache_dir
+
+        if sys_name == "Darwin":
+            tracer_backend = "macos_dyld"
+            tracer_bin = Path(_tracer_cache_dir()) / "libmcpbehave_trace.dylib"
+            if not tracer_bin.is_file():
+                tracer_bin = SRC_DIR / "mcp_behave" / "c_tracer" / "macos_tracer.dylib"
+        elif sys_name == "Linux":
+            tracer_backend = "linux_ld_preload"
+            tracer_bin = Path(_tracer_cache_dir()) / "libmcpbehave_trace.so"
+            if not tracer_bin.is_file():
+                tracer_bin = SRC_DIR / "mcp_behave" / "c_tracer" / "linux_tracer.so"
+        else:
+            tracer_backend = f"unsupported_{sys_name.lower()}"
+            tracer_bin = None
 
     return {
         "git_commit": git_commit,
@@ -307,13 +345,18 @@ def verify_telemetry_completeness(
                     if not line:
                         continue
                     jsonl_total += 1
-                    if '"telemetry_drop"' in line:
-                        try:
-                            obj = json.loads(line)
-                            drops += int((obj.get("payload") or {}).get("dropped_count", 1))
-                        except Exception:
-                            drops += 1
-                    if '"protocol_request"' in line or '"protocol_response"' in line:
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        jsonl_read_errors += 1
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    kind = obj.get("kind")
+                    event_name = obj.get("event")
+                    if kind == "telemetry_drop" or event_name == "telemetry_drop":
+                        drops += int((obj.get("payload") or {}).get("dropped_count", 1))
+                    if kind in ("protocol_request", "protocol_response"):
                         jsonl_protocol += 1
             except OSError:
                 jsonl_read_errors += 1
@@ -335,8 +378,9 @@ def verify_telemetry_completeness(
         sqlite_error = "missing_telemetry_db"
 
     limitations: List[str] = []
-    # JSONL reconciliation
-    jsonl_rotation_pruned = bool(
+    # JSONL reconciliation: require exact protocol-event coverage unless an explicit
+    # bounded-retention configuration is unverifiable without per-archive drop/event accounting.
+    jsonl_rotation_configured = bool(
         rotated_jsonl_files > 0
         or (
             max_jsonl_bytes is not None
@@ -357,17 +401,18 @@ def verify_telemetry_completeness(
     elif jsonl_protocol >= expected_protocol_events:
         jsonl_unexpected_loss = False
         jsonl_reconciled = True
-    elif jsonl_rotation_pruned and jsonl_protocol > 0:
+    elif jsonl_rotation_configured:
+        # Cannot prove missing protocol events or archived drop markers were only removed by rotation
         jsonl_unexpected_loss = False
-        jsonl_reconciled = True
-        limitations.append("jsonl_older_archives_pruned_by_rotation")
+        jsonl_reconciled = False
+        limitations.append("jsonl_rotation_pruning_unverifiable")
     else:
         jsonl_unexpected_loss = True
         jsonl_reconciled = False
         limitations.append("jsonl_protocol_shortfall_without_rotation")
 
-    # SQLite reconciliation
-    sqlite_intentional_pruning = False
+    # SQLite reconciliation: never infer intentional protocol-event pruning from row count at cap alone.
+    sqlite_intentional_pruning_unverified = False
     if sqlite_error is not None:
         sqlite_unexpected_loss = True
         sqlite_reconciled = False
@@ -378,12 +423,12 @@ def verify_telemetry_completeness(
     elif (
         max_sqlite_events is not None
         and max_sqlite_events > 0
-        and sqlite_total == max_sqlite_events
+        and sqlite_total >= max_sqlite_events
     ):
-        sqlite_intentional_pruning = True
+        sqlite_intentional_pruning_unverified = True
         sqlite_unexpected_loss = False
-        sqlite_reconciled = True
-        limitations.append("sqlite_older_rows_pruned_at_cap")
+        sqlite_reconciled = False
+        limitations.append("sqlite_pruning_unverifiable_without_per_kind_accounting")
     else:
         sqlite_unexpected_loss = True
         sqlite_reconciled = False
@@ -411,7 +456,7 @@ def verify_telemetry_completeness(
             "protocol_events": jsonl_protocol,
             "total_events": jsonl_total,
             "read_errors": jsonl_read_errors,
-            "rotation_pruning_expected": jsonl_rotation_pruned,
+            "rotation_pruning_configured": jsonl_rotation_configured,
             "unexpected_loss": jsonl_unexpected_loss,
             "reconciled": jsonl_reconciled,
         },
@@ -419,7 +464,7 @@ def verify_telemetry_completeness(
             "protocol_events": sqlite_protocol,
             "total_events": sqlite_total,
             "max_sqlite_events": max_sqlite_events,
-            "intentional_pruning_expected": sqlite_intentional_pruning,
+            "intentional_pruning_unverified": sqlite_intentional_pruning_unverified,
             "error": sqlite_error,
             "unexpected_loss": sqlite_unexpected_loss,
             "reconciled": sqlite_reconciled,
@@ -486,14 +531,15 @@ def evaluate_soak_verdict(
         reasons.append(f"telemetry_drops:{summary['telemetry_drops']}")
 
     tel = summary.get("telemetry_completeness")
-    if tel is None:
+    if not isinstance(tel, dict) or not tel:
+        reasons.append("telemetry_completeness_missing_or_empty")
         limitations.append("telemetry_completeness_unavailable")
     else:
         if tel.get("reported_telemetry_drops", 0) > 0:
             reasons.append(f"reported_telemetry_drops:{tel['reported_telemetry_drops']}")
         if tel.get("unexpected_loss") is True:
             reasons.append("unexpected_telemetry_loss")
-        if tel.get("reconciled") is False:
+        if tel.get("reconciled") is not True:
             reasons.append("telemetry_unreconciled")
         limitations.extend(tel.get("limitations") or [])
 
@@ -563,18 +609,22 @@ async def run_disconnect_scenario(
 
         rc = await asyncio.wait_for(proc.wait(), timeout=timeout_s)
         tree_after = sample_tree_with_pids(proc.pid)
+        inv_ok = tree_after.get("inventory_available") is True
+        root_present = bool(tree_after.get("root_present")) if inv_ok else None
         return {
-            "passed": rc is not None and not tree_after,
+            "passed": bool(rc is not None and inv_ok and root_present is False),
             "exit_code": rc,
-            "orphans_remaining": bool(tree_after),
+            "inventory_available": inv_ok,
+            "orphans_remaining": root_present,
             "elapsed_s": round(time.perf_counter() - t0, 3),
             "stderr_tail": list(stderr_tail),
         }
     finally:
-        if stderr_task is not None:
-            stderr_task.cancel()
-            await asyncio.gather(stderr_task, return_exceptions=True)
         await _terminate_subprocess(proc)
+        if stderr_task is not None:
+            if not stderr_task.done():
+                stderr_task.cancel()
+            await asyncio.gather(stderr_task, return_exceptions=True)
 
 
 async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
@@ -932,10 +982,11 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
             )
 
         finally:
-            if stderr_task is not None:
-                stderr_task.cancel()
-                await asyncio.gather(stderr_task, return_exceptions=True)
             await _terminate_subprocess(proc)
+            if stderr_task is not None:
+                if not stderr_task.done():
+                    stderr_task.cancel()
+                await asyncio.gather(stderr_task, return_exceptions=True)
 
     elapsed_total_s = round(time.monotonic() - start_mono, 2) if "start_mono" in locals() else 0.0
     overall_stats = compute_stats(all_latencies_ms, max(0.001, elapsed_total_s))
@@ -961,7 +1012,12 @@ async def run_soak(args: argparse.Namespace) -> Dict[str, Any]:
         "fd_delta": fd_delta,
         "p95_early_median_ms": round(p95_first, 3),
         "p95_late_median_ms": round(p95_last, 3),
-        "orphans_after_shutdown": bool(post_shutdown_tree),
+        "orphans_after_shutdown": (
+            bool(post_shutdown_tree.get("root_present"))
+            if post_shutdown_tree.get("inventory_available") is True
+            else None
+        ),
+        "process_inventory_available": post_shutdown_tree.get("inventory_available") is True,
         "disconnect_checks_passed": all(d.get("passed") for d in disconnect_checks) if disconnect_checks else True,
         "stale_outstanding_at_drain": len(in_flight),
         "stderr_tail": list(stderr_tail),

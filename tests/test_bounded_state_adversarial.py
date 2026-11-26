@@ -470,10 +470,27 @@ def test_sr01_evicted_policies_across_zero_one_multiple_active_and_ttl_expiry():
     ro_multi = [v for v in v_multi if v.payload.get("category") == "read_only_violation"]
     assert len(ro_multi) == 1  # active_ro already triggered; no duplicate from evicted_ro
 
-    # 3. Expiration of retained uncertainty after evicted_policy_ttl
+    # 3. Expiration of retained policy names after evicted_policy_ttl MUST NOT restore observed
+    #    attribution or lose restrictive-policy awareness while evicted calls may remain unfinished.
     eng.on_tool_call_end(2, 1004.0)
-    _, v_after_ttl = eng.attribute_os_event(BehavioralEvent(event=EVENT_FILE_WRITE, timestamp=1100.0, target="/tmp/clean.txt"))
-    assert not any(v.payload.get("category") == "read_only_violation" for v in v_after_ttl)
+    ev_after_ttl, v_after_ttl = eng.attribute_os_event(
+        BehavioralEvent(event=EVENT_FILE_WRITE, timestamp=1100.0, target="/tmp/clean.txt")
+    )
+    assert ev_after_ttl.evidence_tier == EVIDENCE_TIER_CORRELATED
+    assert ev_after_ttl.payload.get("attribution_incomplete") is True
+    assert any(v.payload.get("category") == "read_only_violation" for v in v_after_ttl)
+
+    # 4. Same-category deduplication & max_evicted_policies=1 overflow preserve candidate awareness
+    eng3 = AttributionEngine("srv1", max_active_calls=1, max_evicted_policies=1)
+    for idx, name in enumerate(("ro_first", "ro_second", "ro_active"), 10):
+        eng3.on_tool_call_start(idx, name, float(idx), {"readOnlyHint": True})
+    _, v_dedup = eng3.attribute_os_event(
+        BehavioralEvent(event=EVENT_FILE_WRITE, timestamp=20.0, target="/tmp/d.txt")
+    )
+    ro_dedup = [v for v in v_dedup if v.payload.get("category") == "read_only_violation"]
+    assert len(ro_dedup) == 1
+    assert "ro_second" in ro_dedup[0].payload.get("candidate_tools", [])
+    assert ro_dedup[0].payload.get("evicted_policy_overflow") is True
 
 
 def test_sr02_unparseable_traffic_degrades_all_branches_and_recovers_only_on_resync(tmp_path):
@@ -505,12 +522,34 @@ def test_sr02_unparseable_traffic_degrades_all_branches_and_recovers_only_on_res
     assert ev3.evidence_tier == EVIDENCE_TIER_CORRELATED
     assert ev3.payload.get("attribution_incomplete") is True
 
-    # 4. Clean resync with 0 active calls restores confidence for subsequent clean traffic
-    assert eng.on_protocol_resync() is True
+    # 4. Empty active map without trusted_boundary=True does NOT clear uncertainty;
+    #    clean resync at a trusted boundary with 0 active calls restores confidence.
+    assert eng.on_protocol_resync() is False
+    assert eng.on_protocol_resync(trusted_boundary=True) is True
     eng.on_tool_call_start(3, "clean_tool", 5001.0)
     ev4, _ = eng.attribute_os_event(BehavioralEvent(event=EVENT_FILE_OPEN, timestamp=5002.0, target="/tmp/ok.txt"))
     assert ev4.evidence_tier == EVIDENCE_TIER_OBSERVED
     assert "attribution_incomplete" not in ev4.payload
+
+    # 6. Monitor queue drops degrade attribution confidence
+    import queue as py_queue
+    eng3 = AttributionEngine("sr02-q")
+    eng3.on_tool_call_start(1, "known_q", 100.0)
+    bus_q = EventBus()
+    tel_q = TelemetryStore(session_id="sr02-q", server_id="sr02-q", state_dir=tmp_path / "q")
+    mon_q = ProtocolMonitor("sr02-q", "sr02-q", bus_q, tel_q, enable_reverify=False, attribution_engine=eng3)
+    try:
+        orig_put = mon_q._line_queue.put_nowait
+        mon_q._line_queue.put_nowait = lambda _item: (_ for _ in ()).throw(py_queue.Full())
+        mon_q.enqueue_line(b'{"id":2,"method":"tools/call"}', "client_to_server")
+        mon_q._line_queue.put_nowait = orig_put
+        ev_q, _ = eng3.attribute_os_event(BehavioralEvent(event=EVENT_FILE_OPEN, timestamp=101.0, target="/tmp/q.txt"))
+        assert ev_q.evidence_tier == EVIDENCE_TIER_CORRELATED
+        assert eng3.incomplete_attribution is True
+    finally:
+        mon_q.close(timeout=2.0)
+        bus_q.close()
+        tel_q.close(timeout=2.0)
 
     # 5. ProtocolMonitor: excessive nesting (RecursionError) and unsupported JSON structures trigger record_unparseable_message
     bus = EventBus()
