@@ -393,15 +393,8 @@ class ProtocolMonitor:
 
         # Fast path for large messages (>64 KB): avoid re-serializing 1 MB payloads for hashing/scanning
         if len(line_bytes) > 65536 and not self.log_content:
-            header_check = stripped[:4096]
-            is_manifest_response = (
-                b'"tools"' in header_check
-                or b'"serverInfo"' in header_check
-                or b'"capabilities"' in header_check
-            )
-            if not is_manifest_response:
-                self._handle_large_message_envelope_sync(stripped, len(line_bytes), direction, now)
-                return
+            self._handle_large_message_envelope_sync(stripped, len(line_bytes), direction, now)
+            return
 
         # Attempt JSON parse directly on bytes (avoids large intermediate str allocation)
         try:
@@ -599,63 +592,97 @@ class ProtocolMonitor:
                 self.telemetry.record(event)
 
                 # Process TOFU Manifest and Drift Detection
-                if self.manifest_tracker:
-                    if method == "initialize" and not is_error and isinstance(content_obj, dict):
-                        init_events = self.manifest_tracker.handle_initialize_response(content_obj)
-                        for ievt in init_events:
-                            self.bus.publish_sync(ievt)
-                            self.telemetry.record(ievt)
-                            self._emit_alert(ievt)
-
-                    elif method == "tools/list":
-                        if self.manifest_tracker.prior_manifest is None:
-                            self.manifest_tracker.prior_manifest = self.telemetry.get_last_trusted_manifest(self.server_id)
-                        list_events, _ = self.manifest_tracker.handle_tools_list_response(
-                            msg_id,
-                            content_obj if not is_error else None,
-                            is_error=is_error,
-                        )
-                        for levt in list_events:
-                            self.bus.publish_sync(levt)
-                            self.telemetry.record(levt)
-                            self._emit_alert(levt)
+                self._handle_manifest_response_sync(
+                    msg_id, method, is_error, content_obj, direction, total_bytes, now
+                )
 
             elif "method" in msg:
                 # Server-initiated notification or request
-                method = msg.get("method")
-                params = msg.get("params") or {}
+                self._handle_server_notification_sync(msg, msg_id, total_bytes, now)
 
-                if self.manifest_tracker and msg_id is None:
-                    if method == "notifications/tools/list_changed":
-                        self.manifest_tracker.mark_list_changed("tools")
-                    elif method == "notifications/resources/list_changed":
-                        self.manifest_tracker.mark_list_changed("resources")
-                    elif method == "notifications/prompts/list_changed":
-                        self.manifest_tracker.mark_list_changed("prompts")
+    def _handle_manifest_response_sync(
+        self,
+        msg_id: Any,
+        method: Optional[str],
+        is_error: bool,
+        content_obj: Any,
+        direction: str,
+        total_bytes: int,
+        now: float,
+    ) -> None:
+        """Dispatch passive initialize and tools/list manifest lifecycle handling consistently."""
+        if not self.manifest_tracker:
+            return
+        if method == "initialize":
+            if not is_error and isinstance(content_obj, dict):
+                init_events = self.manifest_tracker.handle_initialize_response(content_obj)
+                for ievt in init_events:
+                    self.bus.publish_sync(ievt)
+                    self.telemetry.record(ievt)
+                    self._emit_alert(ievt)
+            elif not is_error and self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+                self.attribution_engine.record_unparseable_message(direction, total_bytes, now)
+        elif method == "tools/list":
+            if not is_error and not isinstance(content_obj, dict):
+                if self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
+                    self.attribution_engine.record_unparseable_message(direction, total_bytes, now)
+            if self.manifest_tracker.prior_manifest is None:
+                self.manifest_tracker.prior_manifest = self.telemetry.get_last_trusted_manifest(self.server_id)
+            list_events, _ = self.manifest_tracker.handle_tools_list_response(
+                msg_id,
+                content_obj if not is_error else None,
+                is_error=is_error,
+            )
+            for levt in list_events:
+                self.bus.publish_sync(levt)
+                self.telemetry.record(levt)
+                self._emit_alert(levt)
 
-                payload = {
-                    "method": method,
-                    "size_bytes": total_bytes,
-                }
-                if self.log_content:
-                    payload["params"] = params
-                else:
-                    payload["params_hash"] = hash_content(params)
+    def _handle_server_notification_sync(
+        self,
+        msg: Dict[str, Any],
+        msg_id: Any,
+        total_bytes: int,
+        now: float,
+        hashed_summary: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Handle server-initiated notifications/requests consistently for normal and large payloads."""
+        method = msg.get("method")
+        params = msg.get("params") or {}
 
-                event = BehavioralEvent(
-                    event="protocol_notification",
-                    session_id=self.session_id,
-                    server_id=self.server_id,
-                    kind=KIND_PROTOCOL_NOTIFICATION,
-                    request_id=msg_id,
-                    target=method,
-                    timestamp=now,
-                    source="monitor",
-                    evidence_tier="observed",
-                    payload=payload,
-                )
-                self.bus.publish_sync(event)
-                self.telemetry.record(event)
+        if self.manifest_tracker and msg_id is None:
+            if method == "notifications/tools/list_changed":
+                self.manifest_tracker.mark_list_changed("tools")
+            elif method == "notifications/resources/list_changed":
+                self.manifest_tracker.mark_list_changed("resources")
+            elif method == "notifications/prompts/list_changed":
+                self.manifest_tracker.mark_list_changed("prompts")
+
+        payload: Dict[str, Any] = {
+            "method": method,
+            "size_bytes": total_bytes,
+        }
+        if hashed_summary is not None:
+            payload["params_hash"] = hashed_summary
+        elif self.log_content:
+            payload["params"] = params
+        else:
+            payload["params_hash"] = hash_content(params)
+
+        event = BehavioralEvent(
+            event="protocol_notification",
+            session_id=self.session_id,
+            server_id=self.server_id,
+            kind=KIND_PROTOCOL_NOTIFICATION,
+            request_id=msg_id,
+            target=method,
+            timestamp=now,
+            source="monitor",
+            evidence_tier="observed",
+            payload=payload,
+        )
+        self.bus.publish_sync(event)
+        self.telemetry.record(event)
 
     def _record_active_request(
         self, msg_id: Any, now: float, method: str, tool_name: Optional[str]
@@ -737,13 +764,13 @@ class ProtocolMonitor:
             for msg in data:
                 if isinstance(msg, dict):
                     self._handle_large_single_message_sync(
-                        msg, raw_bytes, total_bytes, hashed_summary, direction, now
+                        msg, raw_bytes, total_bytes, hashed_summary, direction, now, is_batch=True
                     )
                 elif self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
                     self.attribution_engine.record_unparseable_message(direction, total_bytes, now)
         elif isinstance(data, dict):
             self._handle_large_single_message_sync(
-                data, raw_bytes, total_bytes, hashed_summary, direction, now
+                data, raw_bytes, total_bytes, hashed_summary, direction, now, is_batch=False
             )
         elif self.attribution_engine and hasattr(self.attribution_engine, "record_unparseable_message"):
             self.attribution_engine.record_unparseable_message(direction, total_bytes, now)
@@ -756,12 +783,14 @@ class ProtocolMonitor:
         hashed_summary: Dict[str, Any],
         direction: str,
         now: float,
+        is_batch: bool = False,
     ) -> None:
         """Handle a single parsed >64 KB JSON-RPC object without re-serializing or full-text scanning."""
         msg_id = msg.get("id")
         if isinstance(msg_id, (bool, dict, list)):
             msg_id = None
         tool_name: Optional[str] = None
+        method: Optional[str] = None
 
         if direction == "client_to_server":
             method = msg.get("method")
@@ -849,6 +878,7 @@ class ProtocolMonitor:
 
             if msg_id is not None and ("result" in msg or "error" in msg):
                 is_error = "error" in msg
+                content_obj = msg.get("error") if is_error else msg.get("result")
                 with self._lock:
                     req_info = self._active_requests.pop(msg_id, None)
 
@@ -888,12 +918,68 @@ class ProtocolMonitor:
                 self.bus.publish_sync(event)
                 self.telemetry.record(event)
 
-        # Content scanning for large messages using fast byte pre-filters
+                # Process TOFU Manifest and Drift Detection for large passive responses
+                self._handle_manifest_response_sync(
+                    msg_id, method, is_error, content_obj, direction, total_bytes, now
+                )
+
+            elif "method" in msg:
+                self._handle_server_notification_sync(
+                    msg, msg_id, total_bytes, now, hashed_summary=hashed_summary
+                )
+
+        # Content scanning: scan per-item content in batches (O(N) total, zero cross-item attribution),
+        # or fast byte pre-filter over single >64 KB messages (with escaped-JSON fallback).
         if getattr(self, "scanner", None):
-            scan_events = self.scanner.scan_raw_bytes(
-                raw_bytes, direction, tool_name=tool_name, request_id=msg_id, now=now
-            )
+            if is_batch:
+                scan_events = self._scan_parsed_message_sync(
+                    msg, direction, tool_name, method, msg_id, now
+                )
+            else:
+                scan_events = self.scanner.scan_raw_bytes(
+                    raw_bytes, direction, tool_name=tool_name, request_id=msg_id, now=now
+                )
+                if not scan_events and (b"\\u" in raw_bytes or b"\\/" in raw_bytes):
+                    scan_events = self._scan_parsed_message_sync(
+                        msg, direction, tool_name, method, msg_id, now
+                    )
             for se in scan_events:
                 self.bus.publish_sync(se)
                 self.telemetry.record(se)
                 self._emit_alert(se)
+
+    def _scan_parsed_message_sync(
+        self,
+        msg: Dict[str, Any],
+        direction: str,
+        tool_name: Optional[str],
+        method: Optional[str],
+        msg_id: Any,
+        now: float,
+    ) -> List[BehavioralEvent]:
+        """Scan a single already-parsed JSON-RPC message object (handles JSON escapes)."""
+        if direction == "client_to_server":
+            params = msg.get("params")
+            tool_args = (
+                params.get("arguments")
+                if (isinstance(params, dict) and "arguments" in params)
+                else params
+            )
+            if tool_args is not None:
+                return self.scanner.scan_tool_call(
+                    tool_name or method, tool_args, request_id=msg_id, now=now
+                )
+        elif direction == "server_to_client":
+            if "result" in msg:
+                return self.scanner.scan_tool_result(
+                    tool_name, msg.get("result"), request_id=msg_id, now=now
+                )
+            if "error" in msg:
+                return self.scanner.scan_tool_result(
+                    tool_name, msg.get("error"), request_id=msg_id, now=now
+                )
+            if "params" in msg:
+                return self.scanner.scan_tool_result(
+                    None, msg.get("params"), request_id=msg_id, now=now
+                )
+        return []
