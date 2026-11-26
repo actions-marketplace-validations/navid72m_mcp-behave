@@ -480,58 +480,27 @@ def _diff_m3_lockfile(
 # ---------------------------------------------------------------------------
 
 _PYC_ATOMIC_RE = re.compile(r"^(.*/__pycache__/[^/]+\.pyc)\.\d+$")
-_ONNX_DEVICEID_RE = re.compile(
-    r"^(\$CANARY_HOME/\.cache/Microsoft/DeveloperTools/\.onnxruntime/deviceid\.tmp)\.[0-9a-fA-F-]+$"
-)
-_LEGACY_CANARY_RE = re.compile(r"^(?:/private)?/tmp/mcp_behave_canary_home_[A-Za-z0-9_]+(?=/|$)")
 
 
-def normalize_baseline_path(
-    path: str,
-    *,
-    canary_home: Optional[str] = None,
-    legacy_canary_fallback: bool = False,
-) -> str:
-    """Canonicalize ephemeral audit-specific path noise without hiding real filesystem writes.
+def classify_baseline_write(path: str) -> Tuple[str, str]:
+    """Return a structured, unambiguous identity for a written file path.
 
-    - Canonicalizes ONLY the actual canary_home root associated with the current audit
-      (plus its realpath) to '$CANARY_HOME'.
-    - Strips Python importlib._write_atomic numeric suffixes on __pycache__/*.pyc.<id> files.
-    - Canonicalizes onnxruntime's randomized deviceid.tmp.<uuid> ONLY underneath $CANARY_HOME.
+    - Python importlib._write_atomic temp files (e.g. '.../__pycache__/mod.cpython-312.pyc.12345')
+      are typed as ('pyc_atomic_temp', '.../__pycache__/mod.cpython-312.pyc'), keeping them
+      strictly distinct from direct writes to the final '.pyc' path ('literal', ...).
+    - All other paths (including unresolved relative paths, canary paths, and direct '.pyc'
+      writes) are typed as ('literal', path).
     """
-    norm = path
-    if canary_home:
-        roots = []
-        for candidate in (canary_home, os.path.realpath(canary_home)):
-            c = candidate.rstrip("/")
-            if c and c not in roots:
-                roots.append(c)
-        for root in roots:
-            if norm == root:
-                norm = "$CANARY_HOME"
-                break
-            if norm.startswith(root + "/"):
-                norm = "$CANARY_HOME" + norm[len(root):]
-                break
-    elif legacy_canary_fallback:
-        norm = _LEGACY_CANARY_RE.sub("$CANARY_HOME", norm, count=1)
-
-    m_onnx = _ONNX_DEVICEID_RE.match(norm)
-    if m_onnx:
-        norm = f"{m_onnx.group(1)}.<UUID>"
-
-    m_pyc = _PYC_ATOMIC_RE.match(norm)
+    m_pyc = _PYC_ATOMIC_RE.match(path)
     if m_pyc:
-        norm = m_pyc.group(1)
-
-    return norm
+        return ("pyc_atomic_temp", m_pyc.group(1))
+    return ("literal", path)
 
 
 def generate_lockfile_data(manifest: Dict[str, Any], profile: Dict[str, Any]) -> Dict[str, Any]:
     """Generate structured lockfile content from probed manifest and behavioral profile (legacy)."""
     from . import analyze as analyze_mod
 
-    canary_home = manifest.get("canary_home")
     tools = [t.get("name") for t in manifest.get("tools", []) if t.get("name")]
     tool_network = profile.get("tool_network_connects", {})
 
@@ -546,12 +515,11 @@ def generate_lockfile_data(manifest: Dict[str, Any], profile: Dict[str, Any]) ->
     for f in profile.get("files_opened", []):
         is_sens, _ = analyze_mod.is_sensitive_path(f)
         if is_sens:
-            sensitive_files.append(normalize_baseline_path(f, canary_home=canary_home))
+            sensitive_files.append(f)
 
-    files_written = sorted({
-        normalize_baseline_path(f, canary_home=canary_home)
-        for f in profile.get("files_written", [])
-    })
+    raw_written = sorted(profile.get("files_written", []))
+    typed_seen = sorted({classify_baseline_write(w) for w in raw_written})
+    files_written_typed = [{"kind": kind, "path": p} for kind, p in typed_seen]
 
     return {
         "$schema": "https://raw.githubusercontent.com/navid72m/mcp-behave/main/schemas/lockfile.v1.json",
@@ -560,12 +528,12 @@ def generate_lockfile_data(manifest: Dict[str, Any], profile: Dict[str, Any]) ->
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "server_cmd": manifest.get("server_cmd"),
         "manifest_sha256": manifest.get("manifest_sha256"),
-        "canary_home_canonicalized": True,
         "declared_tools": sorted(tools),
         "baseline_behavior": {
             "network_endpoints": sorted(profile.get("network_connects", [])),
             "sensitive_files": sorted(set(sensitive_files)),
-            "files_written": files_written,
+            "files_written": raw_written,
+            "files_written_typed": files_written_typed,
             "unix_sockets": sorted(profile.get("unix_sockets", [])),
             "subprocesses": sorted(profile.get("subprocesses", [])),
         },
@@ -594,35 +562,43 @@ def _diff_legacy_lockfile(lock_data: Dict[str, Any], manifest: Dict[str, Any], p
     for net in sorted(new_nets):
         diffs.append(f"Undeclared network egress: '{net}' was contacted (not in lockfile baseline)")
 
-    canary_home = manifest.get("canary_home") if isinstance(manifest, dict) else None
-    legacy_fallback = not bool(lock_data.get("canary_home_canonicalized"))
-
     # 2. Sensitive files regression
-    base_sens = {
-        normalize_baseline_path(s, legacy_canary_fallback=legacy_fallback)
-        for s in baseline.get("sensitive_files", [])
-    }
+    base_sens = set(baseline.get("sensitive_files", []))
     curr_sens = set()
     for f in profile.get("files_opened", []):
         is_sens, _ = analyze_mod.is_sensitive_path(f)
         if is_sens:
-            curr_sens.add(normalize_baseline_path(f, canary_home=canary_home))
+            curr_sens.add(f)
     new_sens = curr_sens - base_sens
     for s in sorted(new_sens):
         diffs.append(f"Undeclared sensitive file read: '{s}' was accessed (not in lockfile baseline)")
 
     # 3. File modifications/writes regression
-    base_written = {
-        normalize_baseline_path(w, legacy_canary_fallback=legacy_fallback)
-        for w in baseline.get("files_written", [])
-    }
-    curr_written = {
-        normalize_baseline_path(w, canary_home=canary_home)
-        for w in profile.get("files_written", [])
-    }
-    new_written = curr_written - base_written
-    for w in sorted(new_written):
-        diffs.append(f"Undeclared file write/modification: '{w}' was written (not in lockfile baseline)")
+    # Legacy lockfiles without files_written_typed are compared strictly as literal paths
+    # (no silent broadening; require explicit regeneration via `mcp-behave init`).
+    if "files_written_typed" in baseline and isinstance(baseline["files_written_typed"], list):
+        base_written = {
+            (str(e.get("kind", "literal")), str(e.get("path", "")))
+            for e in baseline["files_written_typed"]
+            if isinstance(e, dict)
+        }
+        curr_written_map: Dict[Tuple[str, str], str] = {}
+        for w in profile.get("files_written", []):
+            key = classify_baseline_write(w)
+            curr_written_map.setdefault(key, w)
+
+        new_written_keys = set(curr_written_map.keys()) - base_written
+        for key in sorted(new_written_keys):
+            diffs.append(
+                f"Undeclared file write/modification: '{curr_written_map[key]}' was written (not in lockfile baseline)"
+            )
+    else:
+        base_written_lit = set(baseline.get("files_written", []))
+        curr_written_lit = set(profile.get("files_written", []))
+        for w in sorted(curr_written_lit - base_written_lit):
+            diffs.append(
+                f"Undeclared file write/modification: '{w}' was written (not in lockfile baseline)"
+            )
 
     # 4. Unix domain sockets regression
     base_unix = set(baseline.get("unix_sockets", []))

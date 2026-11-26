@@ -831,21 +831,16 @@ async def run_proxy(
         return exit_code
     finally:
         if tracer_server is not None:
-            drained_cleanly = False
             if (
                 child_proc is not None
                 and child_proc.returncode is not None
                 and hasattr(tracer_server, "drain_once")
             ):
-                try:
-                    drained_cleanly = bool(tracer_server.drain_once())
-                except Exception as exc:
-                    _incomplete("tracer drain", exc)
+                _close("tracer drain", tracer_server.drain_once)
             # Stop reading before close so a sender cannot prolong close by refilling the socket.
             tracer_server._stopped = True
             _close("tracer", tracer_server.close)
-            if not drained_cleanly:
-                _incomplete("tracer telemetry", "possible loss of unread datagrams at shutdown")
+            _incomplete("tracer telemetry", "possible loss of unread datagrams at shutdown")
             if os.path.lexists(tracer_server.sock_path):
                 _incomplete("tracer", "socket path still exists")
         if monitor is not None:

@@ -416,7 +416,7 @@ class TracerServer:
             try:
                 data, _ = self._server_sock.recvfrom(65536)
                 if not data:
-                    return True
+                    continue
                 self._handle_raw_data(data)
             except BlockingIOError:
                 return True

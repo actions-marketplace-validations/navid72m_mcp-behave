@@ -1100,8 +1100,7 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
                     tool_outputs: dict | None = None,
                     *, transport: str, syscalls_available: bool,
                     manifest_file: str | None = None, trace_file: str | None = None,
-                    sandbox: str | None = None, canary_home: str | None = None,
-                    tool_history: dict | None = None,
+                    sandbox: str | None = None, tool_history: dict | None = None,
                     audit_status: str = AUDIT_STATUS_COMPLETE,
                     failure_reason: str | None = None):
     """Write the manifest JSON to disk.
@@ -1117,7 +1116,6 @@ def _write_manifest(server_cmd, tools_meta, resources_meta, prompts_meta, stats,
         "transport": transport,
         "syscalls_available": syscalls_available,
         "sandbox": sandbox,
-        "canary_home": canary_home,
         "audit_status": audit_status,
         "failure_reason": failure_reason,
         "tools": tools_meta,
@@ -1216,8 +1214,7 @@ async def run(server_cmd: list[str], call_timeout: float = DEFAULT_CALL_TIMEOUT,
                         tool_outputs=tool_outputs,
                         transport="stdio", syscalls_available=syscalls_available,
                         manifest_file=target_manifest_file, trace_file=target_trace_file,
-                        sandbox=active_sandbox, canary_home=canary_dir,
-                        tool_history=tool_history)
+                        sandbox=active_sandbox, tool_history=tool_history)
     finally:
         if canary_dir and os.path.exists(canary_dir):
             try:
